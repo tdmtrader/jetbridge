@@ -150,6 +150,27 @@ var _ = Describe("SecretsManager", func() {
 			Expect(err).To(BeNil())
 		})
 
+		It("refuses a quoted '..' in a var name without asking AWS", func() {
+			_, found, err := variables.Get(vars.Reference{Path: "../../other-team/secret"})
+			Expect(err).To(MatchError(ContainSubstring(`invalid var '"../../other-team/secret"': path segment '..' is not allowed`)))
+			Expect(found).To(BeFalse())
+			Expect(service.RequestedSecretIDs()).To(BeEmpty())
+		})
+
+		It("gets a var name with slashes beneath the pipeline prefix", func() {
+			service.Respond(func(secretID string) (int, any) {
+				if secretID == "/concourse/alpha/bogus/foo/bar" {
+					return secretString("slashed")
+				}
+				return notFound()
+			})
+
+			value, found, err := variables.Get(vars.Reference{Path: "foo/bar"})
+			Expect(err).To(BeNil())
+			Expect(found).To(BeTrue())
+			Expect(value).To(BeEquivalentTo("slashed"))
+		})
+
 		It("should get complex parameter", func() {
 			service.Respond(func(secretID string) (int, any) {
 				return secretBinary([]byte(`{"name": "yours", "pass": "truely"}`))

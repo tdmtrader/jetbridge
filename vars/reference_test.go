@@ -105,6 +105,46 @@ var _ = Describe("Reference", func() {
 				err:  `invalid var 'vault:': empty field`,
 			},
 			{
+				desc: "quoted parent-directory segment in the path",
+				raw:  `"../../other-team/secret"`,
+				err:  `invalid var '"../../other-team/secret"': path segment '..' is not allowed`,
+			},
+			{
+				desc: "quoted parent-directory segment after a var source",
+				raw:  `vault:"team/../other"`,
+				err:  `invalid var 'vault:"team/../other"': path segment '..' is not allowed`,
+			},
+			{
+				desc: "quoted current-directory segment in the path",
+				raw:  `"a/./b"`,
+				err:  `invalid var '"a/./b"': path segment '.' is not allowed`,
+			},
+			{
+				desc: "path that is only a parent-directory segment",
+				raw:  `".."`,
+				err:  `invalid var '".."': path segment '..' is not allowed`,
+			},
+			{
+				desc: "slashes in the path",
+				raw:  `vault:foo/bar`,
+				ref:  vars.Reference{Source: "vault", Path: "foo/bar", Fields: []string{}},
+			},
+			{
+				desc: "quoted path with slashes and fields",
+				raw:  `"foo/bar".baz`,
+				ref:  vars.Reference{Path: "foo/bar", Fields: []string{"baz"}},
+			},
+			{
+				desc: "dots inside a path segment",
+				raw:  `"foo..bar/.baz"`,
+				ref:  vars.Reference{Path: "foo..bar/.baz", Fields: []string{}},
+			},
+			{
+				desc: "a field named '..' is a key, not a path segment",
+				raw:  `foo."..".bar`,
+				ref:  vars.Reference{Path: "foo", Fields: []string{"..", "bar"}},
+			},
+			{
 				desc: "trims spaces in path segments",
 				raw:  `hello .world `,
 				ref:  vars.Reference{Path: "hello", Fields: []string{"world"}},

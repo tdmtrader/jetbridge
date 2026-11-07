@@ -66,6 +66,35 @@ var _ = Describe("Ssm", func() {
 			Expect(err).To(BeNil())
 		})
 
+		It("refuses a quoted '..' in a var name without asking AWS", func() {
+			awsSsm.getParameter(func(name string) (*ssm.GetParameterOutput, error) {
+				Fail("a refused var name reached SSM: " + name)
+				return nil, nil
+			})
+			awsSsm.getParametersByPath(func(path string) (*ssm.GetParametersByPathOutput, error) {
+				Fail("a refused var name reached SSM: " + path)
+				return nil, nil
+			})
+
+			_, found, err := variables.Get(vars.Reference{Path: "../../other-team/secret"})
+			Expect(err).To(MatchError(ContainSubstring(`invalid var '"../../other-team/secret"': path segment '..' is not allowed`)))
+			Expect(found).To(BeFalse())
+		})
+
+		It("gets a var name with slashes beneath the pipeline prefix", func() {
+			awsSsm.getParameter(func(name string) (*ssm.GetParameterOutput, error) {
+				if name == "/concourse/alpha/bogus/foo/bar" {
+					return &ssm.GetParameterOutput{Parameter: &types.Parameter{Value: aws.String("slashed")}}, nil
+				}
+				return nil, &types.ParameterNotFound{}
+			})
+
+			value, found, err := variables.Get(vars.Reference{Path: "foo/bar"})
+			Expect(err).To(BeNil())
+			Expect(found).To(BeTrue())
+			Expect(value).To(BeEquivalentTo("slashed"))
+		})
+
 		It("should get complex parameter", func() {
 			awsSsm.getParametersByPath(func(path string) (*ssm.GetParametersByPathOutput, error) {
 				return &ssm.GetParametersByPathOutput{Parameters: []types.Parameter{

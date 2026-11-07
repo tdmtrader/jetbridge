@@ -1,6 +1,8 @@
 package creds
 
 import (
+	"fmt"
+
 	"github.com/concourse/concourse/vars"
 )
 
@@ -19,6 +21,9 @@ func NewVariables(secrets Secrets, secretsLookupParams SecretLookupParams, allow
 }
 
 func (sl VariableLookupFromSecrets) Get(ref vars.Reference) (any, bool, error) {
+	if err := sl.checkLookup(ref); err != nil {
+		return nil, false, err
+	}
 	val, found, err := sl.get(ref.Path)
 	if err != nil {
 		return nil, false, err
@@ -31,6 +36,32 @@ func (sl VariableLookupFromSecrets) Get(ref vars.Reference) (any, bool, error) {
 		return nil, false, err
 	}
 	return result, true, nil
+}
+
+// checkLookup refuses, before any backend is asked, a lookup that could
+// resolve outside the team's prefix: a var path with a "." or ".." segment,
+// or a team or pipeline name that is one. A backend that joins or cleans its
+// lookup path (Vault's kv2 helper calls path.Join; credhub and dummy build
+// their prefixes with it) would collapse the segment. Slashes alone are
+// legitimate: ((vault:foo/bar)) names a secret beneath the prefix. This is
+// the one gate: every var lookup reaches a backend through Get or
+// GetSecretRef.
+func (sl VariableLookupFromSecrets) checkLookup(ref vars.Reference) error {
+	if seg, found := vars.DotSegment(ref.Path); found {
+		return fmt.Errorf("invalid var '%s': path segment '%s' is not allowed", ref, seg)
+	}
+	if len(sl.LookupPaths) == 0 {
+		// The names reach no path: the backend gets the var name alone.
+		return nil
+	}
+	// Identifier validation only warns, so a pipeline can be renamed "..",
+	// and its lookup prefix would then be its team's parent.
+	for _, scope := range []struct{ kind, name string }{{"team", sl.Context.Team}, {"pipeline", sl.Context.Pipeline}} {
+		if _, found := vars.DotSegment(scope.name); found {
+			return fmt.Errorf("cannot look up var '%s': %s name '%s' is not a valid secret path segment", ref, scope.kind, scope.name)
+		}
+	}
+	return nil
 }
 
 func (sl VariableLookupFromSecrets) get(path string) (any, bool, error) {
@@ -64,6 +95,9 @@ func (sl VariableLookupFromSecrets) get(path string) (any, bool, error) {
 func (sl VariableLookupFromSecrets) GetSecretRef(ref vars.Reference) (*vars.SecretRef, bool) {
 	provider, ok := sl.Secrets.(SecretRefProvider)
 	if !ok {
+		return nil, false
+	}
+	if sl.checkLookup(ref) != nil {
 		return nil, false
 	}
 

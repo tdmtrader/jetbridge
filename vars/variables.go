@@ -53,7 +53,25 @@ func ParseReference(name string) (Reference, error) {
 	ref.Path = fields[0]
 	ref.Fields = fields[1:]
 
+	if seg, found := DotSegment(ref.Path); found {
+		return Reference{}, fmt.Errorf("invalid var '%s': path segment '%s' is not allowed", name, seg)
+	}
+
 	return ref, nil
+}
+
+// DotSegment returns the first "." or ".." segment of a slash-separated var
+// path. Only a quoted segment can carry one (an unquoted "." separates
+// fields), and a secret backend that cleans or joins its lookup path would
+// collapse it, climbing out of the team's prefix. Fields are keys into a
+// secret's value, never a path, so they may hold anything.
+func DotSegment(path string) (string, bool) {
+	for seg := range strings.SplitSeq(path, "/") {
+		if seg == "." || seg == ".." {
+			return seg, true
+		}
+	}
+	return "", false
 }
 
 func findUnquoted(s string, r rune) (int, bool) {
