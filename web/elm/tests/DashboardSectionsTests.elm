@@ -1,8 +1,11 @@
 module DashboardSectionsTests exposing (all)
 
 import Application.Application as Application
+import Colors
 import Common
 import Concourse
+import Concourse.BuildStatus exposing (BuildStatus(..))
+import Concourse.PipelineStatus as PipelineStatus exposing (PipelineStatus(..))
 import Dashboard.Group.Models exposing (Card(..), cardName)
 import Dashboard.Sections as Sections
 import Data
@@ -18,7 +21,8 @@ import Set
 import Test exposing (Test, describe, test)
 import Test.Html.Event as Event
 import Test.Html.Query as Query
-import Test.Html.Selector exposing (attribute, class, containing, id, text)
+import Test.Html.Selector exposing (attribute, class, containing, id, style, text)
+import Time
 import Url
 
 
@@ -26,84 +30,41 @@ all : Test
 all =
     describe "dashboard sections"
         [ describe "sectionsWithinTeam"
-            [ test "gathers cards that share a name prefix into a section" <|
+            [ test "does not group pipelines by their name prefix" <|
                 \_ ->
-                    [ "jetbridge", "landing-compose", "loupe", "landing-land" ]
+                    [ ( "jetbridge", Nothing ), ( "landing-compose", Nothing ), ( "loupe", Nothing ), ( "landing-land", Nothing ) ]
                         |> sectionNames
                         |> Expect.equal
-                            [ ( Nothing, [ "jetbridge", "loupe" ] )
-                            , ( Just "landing", [ "landing-compose", "landing-land" ] )
-                            ]
-            , test "leaves a prefix only one card has with the team" <|
-                \_ ->
-                    [ "k8s-e2e", "landing-compose", "landing-land" ]
-                        |> sectionNames
-                        |> Expect.equal
-                            [ ( Nothing, [ "k8s-e2e" ] )
-                            , ( Just "landing", [ "landing-compose", "landing-land" ] )
-                            ]
-            , test "puts a pipeline named exactly the prefix in its section" <|
-                \_ ->
-                    [ "piano", "jetbridge", "jetbridge-release" ]
-                        |> sectionNames
-                        |> Expect.equal
-                            [ ( Nothing, [ "piano" ] )
-                            , ( Just "jetbridge", [ "jetbridge", "jetbridge-release" ] )
-                            ]
-            , test "does not split a team whose cards all share one prefix" <|
-                \_ ->
-                    [ "pipeline-1", "pipeline-2", "pipeline-3" ]
-                        |> sectionNames
-                        |> Expect.equal
-                            [ ( Nothing, [ "pipeline-1", "pipeline-2", "pipeline-3" ] ) ]
-            , test "does not split a team with no shared prefix" <|
-                \_ ->
-                    [ "jetbridge", "loupe", "k8s-e2e" ]
-                        |> sectionNames
-                        |> Expect.equal
-                            [ ( Nothing, [ "jetbridge", "loupe", "k8s-e2e" ] ) ]
-            , test "shows only named sections when every card is in one" <|
-                \_ ->
-                    [ "live-hangar-a", "landing-land", "live-hangar-b", "landing-compose" ]
-                        |> sectionNames
-                        |> Expect.equal
-                            [ ( Just "live", [ "live-hangar-a", "live-hangar-b" ] )
-                            , ( Just "landing", [ "landing-land", "landing-compose" ] )
-                            ]
-            , test "places each section where its first card is in the team's ordering" <|
-                \_ ->
-                    [ "b-1", "solo", "a-1", "b-2", "a-2" ]
-                        |> sectionNames
-                        |> List.map Tuple.first
-                        |> Expect.equal [ Nothing, Just "b", Just "a" ]
+                            [ ( Nothing, [ "jetbridge", "landing-compose", "loupe", "landing-land" ] ) ]
             , test "puts a pipeline that sets display.section in that section, alone if need be" <|
                 \_ ->
                     [ ( "jetbridge", Just "core" ), ( "loupe", Nothing ), ( "piano", Nothing ) ]
-                        |> explicitSectionNames
+                        |> sectionNames
                         |> Expect.equal
                             [ ( Nothing, [ "loupe", "piano" ] )
                             , ( Just "core", [ "jetbridge" ] )
                             ]
-            , test "display.section overrides the name prefix" <|
+            , test "a pipeline without display.section stays with the team, whatever its name" <|
                 \_ ->
-                    [ ( "landing-compose", Just "release" ), ( "landing-land", Nothing ), ( "loupe", Nothing ) ]
-                        |> explicitSectionNames
+                    [ ( "landing-compose", Just "landing" ), ( "landing-land", Nothing ), ( "loupe", Nothing ) ]
+                        |> sectionNames
                         |> Expect.equal
                             [ ( Nothing, [ "landing-land", "loupe" ] )
-                            , ( Just "release", [ "landing-compose" ] )
+                            , ( Just "landing", [ "landing-compose" ] )
                             ]
-            , test "a prefix joins the section a pipeline sets by the same name" <|
+            , test "places each section where its first card is in the team's ordering" <|
                 \_ ->
-                    [ ( "jetbridge", Just "landing" ), ( "loupe", Nothing ), ( "landing-land", Nothing ) ]
-                        |> explicitSectionNames
+                    [ ( "b-1", Just "b" ), ( "solo", Nothing ), ( "a-1", Just "a" ), ( "b-2", Just "b" ), ( "a-2", Just "a" ) ]
+                        |> sectionNames
                         |> Expect.equal
-                            [ ( Nothing, [ "loupe" ] )
-                            , ( Just "landing", [ "jetbridge", "landing-land" ] )
+                            [ ( Nothing, [ "solo" ] )
+                            , ( Just "b", [ "b-1", "b-2" ] )
+                            , ( Just "a", [ "a-1", "a-2" ] )
                             ]
             , test "shows a section every card sets explicitly" <|
                 \_ ->
                     [ ( "jetbridge", Just "core" ), ( "loupe", Just "core" ) ]
-                        |> explicitSectionNames
+                        |> sectionNames
                         |> Expect.equal [ ( Just "core", [ "jetbridge", "loupe" ] ) ]
             , test "an instance group is in the section one of its instances sets" <|
                 \_ ->
@@ -113,14 +74,74 @@ all =
                         |> Sections.sectionsWithinTeam
                         |> List.map .name
                         |> Expect.equal [ Nothing, Just "live" ]
-            , test "counts an instance group as one card" <|
+            , test "an instance group takes the first section any of its instances sets" <|
                 \_ ->
-                    [ InstanceGroupCard (pipelineNamed 1 "live-hangar") [ pipelineNamed 2 "live-hangar" ]
-                    , PipelineCard (pipelineNamed 3 "jetbridge")
+                    [ InstanceGroupCard (pipelineNamed 1 "hangar")
+                        [ pipelineNamed 2 "hangar" |> Data.withDashboardSection "live"
+                        , pipelineNamed 3 "hangar" |> Data.withDashboardSection "other"
+                        ]
                     ]
                         |> Sections.sectionsWithinTeam
                         |> List.map .name
+                        |> Expect.equal [ Just "live" ]
+            , test "a team with no pipelines is one unnamed section" <|
+                \_ ->
+                    []
+                        |> Sections.sectionsWithinTeam
+                        |> List.map .name
                         |> Expect.equal [ Nothing ]
+            ]
+        , describe "statusSummary"
+            [ test "counts failed, errored and aborted pipelines as failing" <|
+                \_ ->
+                    [ PipelineStatusSucceeded since
+                    , PipelineStatusAborted since
+                    , PipelineStatusErrored since
+                    , PipelineStatusFailed since
+                    ]
+                        |> Sections.statusSummary
+                        |> Expect.equal
+                            { pipelineCount = 4
+                            , failing = 3
+                            , mostImportant = Just (PipelineStatusFailed since)
+                            }
+            , test "a failing pipeline that is running again still counts as failing" <|
+                \_ ->
+                    [ PipelineStatusErrored PipelineStatus.Running ]
+                        |> Sections.statusSummary
+                        |> .failing
+                        |> Expect.equal 1
+            , test "paused, pending, running and succeeded pipelines are not failing" <|
+                \_ ->
+                    [ PipelineStatusPaused
+                    , PipelineStatusPending False
+                    , PipelineStatusPending True
+                    , PipelineStatusSucceeded PipelineStatus.Running
+                    ]
+                        |> Sections.statusSummary
+                        |> Expect.equal
+                            { pipelineCount = 4
+                            , failing = 0
+                            , mostImportant = Just (PipelineStatusSucceeded PipelineStatus.Running)
+                            }
+            , test "ranks errored above aborted" <|
+                \_ ->
+                    [ PipelineStatusAborted since, PipelineStatusErrored since ]
+                        |> Sections.statusSummary
+                        |> .mostImportant
+                        |> Expect.equal (Just (PipelineStatusErrored since))
+            , test "ranks pending above paused" <|
+                \_ ->
+                    [ PipelineStatusPaused, PipelineStatusPending False ]
+                        |> Sections.statusSummary
+                        |> .mostImportant
+                        |> Expect.equal (Just (PipelineStatusPending False))
+            , test "an empty section has no status" <|
+                \_ ->
+                    []
+                        |> Sections.statusSummary
+                        |> .mostImportant
+                        |> Expect.equal Nothing
             ]
         , describe "display.section"
             [ test "is decoded from a pipeline's display config" <|
@@ -159,17 +180,44 @@ all =
                             , Query.index 1 >> Query.has [ pipelineCard "jetbridge" ]
                             ]
             ]
-        , describe "namePrefix"
-            [ test "stops at the first dash or underscore" <|
+        , describe "a team that sets no display.section"
+            [ test "renders as one team group, whatever its pipeline names" <|
                 \_ ->
-                    [ "live-hangar-a", "ci_build-x", "landing" ]
-                        |> List.map Sections.namePrefix
-                        |> Expect.equal [ Just "live", Just "ci", Nothing ]
-            , test "needs a name on both sides of the separator" <|
+                    unsectionedDashboardAt "/"
+                        |> Common.queryView
+                        |> Query.findAll [ class "dashboard-team-group" ]
+                        |> Expect.all
+                            [ Query.count (Expect.equal 1)
+                            , Query.index 0 >> Query.find [ class "dashboard-team-name" ] >> Query.has [ text "team" ]
+                            , Query.index 0 >> Query.has [ pipelineCard "landing-compose" ]
+                            , Query.index 0 >> Query.has [ pipelineCard "landing-land" ]
+                            ]
+            , test "offers no collapse control" <|
                 \_ ->
-                    [ "-x", "x-", "_" ]
-                        |> List.map Sections.namePrefix
-                        |> Expect.equal [ Nothing, Nothing, Nothing ]
+                    unsectionedDashboardAt "/"
+                        |> Common.queryView
+                        |> Expect.all
+                            [ Query.hasNot [ class "dashboard-section-toggle" ]
+                            , Query.hasNot [ class "dashboard-section-title" ]
+                            , Query.hasNot [ id "dashboard-section-header-team" ]
+                            ]
+            , test "ignores a stored collapse of its own section" <|
+                \_ ->
+                    unsectionedDashboardAt "/"
+                        |> Application.handleDelivery
+                            (CollapsedDashboardSectionsReceived (Ok (Set.singleton "team")))
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.has [ pipelineCard "jetbridge" ]
+            , test "offers no collapse control in the high-density view" <|
+                \_ ->
+                    unsectionedDashboardAt "/hd"
+                        |> Common.queryView
+                        |> Expect.all
+                            [ Query.hasNot [ class "dashboard-section-toggle" ]
+                            , Query.hasNot [ class "dashboard-section-title" ]
+                            , Query.has [ class "card", containing [ text "landing-land" ] ]
+                            ]
             ]
         , describe "on the dashboard"
             [ test "loads the collapsed sections on page load" <|
@@ -300,19 +348,87 @@ all =
                             , Query.has [ class "card", containing [ text "jetbridge" ] ]
                             ]
             ]
+        , describe "a collapsed section's status"
+            [ test "says how many of its pipelines are failing" <|
+                \_ ->
+                    collapsedLanding "/" [ jobWithStatus 2 BuildStatusSucceeded, jobWithStatus 3 BuildStatusFailed ]
+                        |> landingHeader
+                        |> Query.has [ class "dashboard-section-failing", containing [ text "1 failing" ] ]
+            , test "shows the most important status in the dashboard's status colour" <|
+                \_ ->
+                    collapsedLanding "/" [ jobWithStatus 2 BuildStatusAborted, jobWithStatus 3 BuildStatusFailed ]
+                        |> landingHeader
+                        |> Query.find [ class "dashboard-section-status" ]
+                        |> Expect.all
+                            [ Query.has [ style "background-color" Colors.failure ]
+                            , Query.has [ attribute <| Attr.attribute "data-status" "failed" ]
+                            ]
+            , test "counts errored and aborted pipelines as failing" <|
+                \_ ->
+                    collapsedLanding "/" [ jobWithStatus 2 BuildStatusErrored, jobWithStatus 3 BuildStatusAborted ]
+                        |> landingHeader
+                        |> Query.has [ class "dashboard-section-failing", containing [ text "2 failing" ] ]
+            , test "says nothing is failing when nothing is" <|
+                \_ ->
+                    collapsedLanding "/" [ jobWithStatus 2 BuildStatusSucceeded, jobWithStatus 3 BuildStatusSucceeded ]
+                        |> landingHeader
+                        |> Expect.all
+                            [ Query.hasNot [ class "dashboard-section-failing" ]
+                            , Query.find [ class "dashboard-section-status" ]
+                                >> Query.has [ style "background-color" Colors.success ]
+                            ]
+            , test "does not count a paused pipeline as failing" <|
+                \_ ->
+                    Common.initCustom Common.initCustomOpts "/"
+                        |> Application.handleCallback
+                            (Callback.AllPipelinesFetched
+                                (Ok
+                                    [ Data.pipeline "team" 1 |> Data.withName "jetbridge"
+                                    , Data.pipeline "team" 2 |> Data.withName "landing-compose" |> Data.withDashboardSection "landing"
+                                    , Data.pipeline "team" 3 |> Data.withName "landing-land" |> Data.withDashboardSection "landing" |> Data.withPaused True
+                                    ]
+                                )
+                            )
+                        |> Tuple.first
+                        |> Application.handleCallback (Callback.AllJobsFetched (Ok [ jobWithStatus 3 BuildStatusFailed ]))
+                        |> Tuple.first
+                        |> Common.withAllPipelinesVisible
+                        |> Application.handleDelivery
+                            (CollapsedDashboardSectionsReceived (Ok (Set.singleton "team/landing")))
+                        |> Tuple.first
+                        |> landingHeader
+                        |> Query.hasNot [ class "dashboard-section-failing" ]
+            , test "is not shown while the section is expanded" <|
+                \_ ->
+                    dashboardAt "/"
+                        |> Application.handleCallback (Callback.AllJobsFetched (Ok [ jobWithStatus 3 BuildStatusFailed ]))
+                        |> Tuple.first
+                        |> landingHeader
+                        |> Expect.all
+                            [ Query.hasNot [ class "dashboard-section-failing" ]
+                            , Query.hasNot [ class "dashboard-section-status" ]
+                            ]
+            , test "is shown in the high-density view" <|
+                \_ ->
+                    collapsedLanding "/hd" [ jobWithStatus 2 BuildStatusSucceeded, jobWithStatus 3 BuildStatusErrored ]
+                        |> Common.queryView
+                        |> Query.find [ id "dashboard-section-header-team/landing" ]
+                        |> Expect.all
+                            [ Query.has [ class "dashboard-section-failing", containing [ text "1 failing" ] ]
+                            , Query.find [ class "dashboard-section-status" ]
+                                >> Query.has [ style "background-color" Colors.error ]
+                            ]
+            ]
         ]
 
 
-sectionNames : List String -> List ( Maybe String, List String )
-sectionNames names =
-    names
-        |> List.indexedMap (\i n -> PipelineCard (pipelineNamed i n))
-        |> Sections.sectionsWithinTeam
-        |> List.map (\s -> ( s.name, List.map cardName s.cards ))
+since : PipelineStatus.StatusDetails
+since =
+    PipelineStatus.Since (Time.millisToPosix 0)
 
 
-explicitSectionNames : List ( String, Maybe String ) -> List ( Maybe String, List String )
-explicitSectionNames named =
+sectionNames : List ( String, Maybe String ) -> List ( Maybe String, List String )
+sectionNames named =
     named
         |> List.indexedMap
             (\i ( n, section ) ->
@@ -330,9 +446,40 @@ pipelineNamed id name =
 pipelines : List Concourse.Pipeline
 pipelines =
     [ Data.pipeline "team" 1 |> Data.withName "jetbridge"
-    , Data.pipeline "team" 2 |> Data.withName "landing-compose"
-    , Data.pipeline "team" 3 |> Data.withName "landing-land"
+    , Data.pipeline "team" 2 |> Data.withName "landing-compose" |> Data.withDashboardSection "landing"
+    , Data.pipeline "team" 3 |> Data.withName "landing-land" |> Data.withDashboardSection "landing"
     ]
+
+
+{-| The same names as `pipelines`, two of them sharing a prefix, with no
+`display.section` anywhere.
+-}
+unsectionedPipelines : List Concourse.Pipeline
+unsectionedPipelines =
+    List.map (\p -> { p | dashboardSection = Nothing }) pipelines
+
+
+jobWithStatus : Int -> BuildStatus -> Concourse.Job
+jobWithStatus pipelineId status =
+    Data.job pipelineId
+        |> Data.withFinishedBuild (Just (Data.jobBuild status))
+        |> (\j -> { j | transitionBuild = Just (Data.jobBuild status) })
+
+
+collapsedLanding : String -> List Concourse.Job -> Application.Model
+collapsedLanding path jobs =
+    dashboardAt path
+        |> Application.handleCallback (Callback.AllJobsFetched (Ok jobs))
+        |> Tuple.first
+        |> Application.handleDelivery
+            (CollapsedDashboardSectionsReceived (Ok (Set.singleton "team/landing")))
+        |> Tuple.first
+
+
+landingHeader : Application.Model -> Query.Single ApplicationMsgs.TopLevelMessage
+landingHeader =
+    Common.queryView
+        >> Query.find [ id "dashboard-section-header-team/landing" ]
 
 
 dashboardAt : String -> Application.Model
@@ -342,8 +489,18 @@ dashboardAt =
 
 dashboardWith : { query : Maybe String, fragment : Maybe String } -> String -> Application.Model
 dashboardWith opts path =
+    dashboardOf pipelines opts path
+
+
+unsectionedDashboardAt : String -> Application.Model
+unsectionedDashboardAt =
+    dashboardOf unsectionedPipelines Common.initCustomOpts
+
+
+dashboardOf : List Concourse.Pipeline -> { query : Maybe String, fragment : Maybe String } -> String -> Application.Model
+dashboardOf ps opts path =
     Common.initCustom opts path
-        |> Application.handleCallback (Callback.AllPipelinesFetched (Ok pipelines))
+        |> Application.handleCallback (Callback.AllPipelinesFetched (Ok ps))
         |> Tuple.first
         |> Common.withAllPipelinesVisible
 

@@ -10,7 +10,9 @@ module Dashboard.Group exposing
 
 import Application.Models exposing (Session)
 import Assets
+import Colors
 import Concourse
+import Concourse.PipelineStatus as PipelineStatus
 import Dashboard.Grid as Grid
 import Dashboard.Grid.Constants as GridConstants
 import Dashboard.Group.Models exposing (Card(..), Pipeline, cardIdentifier, cardTeamName)
@@ -18,6 +20,7 @@ import Dashboard.Group.Tag as Tag
 import Dashboard.InstanceGroup as InstanceGroup
 import Dashboard.Models exposing (DragState(..), DropState(..))
 import Dashboard.Pipeline as Pipeline
+import Dashboard.Sections exposing (StatusSummary)
 import Dashboard.Styles as Styles
 import Dict exposing (Dict)
 import HoverState
@@ -54,12 +57,13 @@ type alias Section card =
 
 
 {-| A section that can be collapsed: `key` names it in the stored set of
-collapsed sections, `pipelineCount` is shown in its header while collapsed.
+collapsed sections, `summary` is shown in its header while collapsed so that
+a failing pipeline it hides is not hidden from view.
 -}
 type alias Collapse =
     { key : String
     , collapsed : Bool
-    , pipelineCount : Int
+    , summary : StatusSummary
     }
 
 
@@ -91,27 +95,33 @@ collapseToggle collapse =
             []
 
 
-collapsedCount : Maybe Collapse -> List (Html Message)
-collapsedCount collapse =
+{-| While collapsed: a status indicator in the colour of the most important
+status among the hidden pipelines, how many pipelines there are, and how
+many of them are failing when any are.
+-}
+collapsedSummary : Maybe Collapse -> List (Html Message)
+collapsedSummary collapse =
     case collapse of
-        Just { collapsed, pipelineCount } ->
+        Just { collapsed, summary } ->
             if collapsed then
-                [ Html.div
-                    [ class "dashboard-section-count"
-                    , style "margin-left" "10px"
-                    , style "opacity" "0.6"
-                    , style "font-weight" Views.Styles.fontWeightDefault
-                    ]
-                    [ Html.text <|
-                        String.fromInt pipelineCount
-                            ++ (if pipelineCount == 1 then
-                                    " pipeline"
+                statusIndicator summary.mostImportant
+                    ++ [ Html.div
+                            [ class "dashboard-section-count"
+                            , style "margin-left" "10px"
+                            , style "opacity" "0.6"
+                            , style "font-weight" Views.Styles.fontWeightDefault
+                            ]
+                            [ Html.text <|
+                                String.fromInt summary.pipelineCount
+                                    ++ (if summary.pipelineCount == 1 then
+                                            " pipeline"
 
-                                else
-                                    " pipelines"
-                               )
-                    ]
-                ]
+                                        else
+                                            " pipelines"
+                                       )
+                            ]
+                       ]
+                    ++ failingCount summary
 
             else
                 []
@@ -120,9 +130,53 @@ collapsedCount collapse =
             []
 
 
+statusIndicator : Maybe PipelineStatus.PipelineStatus -> List (Html Message)
+statusIndicator mostImportant =
+    case mostImportant of
+        Just status ->
+            [ Html.div
+                [ class "dashboard-section-status"
+                , attribute "data-status" <| PipelineStatus.show status
+                , attribute "title" <| PipelineStatus.show status
+                , style "background-color" <| Colors.statusColor True status
+                , style "width" "10px"
+                , style "height" "10px"
+                , style "margin-left" "10px"
+                , style "flex-shrink" "0"
+                ]
+                []
+            ]
+
+        Nothing ->
+            []
+
+
+failingCount : StatusSummary -> List (Html Message)
+failingCount { failing, mostImportant } =
+    if failing > 0 then
+        [ Html.div
+            ([ class "dashboard-section-failing"
+             , style "margin-left" "10px"
+             , style "font-weight" Views.Styles.fontWeightDefault
+             ]
+                ++ (case mostImportant of
+                        Just status ->
+                            [ style "color" <| Colors.statusColor True status ]
+
+                        Nothing ->
+                            []
+                   )
+            )
+            [ Html.text <| String.fromInt failing ++ " failing" ]
+        ]
+
+    else
+        []
+
+
 {-| The section's name, with the collapse toggle before it and, while
-collapsed, how many pipelines it holds after it. Without a `Collapse` it is
-just the name.
+collapsed, a summary of the pipelines it hides after it. Without a
+`Collapse` it is just the name.
 -}
 sectionTitle : List (Html.Attribute Message) -> Maybe Collapse -> Html Message -> Html Message
 sectionTitle attrs collapse name =
@@ -135,7 +189,7 @@ sectionTitle attrs collapse name =
                  ]
                     ++ attrs
                 )
-                (collapseToggle collapse ++ name :: collapsedCount collapse)
+                (collapseToggle collapse ++ name :: collapsedSummary collapse)
 
         Nothing ->
             name

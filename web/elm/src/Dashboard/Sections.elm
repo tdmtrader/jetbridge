@@ -1,25 +1,22 @@
 module Dashboard.Sections exposing
-    ( TeamSection
+    ( StatusSummary
+    , TeamSection
     , collapseKey
-    , namePrefix
     , sectionsWithinTeam
+    , statusSummary
     , toggle
     )
 
 {-| A team's dashboard cards split into sections.
 
 A pipeline whose config sets `display.section` is in that section, alone if
-need be. Any other card belongs to the section named by the prefix of its
-pipeline name, up to the first `-` or `_` (`landing-compose` and
-`landing-land` are in section `landing`); a pipeline whose whole name is
-that prefix belongs to it too. A prefix forms a section only when at least
-two cards would be in it, counting the cards that set it explicitly; every
-other card stays with the team, in the team's own, unnamed section. An
-instance group is in the first section any of its instances sets.
+need be; every other card stays with the team, in the team's own, unnamed
+section. Sections come only from `display.section`: a pipeline's name never
+places it, so renaming a pipeline does not move it. An instance group is in
+the first section any of its instances sets.
 
-Splitting a team by prefix only happens when it separates something: a team
-whose cards would all land in one prefix section, with nothing left over
-and nothing set explicitly, is shown unsectioned.
+A team none of whose pipelines sets `display.section` is one unnamed section,
+shown exactly as a team was before there were sections.
 
 The sections keep the team's pipeline ordering (`fly order-pipelines`): the
 team's own cards come first, then each named section in the position of its
@@ -28,8 +25,8 @@ first card, and cards keep their order inside a section.
 -}
 
 import Concourse
-import Dashboard.Group.Models exposing (Card(..), cardName)
-import Dict
+import Concourse.PipelineStatus exposing (PipelineStatus(..))
+import Dashboard.Group.Models exposing (Card(..))
 import List.Extra
 import Set exposing (Set)
 
@@ -43,63 +40,25 @@ type alias TeamSection =
 sectionsWithinTeam : List Card -> List TeamSection
 sectionsWithinTeam cards =
     let
-        prefixOf card =
-            namePrefix (cardName card)
-                |> Maybe.withDefault (cardName card)
-
-        counts =
-            List.foldl
-                (\card ->
-                    Dict.update
-                        (explicitSection card |> Maybe.withDefault (prefixOf card))
-                        (Maybe.withDefault 0 >> (+) 1 >> Just)
-                )
-                Dict.empty
-                cards
-
-        sectionOf card =
-            case explicitSection card of
-                Just name ->
-                    Just name
-
-                Nothing ->
-                    if (Dict.get (prefixOf card) counts |> Maybe.withDefault 0) >= 2 then
-                        Just (prefixOf card)
-
-                    else
-                        Nothing
-
-        anyExplicit =
-            List.any (explicitSection >> (/=) Nothing) cards
-
         ( loose, named ) =
-            List.partition (sectionOf >> (==) Nothing) cards
+            List.partition (explicitSection >> (==) Nothing) cards
 
         namedSections =
             named
-                |> List.Extra.gatherEqualsBy sectionOf
+                |> List.Extra.gatherEqualsBy explicitSection
                 |> List.map
                     (\( first, rest ) ->
-                        { name = sectionOf first, cards = first :: rest }
+                        { name = explicitSection first, cards = first :: rest }
                     )
     in
-    case ( loose, namedSections ) of
-        ( [], [ _ ] ) ->
-            if anyExplicit then
-                namedSections
+    if List.isEmpty named then
+        [ { name = Nothing, cards = cards } ]
 
-            else
-                [ { name = Nothing, cards = cards } ]
+    else if List.isEmpty loose then
+        namedSections
 
-        ( _, [] ) ->
-            [ { name = Nothing, cards = cards } ]
-
-        _ ->
-            if List.isEmpty loose then
-                namedSections
-
-            else
-                { name = Nothing, cards = loose } :: namedSections
+    else
+        { name = Nothing, cards = loose } :: namedSections
 
 
 explicitSection : Card -> Maybe String
@@ -115,27 +74,75 @@ explicitSection card =
             List.filterMap .dashboardSection (p :: ps) |> List.head
 
 
-{-| The part of a pipeline name before its first `-` or `_`, when there is a
-non-empty part on both sides of it.
+{-| What a collapsed section's header says about the pipelines it hides:
+how many there are, how many are failing, and the status that matters most
+among them, which colours the header's status indicator.
 -}
-namePrefix : String -> Maybe String
-namePrefix name =
-    let
-        separatorAt =
-            [ "-", "_" ]
-                |> List.filterMap (\sep -> String.indexes sep name |> List.head)
-                |> List.minimum
-    in
-    case separatorAt of
-        Just idx ->
-            if idx > 0 && idx < String.length name - 1 then
-                Just (String.left idx name)
+type alias StatusSummary =
+    { pipelineCount : Int
+    , failing : Int
+    , mostImportant : Maybe PipelineStatus
+    }
 
-            else
-                Nothing
 
-        Nothing ->
-            Nothing
+{-| Summarises the statuses of a section's pipelines, each worked out the way
+its card works it out (`Dashboard.Pipeline.pipelineStatus`).
+-}
+statusSummary : List PipelineStatus -> StatusSummary
+statusSummary statuses =
+    { pipelineCount = List.length statuses
+    , failing = List.Extra.count isFailing statuses
+    , mostImportant = List.Extra.minimumBy importance statuses
+    }
+
+
+{-| A pipeline is failing while its most important job last finished failed,
+errored or aborted, even if a new build is running. A paused pipeline is not
+failing: its status is paused whatever its jobs last did.
+-}
+isFailing : PipelineStatus -> Bool
+isFailing status =
+    case status of
+        PipelineStatusFailed _ ->
+            True
+
+        PipelineStatusErrored _ ->
+            True
+
+        PipelineStatusAborted _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| Lower is more important. The failing statuses rank as a card's jobs do
+(`Concourse.BuildStatus.ordering`); a pipeline that has run ranks above one
+that has not, and both above one that is paused or archived.
+-}
+importance : PipelineStatus -> Int
+importance status =
+    case status of
+        PipelineStatusFailed _ ->
+            0
+
+        PipelineStatusErrored _ ->
+            1
+
+        PipelineStatusAborted _ ->
+            2
+
+        PipelineStatusSucceeded _ ->
+            3
+
+        PipelineStatusPending _ ->
+            4
+
+        PipelineStatusPaused ->
+            5
+
+        PipelineStatusArchived ->
+            6
 
 
 {-| Identifies a section across page loads. Team names cannot contain `/`, so

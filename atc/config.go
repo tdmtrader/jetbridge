@@ -256,8 +256,8 @@ type ResourceType struct {
 type DisplayConfig struct {
 	BackgroundImage  string `json:"background_image,omitempty"`
 	BackgroundFilter string `json:"background_filter,omitempty"`
-	// Section names the dashboard section the pipeline's card is shown in,
-	// overriding the section its name's prefix would give it.
+	// Section names the dashboard section the pipeline's card is shown in.
+	// Without it the card is in its team's own section.
 	Section string `json:"section,omitempty"`
 }
 

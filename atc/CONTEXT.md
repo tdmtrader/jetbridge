@@ -85,10 +85,12 @@ under the new config.
 
 **Dashboard section**:
 A collapsible block of a team's cards on the dashboard. A pipeline is in the
-section its config's `display.section` names; failing that, in the one its
-name's prefix (before the first `-` or `_`) names when another card shares
-it; otherwise in the team's own section. Which sections are collapsed is kept
-per browser.
+section its config's `display.section` names, otherwise in the team's own
+section; a pipeline's name never places it. A team none of whose pipelines
+names a section has no sections and nothing to collapse. A collapsed section's
+header shows how many pipelines it hides, how many of them are failing
+(failed, errored or aborted), and the most important of their statuses. Which
+sections are collapsed is kept per browser.
 _Avoid_: group (a pipeline's job groups and instance groups are other things)
 
 **One-off build**:

@@ -39,6 +39,7 @@ import Dashboard.Models as Models
         , FetchError(..)
         , Model
         )
+import Dashboard.Pipeline as Pipeline
 import Dashboard.RequestBuffer as RequestBuffer exposing (Buffer(..))
 import Dashboard.SearchBar as SearchBar
 import Dashboard.Sections as Sections
@@ -1334,12 +1335,32 @@ regularCardsView session params =
         searching =
             not (String.isEmpty params.query)
 
+        jobs =
+            params.jobs
+                |> FetchResult.withDefault Dict.empty
+
+        statusOf pipeline =
+            params.pipelineJobs
+                |> Dict.get pipeline.id
+                |> Maybe.withDefault []
+                |> List.filterMap (\j -> Dict.get ( pipeline.id, j ) jobs)
+                |> (\existingJobs -> Pipeline.pipelineStatus existingJobs pipeline)
+
         teamCards =
             filteredPipelinesByTeam
                 |> List.concatMap
                     (\( team, teamPipelines ) ->
-                        groupCardsWithinTeam teamPipelines
-                            |> Sections.sectionsWithinTeam
+                        let
+                            sections =
+                                groupCardsWithinTeam teamPipelines
+                                    |> Sections.sectionsWithinTeam
+
+                            -- a team without a named section shows as it did
+                            -- before there were sections: nothing to collapse
+                            sectioned =
+                                List.any (.name >> (/=) Nothing) sections
+                        in
+                        sections
                             |> List.map
                                 (\{ name, cards } ->
                                     let
@@ -1358,14 +1379,17 @@ regularCardsView session params =
                                     , collapse =
                                         -- a search shows every match, so it
                                         -- neither honours nor offers collapsing
-                                        if searching then
+                                        if searching || not sectioned then
                                             Nothing
 
                                         else
                                             Just
                                                 { key = key
                                                 , collapsed = Set.member key params.collapsedSections
-                                                , pipelineCount = List.length (ungroupCards cards)
+                                                , summary =
+                                                    ungroupCards cards
+                                                        |> List.map statusOf
+                                                        |> Sections.statusSummary
                                                 }
                                     }
                                 )
