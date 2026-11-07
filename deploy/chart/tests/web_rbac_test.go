@@ -35,13 +35,71 @@ func TestWebClusterRoleNodeVerbsFollowExecutionControl(t *testing.T) {
 			if !equalStrings(got, tc.verbs) {
 				t.Errorf("web ClusterRole nodes verbs = %v, want %v", got, tc.verbs)
 			}
-			// Secrets stay get-only in every mode: list would enumerate every
-			// credential in the cluster.
-			if grants(role, "", "secrets", "list") || !grants(role, "", "secrets", "get") {
-				t.Errorf("web ClusterRole secrets rule changed: %+v", role.Rules)
+			// With the credential manager off, nothing in web reads a Secret.
+			if grants(role, "", "secrets", "get") || grants(role, "", "secrets", "list") {
+				t.Errorf("web ClusterRole grants secrets with the credential manager off: %+v", role.Rules)
 			}
 		})
 	}
+}
+
+// The Kubernetes credential manager is web's only reader of Secrets. It reads
+// <namespacePrefix><team>, one namespace per team, so its grant is
+// cluster-wide; it is get-only, since list would enumerate every credential in
+// the cluster. A deployment that predates kubernetes.credentialManager turns
+// the manager on through web.env, and keeps the grant: dropping it would turn
+// every ((var)) its pipelines resolve into a 403.
+func TestWebClusterRoleReadsSecretsOnlyForTheCredentialManager(t *testing.T) {
+	cases := []struct {
+		name  string
+		sets  []string
+		reads bool
+	}{
+		{"default", nil, false},
+		{"credential manager", []string{"kubernetes.credentialManager.enabled=true"}, true},
+		{"in-cluster through web.env", []string{"web.env[0].name=CONCOURSE_KUBERNETES_IN_CLUSTER", "web.env[0].value=true"}, true},
+		{"kubeconfig through web.env", []string{"web.env[0].name=CONCOURSE_KUBERNETES_CONFIG_PATH", "web.env[0].value=/etc/kube/config"}, true},
+		{"unrelated web.env", []string{"web.env[0].name=CONCOURSE_LOG_DB_QUERIES", "web.env[0].value=true"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			role := webClusterRole(t, render(t, tc.sets...))
+			if got := grants(role, "", "secrets", "get"); got != tc.reads {
+				t.Errorf("web ClusterRole secrets get = %v, want %v: %+v", got, tc.reads, role.Rules)
+			}
+			if grants(role, "", "secrets", "list") || grants(role, "", "secrets", "watch") {
+				t.Errorf("web ClusterRole can enumerate secrets: %+v", role.Rules)
+			}
+		})
+	}
+}
+
+// Web calls neither the Deployments nor the DaemonSets API: the worker
+// registrar lists pods, and the self-upgrade pipeline's kubectl rollout runs
+// as its own step pod grant's ServiceAccount.
+func TestWebPodManagerRoleGrantsNoWorkloadWrites(t *testing.T) {
+	for _, chunk := range splitDocuments(render(t)) {
+		var head renderedObject
+		if err := yaml.Unmarshal([]byte(chunk), &head); err != nil || head.Kind != "Role" || head.Metadata.Name != "jb-concourse-jetbridge-pod-manager" {
+			continue
+		}
+		role := &rbacv1.Role{}
+		if err := yaml.UnmarshalStrict([]byte(chunk), role); err != nil {
+			t.Fatalf("pod-manager Role does not decode: %v", err)
+		}
+		for _, rule := range role.Rules {
+			if contains(rule.APIGroups, "apps") {
+				t.Errorf("pod-manager Role grants apps resources: %+v", rule)
+			}
+		}
+		if !slices.ContainsFunc(role.Rules, func(rule rbacv1.PolicyRule) bool {
+			return contains(rule.Resources, "pods") && contains(rule.Verbs, "create")
+		}) {
+			t.Errorf("pod-manager Role no longer creates pods: %+v", role.Rules)
+		}
+		return
+	}
+	t.Fatal("render lacks the pod-manager Role")
 }
 
 func webClusterRole(t *testing.T, rendered string) *rbacv1.ClusterRole {
