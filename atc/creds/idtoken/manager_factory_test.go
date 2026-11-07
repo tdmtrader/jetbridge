@@ -1,6 +1,7 @@
 package idtoken_test
 
 import (
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/creds/idtoken"
 	"github.com/concourse/concourse/atc/db"
 	. "github.com/onsi/ginkgo/v2"
@@ -14,7 +15,7 @@ var _ = Describe("ManagerFactory", func() {
 
 	BeforeEach(func() {
 		factory = idtoken.NewManagerFactory().(*idtoken.ManagerFactory)
-		signingKeyFactory = db.NewSigningKeyFactory(dbConn)
+		signingKeyFactory = db.NewSigningKeyFactory(lagertest.NewTestLogger("idtoken"), dbConn)
 		factory.SetSigningKeyFactory(signingKeyFactory)
 
 		config = map[string]interface{}{

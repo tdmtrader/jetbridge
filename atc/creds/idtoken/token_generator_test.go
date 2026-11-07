@@ -3,6 +3,8 @@ package idtoken_test
 import (
 	"time"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
+
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/idtoken"
@@ -38,7 +40,7 @@ var _ = Describe("IDToken TokenGenerator", func() {
 
 		// The real factory reads the keys just saved; GetNewestKey picks per type
 		// from the rows rather than from a switch statement in the test.
-		signingKeyFactory = db.NewSigningKeyFactory(dbConn)
+		signingKeyFactory = db.NewSigningKeyFactory(lagertest.NewTestLogger("idtoken"), dbConn)
 
 		tokenGenerator = &idtoken.TokenGenerator{
 			Issuer:            testIssuer,

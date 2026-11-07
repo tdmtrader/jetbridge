@@ -1,6 +1,10 @@
 package db
 
-import "time"
+import (
+	"time"
+
+	"code.cloudfoundry.org/lager/v3"
+)
 
 // SetEventPageTimeout replaces the bound on one event page and returns a func
 // that restores the previous bound.
@@ -37,4 +41,11 @@ func DecodedLogEventHits() int {
 	decodedLogEvents.mu.Lock()
 	defer decodedLogEvents.mu.Unlock()
 	return decodedLogEvents.hits
+}
+
+// NewSigningKeyFactoryEncryptingWrites is the signing key factory as it
+// behaves once migration.SigningKeysEncryptedAtRest is on, so the encrypted
+// write path is proven before the release that turns it on.
+func NewSigningKeyFactoryEncryptingWrites(logger lager.Logger, conn DbConn) SigningKeyFactory {
+	return &signingKeyFactory{logger: logger.Session("signing-key-factory"), conn: conn, encryptOnWrite: true}
 }

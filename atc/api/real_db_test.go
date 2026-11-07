@@ -94,7 +94,7 @@ func useRealDB() *realDB {
 		landingQueueFactory:   db.NewLandingQueueFactory(conn),
 
 		wall:              db.NewWall(conn, &dbClock),
-		signingKeyFactory: db.NewSigningKeyFactory(conn),
+		signingKeyFactory: db.NewSigningKeyFactory(logger, conn),
 	}
 
 	return &realDB{Conn: conn, LockFactory: lockFactory, Deps: deps, Main: main}

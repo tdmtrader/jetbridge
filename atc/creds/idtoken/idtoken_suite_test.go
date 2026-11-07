@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3/lagertest"
+
 	"github.com/concourse/concourse/atc/creds/idtoken"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/postgresrunner"
@@ -56,7 +58,7 @@ var _ = BeforeEach(func() {
 	DeferCleanup(func() {
 		Expect(dbConn.Close()).To(Succeed())
 	})
-	signingKeyFactory = db.NewSigningKeyFactory(dbConn)
+	signingKeyFactory = db.NewSigningKeyFactory(lagertest.NewTestLogger("idtoken"), dbConn)
 })
 
 // saveSigningKey stores a real signing key and then backdates it.

@@ -50,7 +50,7 @@ func (cmd *RunCommand) backendComponents(
 	dbJobFactory := db.NewJobFactory(dbConn, lockFactory)
 	dbPipelineLifecycle := db.NewPipelineLifecycle(dbConn, lockFactory)
 	dbPipelinePauser := db.NewPipelinePauser(dbConn, lockFactory)
-	dbSigningKeyFactory := db.NewSigningKeyFactory(dbConn)
+	dbSigningKeyFactory := db.NewSigningKeyFactory(logger, dbConn)
 
 	dbWorkerFactory := db.NewWorkerFactory(dbConn, workerCache)
 

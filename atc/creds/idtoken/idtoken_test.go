@@ -1,6 +1,7 @@
 package idtoken_test
 
 import (
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/creds"
 	"github.com/concourse/concourse/atc/creds/idtoken"
@@ -25,7 +26,7 @@ var _ = Describe("IDToken Secret", func() {
 
 		tokenGenerator = idtoken.TokenGenerator{
 			Issuer:            testIssuer,
-			SigningKeyFactory: db.NewSigningKeyFactory(dbConn),
+			SigningKeyFactory: db.NewSigningKeyFactory(lagertest.NewTestLogger("idtoken"), dbConn),
 			ExpiresIn:         tokenExpiresIn,
 		}
 		secrets = &idtoken.IDToken{
