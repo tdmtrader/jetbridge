@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -109,6 +110,7 @@ type Pipeline interface {
 	Archive() error
 
 	Destroy() error
+	DestroyWithRunHistory() (int, error)
 
 	Variables(lager.Logger, creds.Secrets, creds.VarSourcePool, creds.SecretLookupParams) (vars.Variables, error)
 
@@ -792,13 +794,36 @@ func (p *pipeline) setPublic(public bool) error {
 }
 
 func (p *pipeline) Destroy() error {
+	_, err := p.destroy(false)
+	return err
+}
+
+// DestroyWithRunHistory destroys the pipeline as Destroy does, except that a
+// template with durable Run history is destroyed together with every one of
+// its Runs: their builds and logs, payloads, task caches, input uploads and
+// all their Run evidence, releasing the Runs' Hangar claims. It refuses while
+// any Run of the template is active (ErrPipelineTemplateHasActiveRun) and
+// reports how many Runs it purged; a pipeline with no Runs purges none.
+func (p *pipeline) DestroyWithRunHistory() (int, error) {
+	return p.destroy(true)
+}
+
+func (p *pipeline) destroy(purgeRunHistory bool) (int, error) {
 	tx, err := p.conn.Begin()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer Rollback(tx)
+	if purgeRunHistory {
+		// The team comes first, as on every Run path (team FOR SHARE, then
+		// the template, then its Runs). The team stays; SHARE keeps it from
+		// being purged under us without excluding the team's other Runs.
+		if err = tx.QueryRow(`SELECT id FROM teams WHERE id = $1 FOR SHARE`, p.teamID).Scan(new(int)); err != nil {
+			return 0, err
+		}
+	}
 	if err = rejectPipelineRunPayloadMutation(tx, p.id, p.pipelineRunID); err != nil {
-		return err
+		return 0, err
 	}
 	var template, hasRuns bool
 	err = tx.QueryRow(`
@@ -806,21 +831,27 @@ func (p *pipeline) Destroy() error {
 		FROM pipelines WHERE id = $1 FOR UPDATE
 	`, p.id).Scan(&template, &hasRuns)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	purged := 0
 	if template && hasRuns {
-		return ErrPipelineTemplateHasRunHistory
+		if !purgeRunHistory {
+			return 0, ErrPipelineTemplateHasRunHistory
+		}
+		if purged, err = purgeTemplateRuns(context.Background(), tx, p.id, p.teamID); err != nil {
+			return 0, err
+		}
 	}
 	if _, err = psql.Delete("pipelines").Where(sq.Eq{"id": p.id}).RunWith(tx).Exec(); err != nil {
-		return err
+		return 0, err
 	}
 	if err = tx.Commit(); err != nil {
-		return err
+		return 0, err
 	}
 
 	p.conn.Bus().Notify(atc.ComponentCollectorPipelines)
 
-	return nil
+	return purged, nil
 }
 
 func (p *pipeline) DeleteBuildEventsByBuildIDs(buildIDs []int) error {

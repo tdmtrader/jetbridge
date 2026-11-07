@@ -246,6 +246,18 @@ Destroying an eligible completed run's payload while keeping its run header
 and build logs.
 _Avoid_: shell-destroy, log rehome
 
+**Run history purge**:
+The only deletion of a run's durable history, made by its owner: deleting a
+team purges the runs of all its templates, and destroying a template with
+`purge_run_history` (`fly destroy-pipeline --purge-run-history`) purges that
+template's runs. It deletes the run headers, their builds and logs, payloads,
+results and captured outputs, bound inputs and input uploads (releasing their
+Hangar claims), credential handoffs and cancellation records, in one
+transaction under the one purge marker the evidence triggers honour. A
+template's purge refuses while any of its runs is active. An ordinary destroy
+of a template with run history is refused.
+_Avoid_: team purge (for the marker, or for a template's purge), hard delete
+
 **Reclaimed run**:
 A run whose payload is gone. Only its header and detached builds remain.
 
