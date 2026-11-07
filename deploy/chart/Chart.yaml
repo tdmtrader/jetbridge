@@ -2,7 +2,7 @@ apiVersion: v2
 name: concourse-jetbridge
 description: Concourse CI with JetBridge Kubernetes-native runtime
 type: application
-version: 0.2.4
+version: 0.2.5
 appVersion: "0.4.4"
 home: https://concourse-ci.org
 sources:

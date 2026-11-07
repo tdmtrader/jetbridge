@@ -84,7 +84,9 @@ import (
 // kubernetes.baseResourceTypes gives --kubernetes-base-resource-type, which
 // other deployments set for custom registry-image and git types, a typed
 // value instead of a web.env entry, leaving 177.
-const maxValues = 177
+// 2026-11-07: kubernetes.stepRuntime, a mode selecting the step runtime (exec
+// pause pods or batch/v1 Jobs), leaving 178.
+const maxValues = 178
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside
