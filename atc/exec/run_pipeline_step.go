@@ -301,7 +301,10 @@ func (step *RunPipelineStep) cancelChildRun(
 		Reason:    "parent build aborted",
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "failed to cancel run #%d: %s\n", child.Number, err)
+		// The fault goes to the web log: a build log can be read by anyone a
+		// public pipeline admits, and a driver error is not theirs to see.
+		lagerctx.FromContext(ctx).Error("cancel-child-run", err, lager.Data{"run": child.RunID})
+		fmt.Fprintf(stderr, "failed to cancel run #%d\n", child.Number)
 	}
 
 	return ctx.Err()
