@@ -114,6 +114,13 @@ func stripIDs(plan atc.Plan) (atc.Plan, []string) {
 				plan.Get.VersionFrom = &planID
 			}
 		}
+
+		if plan.RunPipeline != nil {
+			for name, input := range plan.RunPipeline.Inputs {
+				input.From = "<stripped>"
+				plan.RunPipeline.Inputs[name] = input
+			}
+		}
 	})
 
 	return plan, ids

@@ -310,14 +310,20 @@ func (plan SetPipelinePlan) Public() *json.RawMessage {
 	})
 }
 
-// Public exposes the name and nothing else. The params are interpolated from
-// the build's credentials, so they may hold secrets and can never be shown to
-// an unauthenticated viewer of the build plan.
+// Public exposes the name, whether the step waits, and its input bindings,
+// but never the params. The params are interpolated from the build's
+// credentials, so they may hold secrets and can never be shown to an
+// unauthenticated viewer of the build plan. An input binding is a plan id and
+// a result name, both fixed by the pipeline config.
 func (plan RunPipelinePlan) Public() *json.RawMessage {
 	return enc(struct {
-		Name string `json:"name"`
+		Name   string                          `json:"name"`
+		Wait   bool                            `json:"wait,omitempty"`
+		Inputs map[string]RunPipelineInputPlan `json:"inputs,omitempty"`
 	}{
-		Name: plan.Name,
+		Name:   plan.Name,
+		Wait:   plan.Wait,
+		Inputs: plan.Inputs,
 	})
 }
 

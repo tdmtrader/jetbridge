@@ -49,11 +49,21 @@ func (s RunPipelinePlan) Evaluate() (atc.RunPipelinePlan, error) {
 	// cannot be reasoned about.
 	name := s.rawPlan.Name
 
-	err := evaluateWithReferenceExclusion(s.variablesResolver, s.rawPlan, &plan, excludeNonLocalReferences)
+	// Nor are the inputs, which are left out of the evaluation altogether so
+	// that a `((...))` in a result name is neither resolved nor looked up. A
+	// binding is a plan id the planner resolved and a result name the child
+	// template declares; both are fixed by the config, and a binding that
+	// moved with a var would change which Run's result the child reads.
+	inputs := s.rawPlan.Inputs
+	raw := s.rawPlan
+	raw.Inputs = nil
+
+	err := evaluateWithReferenceExclusion(s.variablesResolver, raw, &plan, excludeNonLocalReferences)
 	if err != nil {
 		return atc.RunPipelinePlan{}, err
 	}
 	plan.Name = name
+	plan.Inputs = inputs
 
 	return plan, nil
 }

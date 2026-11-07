@@ -872,13 +872,52 @@ var _ = Describe("BuildStepDelegate", func() {
 				}))
 			})
 
+			It("maps a run_pipeline input's From to its own iteration's call, and leaves an outside call alone", func() {
+				template := []byte(`{
+				"id": "do-id",
+				"do": [
+					{
+						"id": "compose-id",
+						"run_pipeline": {"name": "landing-compose", "wait": true}
+					},
+					{
+						"id": "land-id",
+						"run_pipeline": {
+							"name": "landing-land",
+							"wait": true,
+							"inputs": {
+								"composition": {"from": "compose-id", "result": "composition"},
+								"base": {"from": "external-id", "result": "base"}
+							}
+						}
+					}
+				]
+			}`)
+				substeps, err := delegate.ConstructAcrossSubsteps(template, []atc.AcrossVar{
+					{Var: "v1"},
+				}, [][]any{
+					{"a1"},
+					{"a2"},
+				})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(substeps).To(HaveLen(2))
+
+				for i, substep := range substeps {
+					land := (*substep.Step.Do)[1]
+					Expect(land.RunPipeline.Inputs).To(Equal(map[string]atc.RunPipelineInputPlan{
+						"composition": {From: atc.PlanID(fmt.Sprintf("some-plan-id/%d/1", i)), Result: "composition"},
+						"base":        {From: "external-id", Result: "base"},
+					}))
+				}
+			})
+
 			It("handles all PlanID fields in the atc.Plan", func() {
 				// handledFields are the fields of type PlanID that are properly
 				// handled in ConstructAcrossSubsteps (i.e. that get mapped to the
 				// appropriate plan ID within the substep). If a new PlanID field
 				// is added to atc.Plan or one of its subtypes, it must be properly
 				// handled and added to this list.
-				handledFields := []string{"ID", "Get.VersionFrom"}
+				handledFields := []string{"ID", "Get.VersionFrom", "RunPipeline.Inputs.value.From"}
 
 				var dereference func(reflect.Type) reflect.Type
 				dereference = func(rt reflect.Type) reflect.Type {
