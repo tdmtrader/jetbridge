@@ -18,33 +18,10 @@
 //
 // # What it does
 //
-// One thing: it admits a child run for one node of one build, idempotently.
-// The call identity is (build_id, plan_id) and nothing else -- no server round
-// trip, no identifier minted after the fact -- so the same node asking twice
-// re-attaches to the run it already got rather than admitting a second one.
-//
-// The mechanism is a unique constraint, not a lock. The build tracking lock
-// looks like it would do, and it is released while a draining web's waiting
-// goroutine is still alive, so two trackers can be live for one build at once.
-// A dedup that leans on the lock passes its test and fails in production. The
-// constraint holds under any schedule, and dropping it is what makes the race
-// spec go red.
-//
-// The call row, the iteration row and the child run commit in one transaction
-// or none of them do. That is why the port publishes an opener at all: this
-// package opens the transaction, claims its call row, admits inside it, and
-// writes the admitted run id onto the iteration row through the port's
-// before-commit hook.
-//
-// What it reports back is the run's id, its number, and whether this call
-// admitted it or found it. The number is the interesting one, because it is
-// the smallest fact that shows what the boundary costs and why it is still
-// worth it. It lives on pipeline_runs, a core table; on first admission it
-// arrives on the run the before-commit hook is handed, but a call that
-// re-attaches has only the run id it recorded, and a SELECT from here into
-// pipeline_runs to turn that into a number is exactly the reach the rule above
-// forbids. So core publishes a read -- runs.Admitter.LookupRun -- and this
-// package calls it inside the transaction it already holds. The alternative,
-// copying the number onto the iteration row, would put a value core owns into
-// a table this package owns, where it could only ever go stale.
+// It admits a child run for one node of one build: core's port replays on the
+// contract key derived from (build_id, plan_id), and this package records, in
+// the same transaction, which call the run belongs to and the sealed-input
+// digest it presented, refusing a replay whose digest moved. It also observes
+// a child run and requests its cancellation, as thin pass-throughs to the port,
+// which authorizes both and holds no transaction of this package's.
 package composition

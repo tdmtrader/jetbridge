@@ -20,6 +20,11 @@ type Request struct {
 	Params    atc.RunParams
 	Principal runs.Principal
 
+	// Inputs binds the child's declared run inputs to results of earlier
+	// runs. They go to the port as they are; its replay compares them with
+	// the inputs the run was first admitted with.
+	Inputs map[string]atc.RunInputSource
+
 	// InputDigest is the sealed inputs of the call, recorded on first
 	// admission and verified on every later one. Never part of the key.
 	InputDigest string
@@ -73,6 +78,7 @@ func (s *Service) Admit(ctx context.Context, req Request) (Result, error) {
 	run, replayed, err := s.admitter.AdmitVersionedRun(ctx, tx, runs.Admission{
 		Template:  req.Template,
 		Params:    req.Params,
+		Inputs:    req.Inputs,
 		Principal: req.Principal,
 
 		ContractKey: ContractKey(req.BuildID, req.PlanID),
@@ -95,6 +101,18 @@ func (s *Service) Admit(ctx context.Context, req Request) (Result, error) {
 	}
 
 	return Result{RunID: run.ID, Number: run.Number, Replayed: replayed}, nil
+}
+
+// Observe reads a child run's status through the port. It holds no
+// transaction of this package's: the port opens and finishes its own.
+func (s *Service) Observe(ctx context.Context, runID int, principal runs.Principal) (runs.RunStatus, error) {
+	return s.admitter.ObserveRun(ctx, runID, principal)
+}
+
+// Cancel asks the port to stop a child run. It is nil for a run already being
+// cancelled or already finished, as the port is.
+func (s *Service) Cancel(ctx context.Context, runID int, principal runs.Principal, reason string) error {
+	return s.admitter.CancelRun(ctx, runID, principal, reason)
 }
 
 // record writes the join to the Run the port decided on. A stale call row for

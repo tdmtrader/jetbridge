@@ -6,6 +6,7 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/agent/composition"
+	"github.com/concourse/concourse/atc/runs"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -225,6 +226,22 @@ var _ = Describe("admitting a child run", func() {
 			Expect(second.RunID).NotTo(Equal(first.RunID))
 			Expect(countOf("SELECT count(*) FROM pipeline_runs")).To(Equal(2))
 			Expect(iterationRunID(buildID, "9/9")).To(Equal(second.RunID))
+		})
+	})
+
+	// The inputs go to the port as they are. The template declares none, so
+	// the port refuses any; a service that dropped them would admit instead.
+	Describe("bound inputs", func() {
+		It("forwards them to the port, which refuses inputs the template does not declare", func() {
+			bound := req
+			bound.Inputs = map[string]atc.RunInputSource{"composition": {RunID: 1, Result: "composition"}}
+
+			_, err := service.Admit(ctx, bound)
+			Expect(err).To(BeIdenticalTo(atc.ErrInvalidRunInputs))
+			Expect(runs.IsRefusal(err)).To(BeTrue())
+
+			Expect(countOf("SELECT count(*) FROM pipeline_runs")).To(Equal(0))
+			Expect(countOf("SELECT count(*) FROM composition_calls")).To(Equal(0))
 		})
 	})
 
