@@ -46,7 +46,7 @@ type FlyCommand struct {
 
 	Pipelines                 PipelinesCommand               `command:"pipelines"                 alias:"ps"   description:"List the configured pipelines"`
 	PausedPipelines           PausedPipelinesCommand         `command:"paused-pipelines"          alias:"pps"  description:"List the configured paused pipelines"`
-	DestroyPipeline           DestroyPipelineCommand         `command:"destroy-pipeline"          alias:"dp"   description:"Destroy a pipeline"`
+	DestroyPipeline           DestroyPipelineCommand         `command:"destroy-pipeline"          alias:"dp"   description:"Destroy a pipeline (a template with Run history only with --purge-run-history)"`
 	GetPipeline               GetPipelineCommand             `command:"get-pipeline"              alias:"gp"   description:"Get a pipeline's current configuration"`
 	SetPipeline               SetPipelineCommand             `command:"set-pipeline"              alias:"sp"   description:"Create or update a pipeline's configuration"`
 	PausePipeline             PausePipelineCommand           `command:"pause-pipeline"            alias:"pp"   description:"Pause a pipeline"`
