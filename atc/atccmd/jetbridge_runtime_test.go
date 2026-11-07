@@ -173,6 +173,8 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		"--kubernetes-artifact-helper-image", "registry.example/helper:1",
 		"--kubernetes-step-runtime", "job",
 		"--kubernetes-launcher-image", "registry.example/jetbridge:1",
+		"--kubernetes-web-pod-name", "concourse-web-0",
+		"--kubernetes-web-pod-namespace", "ci-web",
 		"--kubernetes-step-envelope-url", "http://web.ci.svc:8080/runtime/v1/step-envelope",
 		"--kubernetes-artifact-daemon-port", "7790",
 		"--kubernetes-artifact-daemon-host-path", "/var/lib/jb-artifacts",

@@ -6,6 +6,7 @@
 package atccmd
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -119,6 +120,22 @@ func (cmd *RunCommand) assembleJetbridgeRuntime() (jetbridgeRuntime, error) {
 	clientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return jetbridgeRuntime{}, fmt.Errorf("creating k8s clientset: %w", err)
+	}
+	if cfg.StepRuntime == jetbridge.StepRuntimeJob && cfg.LauncherImage == "" {
+		// The launcher is copied out of the web's own image, so it is always
+		// the web's own build: a chart value naming a tag would lag the image
+		// the pipeline's self-upgrade sets on the running pod.
+		namespace := cmd.Kubernetes.WebPodNamespace
+		if namespace == "" {
+			namespace = cfg.Namespace
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		image, err := jetbridge.WebImage(ctx, clientset, namespace, cmd.Kubernetes.WebPodName)
+		if err != nil {
+			return jetbridgeRuntime{}, fmt.Errorf("--kubernetes-step-runtime=job: finding the launcher image from this web's pod: %w", err)
+		}
+		cfg.LauncherImage = image
 	}
 	return jetbridgeRuntime{config: cfg, clientset: clientset, restConfig: restConfig}, nil
 }

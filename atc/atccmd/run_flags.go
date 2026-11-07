@@ -146,7 +146,9 @@ type RunCommand struct {
 		CacheHostPath                      string        `long:"kubernetes-cache-host-path"        description:"Base directory on host node for persistent task caches. Caches are node-local and survive pod restarts."`
 		ArtifactHelperImage                string        `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers. Defaults to a digest-pinned alpine release."`
 		StepRuntime                        string        `long:"kubernetes-step-runtime" default:"exec" choice:"exec" choice:"job" description:"How a step's command reaches its pod. exec: a pause pod the web execs the command into (needs pods/exec). job: a suspended batch/v1 Job whose pod runs the command from its own spec under the jb-launcher; no exec. A Run-owned exact execution stays on exec in either mode for now."`
-		LauncherImage                      string        `long:"kubernetes-launcher-image" description:"Image the launcher init container copies jb-launcher from under --kubernetes-step-runtime=job: the jetbridge image itself. Required with job."`
+		LauncherImage                      string        `long:"kubernetes-launcher-image" description:"Image the launcher init container copies jb-launcher from under --kubernetes-step-runtime=job. Empty means the image this web's own pod runs, read from the pod named by --kubernetes-web-pod-name, so the launcher is always the web's own build."`
+		WebPodName                         string        `long:"kubernetes-web-pod-name"      description:"This web's own pod, so the job step runtime can read the image it runs and copy the launcher from the same build. The chart sets it from the downward API."`
+		WebPodNamespace                    string        `long:"kubernetes-web-pod-namespace" description:"The namespace of --kubernetes-web-pod-name. Empty means --kubernetes-namespace."`
 		StepEnvelopeURL                    string        `long:"kubernetes-step-envelope-url" description:"URL a step pod's launcher fetches its step envelope from under --kubernetes-step-runtime=job, presenting its pod-bound projected ServiceAccount token: the web's in-cluster Service, e.g. http://concourse-web.cicd.svc:8080/runtime/v1/step-envelope. Required with job."`
 		ArtifactDaemonPort                 int           `long:"kubernetes-artifact-daemon-port"      default:"7780" description:"HTTP port for the DaemonSet artifact server (hostPort)."`
 		ArtifactDaemonHostPath             string        `long:"kubernetes-artifact-daemon-host-path" description:"Host path for artifact storage on each node. When set, build pods require concourse.dev/artifact-cache=ready node label."`
@@ -525,8 +527,8 @@ func (cmd *RunCommand) validateK8sRuntime() error {
 		return err
 	}
 	if cmd.Kubernetes.StepRuntime == jetbridge.StepRuntimeJob {
-		if cmd.Kubernetes.LauncherImage == "" {
-			return errors.New("--kubernetes-launcher-image is required with --kubernetes-step-runtime=job: the launcher init container copies jb-launcher from it")
+		if cmd.Kubernetes.LauncherImage == "" && cmd.Kubernetes.WebPodName == "" {
+			return errors.New("--kubernetes-step-runtime=job needs the launcher image: set --kubernetes-launcher-image, or --kubernetes-web-pod-name so the web copies the launcher from its own image")
 		}
 		if cmd.Kubernetes.StepEnvelopeURL == "" {
 			return errors.New("--kubernetes-step-envelope-url is required with --kubernetes-step-runtime=job: a resource step's pod fetches its request there")

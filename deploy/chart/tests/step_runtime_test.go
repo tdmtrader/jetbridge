@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 )
@@ -21,7 +22,7 @@ import (
 
 func TestTheDefaultStepRuntimeIsExecWithNoJobGrants(t *testing.T) {
 	out := render(t)
-	for _, flag := range []string{"--kubernetes-step-runtime", "--kubernetes-launcher-image", "--kubernetes-step-envelope-url"} {
+	for _, flag := range []string{"--kubernetes-step-runtime", "--kubernetes-launcher-image", "--kubernetes-step-envelope-url", "CONCOURSE_KUBERNETES_WEB_POD_NAME"} {
 		if strings.Contains(out, flag) {
 			t.Errorf("the default render passes %s", flag)
 		}
@@ -41,24 +42,38 @@ func TestTheDefaultStepRuntimeIsExecWithNoJobGrants(t *testing.T) {
 func TestTheJobStepRuntimeRendersItsFlagsAndGrants(t *testing.T) {
 	out := renderInNamespace(t, "cicd", "kubernetes.stepRuntime=job")
 	deployment := strictWebDeployment(t, out)
-	var image string
-	for _, container := range deployment.Spec.Template.Spec.Containers {
-		if container.Name == "concourse-web" {
-			image = container.Image
+	var web *corev1.Container
+	for i := range deployment.Spec.Template.Spec.Containers {
+		if deployment.Spec.Template.Spec.Containers[i].Name == "concourse-web" {
+			web = &deployment.Spec.Template.Spec.Containers[i]
 		}
 	}
-	if image == "" {
-		t.Fatal("the web Deployment has no concourse-web container image")
+	if web == nil {
+		t.Fatal("the web Deployment has no concourse-web container")
 	}
-	web := webDeployment(t, out)
+	args := strings.Join(web.Args, "\n")
 	for _, want := range []string{
-		"- --kubernetes-step-runtime=job\n",
-		"- --kubernetes-launcher-image=" + image + "\n",
-		"- --kubernetes-step-envelope-url=http://jb-concourse-jetbridge-web.cicd.svc:8080/runtime/v1/step-envelope\n",
+		"--kubernetes-step-runtime=job",
+		"--kubernetes-step-envelope-url=http://jb-concourse-jetbridge-web.cicd.svc:8080/runtime/v1/step-envelope",
 	} {
-		if !strings.Contains(web, want) {
-			t.Errorf("web lacks %q", strings.TrimSpace(want))
+		if !strings.Contains(args, want) {
+			t.Errorf("web lacks %q", want)
 		}
+	}
+	// The launcher image is not a chart value: a tag rendered here would lag
+	// the image the pipeline's self-upgrade sets on the running pod. The web
+	// reads its own pod instead, named by the downward API.
+	if strings.Contains(args, "--kubernetes-launcher-image") {
+		t.Error("the chart renders a launcher image; the web reads its own pod's")
+	}
+	fields := map[string]string{}
+	for _, env := range web.Env {
+		if env.ValueFrom != nil && env.ValueFrom.FieldRef != nil {
+			fields[env.Name] = env.ValueFrom.FieldRef.FieldPath
+		}
+	}
+	if fields["CONCOURSE_KUBERNETES_WEB_POD_NAME"] != "metadata.name" || fields["CONCOURSE_KUBERNETES_WEB_POD_NAMESPACE"] != "metadata.namespace" {
+		t.Errorf("the web is not told its own pod: %v", fields)
 	}
 
 	role := podManagerRole(t, out)
