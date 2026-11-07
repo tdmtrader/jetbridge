@@ -604,3 +604,25 @@ func (c *Container) attachJob(ctx context.Context, processID string) (runtime.Pr
 	}
 	return nil, fmt.Errorf("attach: step job %q is still running in pod %q", c.podName, pod.Name)
 }
+
+// WebImage is the image the web runs: the container of its own pod that
+// runs the `web` command. Under the job step runtime the launcher is copied
+// out of it, so the launcher is always the web's own build.
+func WebImage(ctx context.Context, clientset kubernetes.Interface, namespace, podName string) (string, error) {
+	if podName == "" {
+		return "", errors.New("no web pod name")
+	}
+	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("reading pod %s/%s: %w", namespace, podName, err)
+	}
+	for _, container := range pod.Spec.Containers {
+		if len(container.Args) > 0 && container.Args[0] == "web" {
+			return container.Image, nil
+		}
+	}
+	if len(pod.Spec.Containers) == 1 {
+		return pod.Spec.Containers[0].Image, nil
+	}
+	return "", fmt.Errorf("pod %s/%s has no container running the web command", namespace, podName)
+}

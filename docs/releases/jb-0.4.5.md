@@ -25,7 +25,10 @@ JetBridge 0.4.5 follows jb-0.4.4 (cf122f8a09).
 
 - `kubernetes.stepRuntime` (`exec` | `job`), passed to the web only as `job`: an
   exec render is byte-identical to 0.4.4's, so a chart ahead of its image still
-  starts. Under `job` the pod-manager Role
+  starts. The launcher is copied from the web's own image, which the web reads
+  from its own pod (`CONCOURSE_KUBERNETES_WEB_POD_NAME` from the downward API), so
+  it is always the web's own build whatever tag the pipeline's self-upgrade set.
+  Under `job` the pod-manager Role
   gains `batch/jobs` and the web ClusterRole gains `tokenreviews create`; the web
   gets `--kubernetes-launcher-image` (its own image) and
   `--kubernetes-step-envelope-url` (its in-cluster Service).

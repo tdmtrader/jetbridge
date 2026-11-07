@@ -441,3 +441,24 @@ func TestTheReaperTakesAStepJobWithNoPod(t *testing.T) {
 		t.Errorf("remaining Jobs = %s, want only the stale pod-less one gone", got)
 	}
 }
+
+func TestWebImageIsTheWebContainersImage(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "concourse-web-0", Namespace: "cicd"},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{
+			{Name: "sidecar", Image: "registry.example/other:1"},
+			{Name: "concourse-web", Image: "registry.example/jetbridge:0.4.5-rc-abc", Args: []string{"web", "--postgres-host=db"}},
+		}},
+	})
+	image, err := WebImage(ctx, clientset, "cicd", "concourse-web-0")
+	if err != nil || image != "registry.example/jetbridge:0.4.5-rc-abc" {
+		t.Errorf("WebImage = %q, %v", image, err)
+	}
+	if _, err := WebImage(ctx, clientset, "cicd", "missing"); err == nil {
+		t.Error("a missing pod is not an error")
+	}
+	if _, err := WebImage(ctx, clientset, "cicd", ""); err == nil {
+		t.Error("an empty pod name is not an error")
+	}
+}
