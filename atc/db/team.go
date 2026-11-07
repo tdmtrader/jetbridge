@@ -126,20 +126,13 @@ func (t *team) Delete() error {
 	if err = lockTeamPipelineRuns(tx, t.id); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`SELECT set_config('concourse.pipeline_run_team_purge', 'on', true)`); err != nil {
+	if _, err = tx.Exec(runEvidencePurgeMarker); err != nil {
 		return err
 	}
-	if err = purgeTeamRunEvidence(context.Background(), tx, t.id); err != nil {
+	if err = purgeRunEvidence(context.Background(), tx, teamRunPurge, t.id); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`
-		DELETE FROM builds
-		WHERE pipeline_run_id IN (
-			SELECT run.id FROM pipeline_runs run
-			JOIN pipelines template ON template.id = run.template_pipeline_id
-			WHERE template.team_id = $1
-		)
-	`, t.id); err != nil {
+	if _, err = tx.Exec(`DELETE FROM builds WHERE pipeline_run_id IN (`+teamRunPurge.runIDs+`)`, t.id); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(`

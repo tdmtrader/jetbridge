@@ -135,9 +135,11 @@ builds, taking only the ones it needs. The Hangar claim suffix comes after
 the run's locks. Run paths take the team `FOR SHARE`. Deleting a team
 takes it first, `FOR NO KEY UPDATE` so that run creation's payload insert
 (whose team foreign key takes `KEY SHARE`) is not blocked under the template
-lock. Team purge and reclamation lock the run's builds before deleting any
-evidence, because check collection locks a check build (`SKIP LOCKED`) and
-then deletes its executions.
+lock. Destroying a template with its run history takes the team `FOR
+SHARE`, then the template `FOR UPDATE`, then its runs in id order. Both
+purges and reclamation lock the run's builds before deleting any evidence,
+because check collection locks a check build (`SKIP LOCKED`) and then
+deletes its executions.
 
 ## Invariants the store enforces
 
@@ -152,12 +154,20 @@ then deletes its executions.
 - A task cache belongs to a job, or to a template plus run job name, never
   both.
 - A payload cannot be deleted while it still has attached builds, except
-  when its whole team is being purged.
+  by a run history purge.
 - A run's evidence (execution attributions and witnesses, output starts and
   their decisions, cancellation work, credential handoffs, bound inputs) is
-  immutable and cannot be deleted, again except by the purge of its team.
-  The purge also releases the Hangar claims the team's runs held, leaving the
-  claim rows as Hangar's tombstones.
+  immutable and cannot be deleted, again except by a run history purge by
+  its owner: deleting the team, or destroying the template with its run
+  history (`purge_run_history`). Both set the one transaction-scoped marker
+  (`concourse.pipeline_run_team_purge`, despite its name) that the evidence
+  triggers honour; the triggers do not tell the two apart, the purge's own
+  scope does. A purge also releases the Hangar claims its runs and input
+  uploads held, leaving the claim rows as Hangar's tombstones.
+- A template with run history cannot be destroyed by an ordinary destroy.
+  Destroying it with its run history refuses while any of its runs is
+  running, or while the cancellation worker still holds one of its
+  cancellation operations within that operation's term.
 - The one narrower exception is check collection: under its own
   transaction-local allowance it may delete a closed check execution of a
   completed run check build (or a closed get an older check build left

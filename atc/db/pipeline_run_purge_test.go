@@ -8,6 +8,8 @@ import (
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/event"
+	"github.com/concourse/concourse/atc/runinput"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	"github.com/google/uuid"
@@ -36,38 +38,49 @@ var runEvidenceTables = map[string]string{
 
 type admittedRunEvidence struct {
 	team     db.Team
+	template db.Pipeline
 	runID    int
 	checkID  int
 	taskID   int
 	inputRef output.ClaimID
+	upload   output.ReservationID
 }
 
 func runEvidenceDigest(value string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
 }
 
-// admitRunEvidence drives one v2 Run through the production admission paths
-// until it holds every kind of evidence a team purge has to remove: an
-// executed and closed check, an executed task with a retained capture and
-// a claimed credential handoff, a bound input holding a Hangar claim, and a
-// discovered and claimed cancellation queue.
+// admitRunEvidence creates a team and admits one Run with every kind of
+// evidence on its template "evidence".
 func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence {
+	GinkgoHelper()
+	team, err := teamFactory.CreateTeam(atc.Team{Name: teamName})
+	Expect(err).NotTo(HaveOccurred())
+	return admitTemplateRunEvidence(ctx, team, "evidence", 145)
+}
+
+// admitTemplateRunEvidence drives one v2 Run of a new template on the team
+// through the production admission paths until it holds every kind of
+// evidence a purge has to remove: an executed and closed check, an executed
+// task with a retained capture and a claimed credential handoff, a bound
+// input holding a Hangar claim, a discovered and claimed cancellation queue,
+// and a build log. The template also holds a reserved input upload. seed
+// keeps each fixture's Hangar tree its own.
+func admitTemplateRunEvidence(ctx context.Context, team db.Team, templateName string, seed int) admittedRunEvidence {
 	GinkgoHelper()
 	consumer, err := db.HangarConsumerPrefixHeld("purge-test")
 	Expect(err).NotTo(HaveOccurred())
 	repository := db.NewHangarOutputRepository(consumer)
 	hangarActivateEpoch(ctx, repository)
 
-	team, err := teamFactory.CreateTeam(atc.Team{Name: teamName})
-	Expect(err).NotTo(HaveOccurred())
 	task := &atc.TaskStep{
 		Name: "produce", TaskID: uuid.NewString(), RunResult: &atc.RunResult{Name: "result", Output: "result"},
 		Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}, Outputs: []atc.TaskOutputConfig{{Name: "result"}}},
 	}
-	template, _, err := team.SavePipeline(atc.PipelineRef{Name: "evidence"}, atc.Config{
+	template, _, err := team.SavePipeline(atc.PipelineRef{Name: templateName}, atc.Config{
 		Template:  true,
 		Jobs:      atc.JobConfigs{{Name: "entry", PlanSequence: []atc.Step{{Config: &atc.GetStep{Name: "source"}}, {Config: task}}}},
-		Resources: atc.ResourceConfigs{{Name: "source", Type: "some-base-resource-type", Source: atc.Source{"repository": "example"}}},
+		Resources: atc.ResourceConfigs{{Name: "source", Type: "some-base-resource-type", Source: atc.Source{"repository": team.Name() + "/" + templateName}}},
 	}, 0, false)
 	Expect(err).NotTo(HaveOccurred())
 	factory := db.NewPipelineRunFactory(dbConn, lockFactory)
@@ -149,7 +162,7 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	Expect(tx.Commit()).To(Succeed())
 
 	// A bound input holding its own Hangar claim for the life of the Run.
-	_, ref := hangarPublish(ctx, repository, hangarDigest(145), 1725830823000145)
+	_, ref := hangarPublish(ctx, repository, hangarDigest(seed), 1725830823000000+int64(seed))
 	claim := output.ClaimID(uuid.NewString())
 	tx, err = dbConn.Begin()
 	Expect(err).NotTo(HaveOccurred())
@@ -176,12 +189,96 @@ func admitRunEvidence(ctx context.Context, teamName string) admittedRunEvidence 
 	Expect(claimed).To(BeTrue())
 	Expect(tx.Commit()).To(Succeed())
 
+	// A build log in the team's partition.
+	Expect(build.SaveEvent(event.Log{Payload: "evidence"})).To(Succeed())
+
+	// An input upload reserved for the template, not yet any Run's.
+	now := time.Now().UTC()
+	stage := output.InputStage{
+		Version:       output.InputPublicationVersion,
+		ReservationID: output.ReservationID(uuid.NewString()),
+		NodeUID:       executioncontrol.NodeUID("node-uid"),
+		Scope:         ref.Scope,
+		Digest:        hangarDigest(seed + 1),
+		Bytes:         1024,
+		CreatedAt:     output.NewTimestamp(now),
+		ExpiresAt:     output.NewTimestamp(now.Add(90 * time.Second)),
+	}
+	hangarCaptureTx(func(tx db.Tx) {
+		Expect(factory.ReserveRunInputUpload(ctx, tx, runinput.Audience{
+			TeamID: team.ID(), TemplateID: template.ID(), PrincipalDigest: principal, Input: "upload",
+		}, stage, uuid.NewString(), runinput.MaxGrantTTL)).To(Succeed())
+	})
+
 	for table, query := range runEvidenceTables {
 		var count int
 		Expect(dbConn.QueryRow(query, run.ID()).Scan(&count)).To(Succeed())
 		Expect(count).To(BeNumerically(">", 0), "the fixture must populate %s", table)
 	}
-	return admittedRunEvidence{team: team, runID: run.ID(), checkID: check.ID(), taskID: build.ID(), inputRef: claim}
+	Expect(runLogCount(team, run.ID())).To(BeNumerically(">", 0), "the fixture must log a build")
+	return admittedRunEvidence{team: team, template: template, runID: run.ID(), checkID: check.ID(), taskID: build.ID(), inputRef: claim, upload: stage.ReservationID}
+}
+
+// runLogCount counts the build events the Run's builds logged to the team's
+// partition.
+func runLogCount(team db.Team, runID int) int {
+	GinkgoHelper()
+	var count int
+	Expect(dbConn.QueryRow(fmt.Sprintf(`SELECT count(*) FROM team_build_events_%d
+		WHERE build_id IN (SELECT id FROM builds WHERE pipeline_run_id=$1)`, team.ID()), runID).Scan(&count)).To(Succeed())
+	return count
+}
+
+// runEvidenceCounts counts each kind of the Run's evidence.
+func runEvidenceCounts(runID int) map[string]int {
+	GinkgoHelper()
+	counts := map[string]int{}
+	for table, query := range runEvidenceTables {
+		var count int
+		Expect(dbConn.QueryRow(query, runID).Scan(&count)).To(Succeed())
+		counts[table] = count
+	}
+	return counts
+}
+
+func claimReleased(claim output.ClaimID) bool {
+	GinkgoHelper()
+	var released bool
+	Expect(dbConn.QueryRow(`SELECT released_at IS NOT NULL FROM hangar_claims WHERE claim_id=$1`, string(claim)).Scan(&released)).To(Succeed())
+	return released
+}
+
+func uploadRetained(id output.ReservationID) bool {
+	GinkgoHelper()
+	var retained bool
+	Expect(dbConn.QueryRow(`SELECT EXISTS(SELECT 1 FROM pipeline_run_input_uploads WHERE reservation_id=$1)`, string(id)).Scan(&retained)).To(Succeed())
+	return retained
+}
+
+// settleRunAborted stands the fixture's Run where the cancellation worker
+// would eventually leave it: aborted, with its cancellation work done. The
+// fixture's executions have no node to stop, so the worker cannot get it
+// there itself; the terminal publication and the queue rows are immutable by
+// trigger, so the fixture steps around them for these rows only. heldTerm,
+// when positive, leaves the claimed operation held by the worker for that long
+// instead of done: the aborted publication may commit before the worker records
+// its terminal operation.
+func settleRunAborted(runID int, heldTerm time.Duration) {
+	GinkgoHelper()
+	tx, err := dbConn.Begin()
+	Expect(err).NotTo(HaveOccurred())
+	defer db.Rollback(tx)
+	_, err = tx.Exec(`SET LOCAL session_replication_role = replica`)
+	Expect(err).NotTo(HaveOccurred())
+	_, err = tx.Exec(`UPDATE pipeline_runs SET status='aborted', completed_at=now(), result_manifest='{}' WHERE id=$1`, runID)
+	Expect(err).NotTo(HaveOccurred())
+	if heldTerm > 0 {
+		_, err = tx.Exec(`UPDATE pipeline_run_cancellation_operations SET next_at=clock_timestamp()+$2::interval WHERE run_id=$1 AND claimed`, runID, fmt.Sprintf("%d seconds", int(heldTerm.Seconds())))
+	} else {
+		_, err = tx.Exec(`UPDATE pipeline_run_cancellation_operations SET claimed=false, debt='', completed_at=clock_timestamp() WHERE run_id=$1 AND completed_at IS NULL`, runID)
+	}
+	Expect(err).NotTo(HaveOccurred())
+	Expect(tx.Commit()).To(Succeed())
 }
 
 var _ = Describe("Run evidence and team purge", func() {
@@ -199,9 +296,8 @@ var _ = Describe("Run evidence and team purge", func() {
 			Expect(dbConn.QueryRow(query, evidence.runID).Scan(&count)).To(Succeed())
 			Expect(count).To(BeZero(), "team purge must remove %s", table)
 		}
-		var released bool
-		Expect(dbConn.QueryRow(`SELECT released_at IS NOT NULL FROM hangar_claims WHERE claim_id=$1`, string(evidence.inputRef)).Scan(&released)).To(Succeed())
-		Expect(released).To(BeTrue(), "a purged Run must not pin a Hangar tree forever; the claim tombstone remains")
+		Expect(claimReleased(evidence.inputRef)).To(BeTrue(), "a purged Run must not pin a Hangar tree forever; the claim tombstone remains")
+		Expect(uploadRetained(evidence.upload)).To(BeFalse(), "team purge must remove the team's input uploads")
 	})
 
 	It("still refuses to delete Run evidence outside a team purge", func() {
@@ -251,6 +347,170 @@ var _ = Describe("Run evidence and team purge", func() {
 		}
 	})
 })
+
+var _ = Describe("Destroying a template with its Run history", func() {
+	var (
+		ctx                 context.Context
+		purged, sibling     admittedRunEvidence
+		otherTeam           admittedRunEvidence
+		siblingEvidence     map[string]int
+		otherTeamEvidence   map[string]int
+		siblingLogs         int
+		otherTeamLogs       int
+		purgedTemplateRunID int
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		purged = admitRunEvidence(ctx, "template-purge")
+		purgedTemplateRunID = purged.runID
+		sibling = admitTemplateRunEvidence(ctx, purged.team, "sibling", 147)
+		otherTeam = admitRunEvidence(ctx, "template-purge-other")
+		siblingEvidence = runEvidenceCounts(sibling.runID)
+		otherTeamEvidence = runEvidenceCounts(otherTeam.runID)
+		siblingLogs = runLogCount(sibling.team, sibling.runID)
+		otherTeamLogs = runLogCount(otherTeam.team, otherTeam.runID)
+	})
+
+	untouched := func() {
+		GinkgoHelper()
+		Expect(runEvidenceCounts(sibling.runID)).To(Equal(siblingEvidence), "another template's Runs on the same team must be untouched")
+		Expect(runEvidenceCounts(otherTeam.runID)).To(Equal(otherTeamEvidence), "another team's Runs must be untouched")
+		Expect(runLogCount(sibling.team, sibling.runID)).To(Equal(siblingLogs))
+		Expect(runLogCount(otherTeam.team, otherTeam.runID)).To(Equal(otherTeamLogs))
+		for _, kept := range []admittedRunEvidence{sibling, otherTeam} {
+			Expect(claimReleased(kept.inputRef)).To(BeFalse(), "another template's claims must stay held")
+			Expect(uploadRetained(kept.upload)).To(BeTrue(), "another template's input uploads must stay")
+			_, found, err := kept.team.Pipeline(atc.PipelineRef{Name: kept.template.Name()})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+		}
+	}
+
+	retained := func(evidence admittedRunEvidence) {
+		GinkgoHelper()
+		for table, count := range runEvidenceCounts(evidence.runID) {
+			Expect(count).To(BeNumerically(">", 0), "a refused purge must keep %s", table)
+		}
+		Expect(claimReleased(evidence.inputRef)).To(BeFalse())
+		Expect(uploadRetained(evidence.upload)).To(BeTrue())
+		_, found, err := evidence.team.Pipeline(atc.PipelineRef{Name: evidence.template.Name()})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue(), "a refused purge must keep the template")
+	}
+
+	It("still refuses a plain destroy", func() {
+		settleRunAborted(purged.runID, 0)
+		Expect(purged.template.Destroy()).To(MatchError(db.ErrPipelineTemplateHasRunHistory))
+		retained(purged)
+	})
+
+	It("removes exactly the template's Runs and their evidence, releases their claims, and the template goes", func() {
+		settleRunAborted(purged.runID, 0)
+
+		count, err := purged.template.DestroyWithRunHistory()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(count).To(Equal(1))
+
+		for table, n := range runEvidenceCounts(purgedTemplateRunID) {
+			Expect(n).To(BeZero(), "the template purge must remove %s", table)
+		}
+		Expect(runLogCount(purged.team, purgedTemplateRunID)).To(BeZero(), "the template purge must remove its Runs' build logs")
+		Expect(claimReleased(purged.inputRef)).To(BeTrue(), "a purged Run must not pin a Hangar tree forever; the claim tombstone remains")
+		Expect(uploadRetained(purged.upload)).To(BeFalse(), "the template purge must remove the template's input uploads")
+		var leftovers int
+		Expect(dbConn.QueryRow(`SELECT
+			(SELECT count(*) FROM pipelines WHERE id=$1) +
+			(SELECT count(*) FROM pipelines WHERE pipeline_run_id=$2) +
+			(SELECT count(*) FROM task_caches WHERE template_pipeline_id=$1)`, purged.template.ID(), purgedTemplateRunID).Scan(&leftovers)).To(Succeed())
+		Expect(leftovers).To(BeZero(), "the template, its payloads and its task caches must go")
+		_, found, err := purged.team.Pipeline(atc.PipelineRef{Name: purged.template.Name()})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+
+		untouched()
+
+		// The marker was transaction-scoped: nothing after the purge may
+		// delete the surviving Runs' evidence.
+		_, err = dbConn.Exec(`DELETE FROM pipeline_run_inputs WHERE run_id=$1`, sibling.runID)
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("refuses while a Run is still running, and deletes nothing", func() {
+		count, err := purged.template.DestroyWithRunHistory()
+		Expect(err).To(MatchError(db.ErrPipelineTemplateHasActiveRun))
+		Expect(count).To(BeZero())
+		retained(purged)
+		untouched()
+	})
+
+	It("refuses while the cancellation worker still holds an aborted Run's work, until its term runs out", func() {
+		settleRunAborted(purged.runID, time.Hour)
+		_, err := purged.template.DestroyWithRunHistory()
+		Expect(err).To(MatchError(db.ErrPipelineTemplateHasActiveRun))
+		retained(purged)
+
+		// Past its term no worker can complete the operation on a Run that
+		// has left running, so it no longer holds the Run active.
+		tx, err := dbConn.Begin()
+		Expect(err).NotTo(HaveOccurred())
+		defer db.Rollback(tx)
+		_, err = tx.Exec(`SET LOCAL session_replication_role = replica`)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = tx.Exec(`UPDATE pipeline_run_cancellation_operations SET next_at=clock_timestamp()-interval '1 second' WHERE run_id=$1 AND claimed`, purged.runID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(tx.Commit()).To(Succeed())
+
+		count, err := purged.template.DestroyWithRunHistory()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(count).To(Equal(1))
+		untouched()
+	})
+
+	It("destroys a template without Runs as a plain destroy does, purging none", func() {
+		template, _, err := purged.team.SavePipeline(atc.PipelineRef{Name: "never-run"}, atc.Config{
+			Template: true, Jobs: atc.JobConfigs{{Name: "entry"}},
+		}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		count, err := template.DestroyWithRunHistory()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(count).To(BeZero())
+		_, found, err := purged.team.Pipeline(atc.PipelineRef{Name: "never-run"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		untouched()
+	})
+
+	It("destroys an ordinary pipeline as a plain destroy does, purging none", func() {
+		pipeline, _, err := purged.team.SavePipeline(atc.PipelineRef{Name: "ordinary"}, atc.Config{
+			Jobs: atc.JobConfigs{{Name: "job"}},
+		}, 0, false)
+		Expect(err).NotTo(HaveOccurred())
+		count, err := pipeline.DestroyWithRunHistory()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(count).To(BeZero())
+		_, found, err := purged.team.Pipeline(atc.PipelineRef{Name: "ordinary"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+	})
+
+	It("refuses a Run's payload as a plain destroy does", func() {
+		payload, found, err := db.NewPipelineRunFactory(dbConn, lockFactory).InstancePipeline(mustRun(sibling.runID))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		_, err = payload.DestroyWithRunHistory()
+		Expect(err).To(MatchError(db.ErrPipelineRunPayloadMutation))
+		untouched()
+	})
+})
+
+func mustRun(id int) db.PipelineRun {
+	GinkgoHelper()
+	run, found, err := db.NewPipelineRunFactory(dbConn, lockFactory).GetRunByID(id)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(found).To(BeTrue())
+	return run
+}
 
 var _ = Describe("A cancelled Run's header after payload reclamation", func() {
 	It("keeps the request, the empty aborted publication, the definition, the input claims, and cancellation itself deleted nothing", func() {

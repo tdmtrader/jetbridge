@@ -2,8 +2,29 @@ package atc
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+// ErrPipelineTemplateHasRunHistory refuses an ordinary destroy of a template
+// that has ever had a Run. The Runs' durable history outlives their payloads,
+// so an ordinary destroy would orphan it; destroying the template together
+// with its Runs is a separate, explicit request
+// (DestroyPipelineQueryPurgeRunHistory). It lives here and not only in the
+// store so a client can recognise the refusal by the sentence it carries.
+var ErrPipelineTemplateHasRunHistory = errors.New("template with durable run history cannot be destroyed")
+
+// DestroyPipelineQueryPurgeRunHistory is the query parameter that asks
+// DELETE /api/v1/teams/:team_name/pipelines/:pipeline_name to destroy a
+// template together with all of its Runs and their durable history. Its only
+// accepted values are "true" and "false".
+const DestroyPipelineQueryPurgeRunHistory = "purge_run_history"
+
+// DestroyPipelineResponse answers a destroy that asked to purge the run
+// history: how many Runs went with the template.
+type DestroyPipelineResponse struct {
+	PurgedRuns int `json:"purged_runs"`
+}
 
 type RunStatus string
 

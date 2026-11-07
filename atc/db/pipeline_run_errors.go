@@ -14,7 +14,8 @@ var (
 	ErrPipelineRunArchived                 = errors.New("template pipeline is archived")
 	ErrPipelineTemplateHasRuns             = errors.New("template with durable runs cannot stop being a template")
 	ErrPipelineRunPayloadMutation          = errors.New("pipeline run payload cannot be mutated directly")
-	ErrPipelineTemplateHasRunHistory       = errors.New("template with durable run history cannot be destroyed")
+	ErrPipelineTemplateHasRunHistory       = atc.ErrPipelineTemplateHasRunHistory
+	ErrPipelineTemplateHasActiveRun        = errors.New("template has a run that is still running or still being cancelled; wait for it to finish, or cancel it, before purging its run history")
 	ErrPipelineTemplateBuild               = errors.New("pipeline templates cannot create builds directly")
 	ErrPipelineTemplateCheck               = errors.New("pipeline templates cannot be checked directly")
 	ErrPipelineTemplateHasOrdinaryJobState = errors.New("pipeline with ordinary job history or task caches cannot become a template")
