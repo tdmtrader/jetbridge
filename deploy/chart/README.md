@@ -286,7 +286,7 @@ web:
 | `kubernetes.baseResourceTypes` | `{}` | Base resource type images, `name: image`. Overrides a built-in type (`git`, `registry-image`, ...) or adds one, e.g. `git-with-ado`. Renders `--kubernetes-base-resource-type=name=image` per entry. |
 | `kubernetes.preferredStepNode` | `""` | Node label `key=value` every step pod prefers but does not require. Step pods also tolerate the taint `key=value:NoSchedule`, so tainting the node reserves it for builds. |
 | `kubernetes.imagePullSecrets` | `[]` | Pull secrets for task pod images. |
-| `kubernetes.artifactHelperImage` | `alpine:latest` | Image for init containers and sidecar. Must have `tar`. |
+| `kubernetes.artifactHelperImage` | `alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4` | Image for init containers and sidecar. Must have `tar`. Pinned by digest; mirror it for a cluster that cannot reach Docker Hub. |
 | `kubernetes.imageRegistrySecret` | `""` | Pull secret name for resource type images. |
 
 ### Storage

@@ -274,8 +274,12 @@ kubernetes:
   #     - name: ecr-cred-secret    # ECR: managed by ecr-credential-helper or external-secrets
   imagePullSecrets: []
 
-  # -- Artifact helper image (needs tar; used by init containers and sidecar)
-  artifactHelperImage: "alpine:latest"
+  # -- Artifact helper image (needs tar; used by init containers and sidecar).
+  # Pinned by tag and multi-arch index digest, so a node never runs a helper
+  # it was not released with; the helper's init containers carry warrants.
+  # Mirror this exact image, or set your own, for a cluster that cannot reach
+  # Docker Hub.
+  artifactHelperImage: "alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4"
 
   # -- Image registry pull secret name for resource type image pulls.
   # When set, this secret is added to pods that pull resource type images.
