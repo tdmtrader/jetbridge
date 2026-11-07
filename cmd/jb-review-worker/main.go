@@ -42,6 +42,8 @@ func run(ctx context.Context, args []string) error {
 		mode = args[0]
 	}
 	switch mode {
+	case "verdict":
+		return verdict(args[1:], os.Stdout)
 	case "auth-handoff":
 		f := flag.NewFlagSet("auth-handoff", flag.ContinueOnError)
 		socket := f.String("socket", "", "worker's private credential socket")
@@ -138,7 +140,7 @@ func run(ctx context.Context, args []string) error {
 	}
 }
 
-var errUsage = errors.New("input, output, model and exactly one of --auth-stdin or --auth-socket are required")
+var errUsage = errors.New("input, output, model and exactly one of --auth-stdin, --auth-socket or --auth-file are required")
 
 type sessionOptions struct {
 	profile []byte
@@ -146,6 +148,7 @@ type sessionOptions struct {
 	// self is this executable, which Codex starts again as the private tool server.
 	self           string
 	authSocket     string
+	authFile       string
 	handoffTimeout time.Duration
 }
 
@@ -158,13 +161,20 @@ func sessionFlags(f *flag.FlagSet, args []string, runtimeDir, codex, model *stri
 	f.DurationVar(timeout, "timeout", 30*time.Minute, "maximum credential-bearing session lifetime")
 	authStdin := f.Bool("auth-stdin", false, "read owner-supplied auth.json from stdin, separately from input")
 	f.StringVar(&out.authSocket, "auth-socket", "", "accept one credential handoff at this private runtime socket")
+	f.StringVar(&out.authFile, "auth-file", "", "read owner-supplied auth.json from this file: absolute, regular, owner-only (0600), on a tmpfs; removed once open")
 	f.DurationVar(&out.handoffTimeout, "handoff-timeout", 2*time.Minute, "maximum wait for socket credential handoff")
 	profile := f.String("profile", "", profileUsage)
 	runID := f.Int("run-id", 0, "durable Run ID; omit for a local session")
 	if err := f.Parse(args); err != nil {
 		return out, err
 	}
-	if f.NArg() != 0 || *model == "" || *authStdin == (out.authSocket != "") {
+	sources := 0
+	for _, given := range []bool{*authStdin, out.authSocket != "", out.authFile != ""} {
+		if given {
+			sources++
+		}
+	}
+	if f.NArg() != 0 || *model == "" || sources != 1 {
 		return out, errUsage
 	}
 	if *runID < 0 {
@@ -187,9 +197,12 @@ func sessionFlags(f *flag.FlagSet, args []string, runtimeDir, codex, model *stri
 	return out, nil
 }
 
-// openAuth opens the credential stream: this process's stdin, or one
-// handoff on a socket directly inside the private runtime.
+// openAuth opens the credential stream: this process's stdin, one handoff on
+// a socket directly inside the private runtime, or a private tmpfs file.
 func (o sessionOptions) openAuth(ctx context.Context, runtimeDir string) (io.ReadCloser, error) {
+	if o.authFile != "" {
+		return openAuthFile(o.authFile)
+	}
 	if o.authSocket != "" {
 		runID := 0
 		if o.runID != nil {

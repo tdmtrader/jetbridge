@@ -1,0 +1,42 @@
+{
+  "schema_version": "review/v1",
+  "run_id": 7,
+  "verdict": "incomplete",
+  "provenance": {
+    "input_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "base_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_commit": "cccccccccccccccccccccccccccccccccccccccc",
+    "profile_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "model_requested": "gpt-5.5",
+    "model_reported": null,
+    "codex_version": "codex-cli 0.153.1",
+    "execution_policy": "inspect-only"
+  },
+  "assessment": {
+    "summary": "Inspected the landing gate change.",
+    "complete": false,
+    "reviewed_files": [
+      "atc/landing/gates.go"
+    ],
+    "limitations": [
+      "Changed files not listed as reviewed: deploy/landing-gate-tests-template.yml",
+      "Tests and repository code were not executed."
+    ],
+    "findings": [
+      {
+        "id": "f-001",
+        "severity": "low",
+        "dimension": "correctness",
+        "title": "Comment typo",
+        "explanation": "The change does something the reviewer flagged.",
+        "recommendation": "Address it before landing.",
+        "location": {
+          "side": "head",
+          "path": "atc/landing/gates.go",
+          "start_line": 12,
+          "end_line": 12
+        }
+      }
+    ]
+  }
+}
