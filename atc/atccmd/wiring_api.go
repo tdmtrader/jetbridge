@@ -35,6 +35,7 @@ import (
 	"github.com/concourse/concourse/atc/gc"
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/worker"
+	"github.com/concourse/concourse/atc/worker/jetbridge"
 	"github.com/concourse/concourse/atc/wrappa"
 	"github.com/concourse/concourse/skymarshal/dexserver"
 	"github.com/concourse/concourse/skymarshal/skycmd"
@@ -180,6 +181,12 @@ func (cmd *RunCommand) constructAPIMembers(
 	if err := cmd.constructMCPHandler(logger, dbConn, httpClient, apiHandler, accessFactory); err != nil {
 		return nil, err
 	}
+
+	stepEnvelopeHandler, err := cmd.stepEnvelopeHandler(logger)
+	if err != nil {
+		return nil, err
+	}
+	cmd.stepEnvelopeHTTPHandler = stepEnvelopeHandler
 
 	var httpHandler, httpsHandler http.Handler
 	if cmd.isTLSEnabled() {
@@ -415,6 +422,13 @@ func (cmd *RunCommand) constructHTTPHandler(
 		for _, path := range []string{"/api/v1/mcp", "/mcp/oauth/", "/.well-known/oauth-authorization-server/mcp/oauth", "/.well-known/oauth-protected-resource/api/v1/mcp"} {
 			routes.Handle(path, cmd.mcpHandler)
 		}
+	}
+
+	// A step pod's launcher authenticates with its pod-bound projected
+	// ServiceAccount token, not a Concourse session: the handler verifies
+	// it with the cluster and sits outside the web auth wrapper.
+	if cmd.stepEnvelopeHTTPHandler != nil {
+		routes.Handle(jetbridge.StepEnvelopePath, cmd.stepEnvelopeHTTPHandler)
 	}
 
 	return wrappa.LoggerHandler{
