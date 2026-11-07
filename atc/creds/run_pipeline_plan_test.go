@@ -56,6 +56,33 @@ var _ = Describe("RunPipelinePlan", func() {
 			}))
 		})
 
+		It("carries wait and the inputs through without interpolating them", func() {
+			plan = creds.NewRunPipelinePlan(localVars(map[string]any{"ref": "abc123"}), atc.RunPipelinePlan{
+				Name:   "landing-land",
+				Params: atc.RunParams{"ref": "((.:ref))"},
+				Wait:   true,
+				Inputs: map[string]atc.RunPipelineInputPlan{
+					"composition": {From: "3", Result: "composition"},
+					"literal":     {From: "4", Result: "((.:ref))"},
+					"undefined":   {From: "5", Result: "((.:missing))"},
+				},
+			})
+
+			result, err := plan.Evaluate()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(result).To(Equal(atc.RunPipelinePlan{
+				Name:   "landing-land",
+				Params: atc.RunParams{"ref": "abc123"},
+				Wait:   true,
+				Inputs: map[string]atc.RunPipelineInputPlan{
+					"composition": {From: "3", Result: "composition"},
+					"literal":     {From: "4", Result: "((.:ref))"},
+					"undefined":   {From: "5", Result: "((.:missing))"},
+				},
+			}))
+		})
+
 		It("errors when a build-local var is not defined", func() {
 			plan = creds.NewRunPipelinePlan(localVars(map[string]any{}), atc.RunPipelinePlan{
 				Name:   "some-pipeline",

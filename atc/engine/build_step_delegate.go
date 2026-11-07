@@ -577,6 +577,18 @@ func (delegate *buildStepDelegate) ConstructAcrossSubsteps(templateBytes []byte,
 					p.Get.VersionFrom = &mappedID
 				}
 			}
+
+			// The same holds for a run_pipeline input's From: a call inside
+			// the substep binds the call of its own iteration, and a call
+			// outside the across keeps its ID.
+			if p.RunPipeline != nil {
+				for name, input := range p.RunPipeline.Inputs {
+					if mappedID, ok := mappedSubplanIDs[input.From]; ok {
+						input.From = mappedID
+						p.RunPipeline.Inputs[name] = input
+					}
+				}
+			}
 		})
 		substeps[i] = atc.VarScopedPlan{
 			Step:   subPlan,

@@ -51,6 +51,33 @@ var _ = Describe("Plan", func() {
 			}`))
 			Expect(string(*json)).ToNot(ContainSubstring("secret"))
 		})
+
+		It("serializes whether it waits and its input bindings, still hiding the params", func() {
+			plan := atc.Plan{
+				ID: "9",
+				RunPipeline: &atc.RunPipelinePlan{
+					Name:   "landing-land",
+					Params: atc.RunParams{"token": "super-secret"},
+					Wait:   true,
+					Inputs: map[string]atc.RunPipelineInputPlan{
+						"composition": {From: "7", Result: "composition"},
+					},
+				},
+			}
+			json := plan.Public()
+			Expect(json).ToNot(BeNil())
+			Expect([]byte(*json)).To(MatchJSON(`{
+				"id": "9",
+				"run_pipeline": {
+					"name": "landing-land",
+					"wait": true,
+					"inputs": {
+						"composition": {"from": "7", "result": "composition"}
+					}
+				}
+			}`))
+			Expect(string(*json)).ToNot(ContainSubstring("secret"))
+		})
 	})
 
 	Describe("SidecarPlan Public", func() {

@@ -390,9 +390,22 @@ type SetPipelinePlan struct {
 // RunPipelinePlan names a template pipeline on the calling build's own team.
 // It carries no team of its own, because cross-team calls are refused by the
 // run-admission port.
+//
+// Inputs reference earlier waited run_pipeline steps by plan id, the way
+// GetPlan.VersionFrom references its put: the planner resolves the step name
+// in the config, and the step reads that plan's stored child Run at run time.
 type RunPipelinePlan struct {
-	Name   string    `json:"name"`
-	Params RunParams `json:"params,omitempty"`
+	Name   string                          `json:"name"`
+	Params RunParams                       `json:"params,omitempty"`
+	Wait   bool                            `json:"wait,omitempty"`
+	Inputs map[string]RunPipelineInputPlan `json:"inputs,omitempty"`
+}
+
+// RunPipelineInputPlan binds the result named Result of the child Run started
+// by the run_pipeline plan From.
+type RunPipelineInputPlan struct {
+	From   PlanID `json:"from"`
+	Result string `json:"result"`
 }
 
 type LoadVarPlan struct {
