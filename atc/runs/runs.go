@@ -47,6 +47,12 @@
 // nothing more, so reading a run back tells a consumer exactly what admitting
 // one tells it.
 //
+// It also owns the two things a build may do to a child run after admitting
+// it: observe its status and request its cancellation. Both are authorized
+// against the team that owns the run's template, in one short transaction of
+// their own, and cancellation goes through the one operation that records the
+// cancel fence.
+//
 // It does not own the transaction. Admission runs inside one the caller
 // opened, so that a caller can commit its own rows in the same transaction as
 // the run -- which is the only way a consumer-side call record and the run it
@@ -187,12 +193,11 @@ type Admission struct {
 //
 // Deliberately a plain struct and not db.PipelineRun: the interface would drag
 // atc.RunStatus's neighbours and the whole header model across the boundary,
-// which is precisely the leak this package exists to prevent. A consumer that
-// needs more than identity needs a read operation on the port, and there is
-// exactly one: LookupRun, which returns this same struct for a run that
-// already exists. It is deliberately not a second, richer struct -- a consumer
-// that reads a run back learns what a consumer that admitted one learns, and
-// nothing further, so there is only ever one shape of run on this boundary.
+// which is precisely the leak this package exists to prevent. LookupRun
+// returns this same struct for a run that already exists: a consumer that reads
+// a run back learns what a consumer that admitted one learns. The one further
+// fact a consumer may learn is where the run is in its life, and only through
+// ObserveRun, which authorizes the asking and answers with RunStatus.
 type Run struct {
 	ID         int
 	Number     int
@@ -200,3 +205,21 @@ type Run struct {
 	PayloadID  int
 	CreatedBy  string
 }
+
+// RunStatus is what ObserveRun answers: the run's identity, its status, and
+// whether a cancellation has been requested for it.
+//
+// Status is atc.RunStatus, the same value GET runs/:number reports: running
+// until the run's one terminal publication, then succeeded, failed, errored or
+// aborted, and never anything else afterwards. CancellationRequested is the
+// cancel fence. A cancelled run stays running until the cancellation worker
+// settles it, so a waiter reads the two together to tell "still going" from
+// "being stopped".
+type RunStatus struct {
+	Run                   Run
+	Status                atc.RunStatus
+	CancellationRequested bool
+}
+
+// Terminal reports whether the run has published its final status.
+func (s RunStatus) Terminal() bool { return s.Status != atc.RunStatusRunning }
