@@ -1,7 +1,6 @@
 package launcher
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -100,7 +99,15 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 			return fail("fetching step envelope: %v", err)
 		}
 		if len(stdinBytes) > 0 {
-			childStdin = bytes.NewReader(stdinBytes)
+			// A file, not a pipe: exec.Cmd copies a non-file stdin through
+			// a goroutine that only Wait collects, and the launcher reaps
+			// its children itself (see below) rather than calling Wait.
+			f, err := stdinFile(stdinBytes)
+			if err != nil {
+				return fail("staging stdin: %v", err)
+			}
+			defer f.Close()
+			childStdin = f
 		}
 	}
 
@@ -132,6 +139,12 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigs)
 
+	// The launcher is the pod's PID 1 (and, where the platform allows, the
+	// subreaper of everything below it): whatever the command leaves behind
+	// is reparented to it and must be reaped, or it stays a zombie for as
+	// long as the pod lives -- and a zombie answers kill(pid, 0) as alive.
+	becomeSubreaper()
+
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(stderr, "jb-launcher: starting %q: %v\n", command[0], err)
@@ -142,10 +155,10 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	done := make(chan struct{})
 	go forwardSignals(sigs, done, pgid, *killGrace)
 
-	waitErr := cmd.Wait()
+	status := reapUntil(cmd.Process.Pid)
 	close(done)
 	finishedAt := time.Now()
-	code := waitExitCode(waitErr)
+	code := statusExitCode(status)
 
 	var stdoutBytes int64
 	if outFile != nil {
@@ -196,22 +209,67 @@ func startExitCode(err error) int {
 	return exitUsage
 }
 
-// waitExitCode turns the result of exec.Cmd.Wait into the launcher's exit code.
-func waitExitCode(err error) int {
-	if err == nil {
-		return 0
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-			if ws.Signaled() {
-				return exitSignalBase + int(ws.Signal())
-			}
-			return ws.ExitStatus()
+// reapUntil waits for every child of the launcher, reaping orphans the
+// command leaves behind, until the command itself (child) has exited, and
+// returns its wait status. A final sweep takes what exited with it.
+func reapUntil(child int) syscall.WaitStatus {
+	var status syscall.WaitStatus
+	for {
+		var ws syscall.WaitStatus
+		pid, err := syscall.Wait4(-1, &ws, 0, nil)
+		if err == syscall.EINTR {
+			continue
 		}
-		return exitErr.ExitCode()
+		if err != nil {
+			// ECHILD with the command unreaped cannot happen; treat it as
+			// a signalled death so the step fails rather than hangs.
+			status = syscall.WaitStatus(syscall.SIGKILL)
+			break
+		}
+		if pid == child {
+			status = ws
+			break
+		}
+	}
+	for {
+		var ws syscall.WaitStatus
+		pid, err := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
+		if err != nil || pid <= 0 {
+			break
+		}
+	}
+	return status
+}
+
+// statusExitCode turns the command's wait status into the launcher's exit
+// code: the command's own, or 128 plus the signal that killed it.
+func statusExitCode(ws syscall.WaitStatus) int {
+	if ws.Signaled() {
+		return exitSignalBase + int(ws.Signal())
+	}
+	if ws.Exited() {
+		return ws.ExitStatus()
 	}
 	return exitUsage
+}
+
+// stdinFile stages the envelope's stdin in a temporary file the command
+// reads directly.
+func stdinFile(content []byte) (*os.File, error) {
+	f, err := os.CreateTemp("", "jb-launcher-stdin-")
+	if err != nil {
+		return nil, err
+	}
+	_ = os.Remove(f.Name())
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		return nil, err
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 // writeTerminationMessage is best-effort: a step must not fail because the
