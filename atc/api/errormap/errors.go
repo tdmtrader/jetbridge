@@ -28,6 +28,7 @@ func Status(err error) (int, bool) {
 		errors.Is(err, db.ErrPipelineRunInstanced) || errors.Is(err, db.ErrPipelineRunPaused) ||
 		errors.Is(err, db.ErrPipelineRunArchived) || errors.Is(err, db.ErrPipelineRunPayloadMutation) ||
 		errors.Is(err, db.ErrPipelineTemplateHasRuns) || errors.Is(err, db.ErrPipelineTemplateHasRunHistory) ||
+		errors.Is(err, db.ErrPipelineTemplateHasActiveRun) ||
 		errors.Is(err, db.ErrPipelineTemplateHasOrdinaryJobState) ||
 		errors.Is(err, db.ErrPipelineRunCancelling) ||
 		errors.Is(err, db.ErrPipelineRunNotRunning) || errors.Is(err, db.ErrPipelineRunPayloadGone) ||

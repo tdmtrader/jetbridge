@@ -25,6 +25,9 @@ type pipelineAPIFaults struct {
 	renamePipelineFound          bool
 	renamePipelineErr            error
 	destroyErr                   error
+	purgeOverride                bool
+	purgedRuns                   int
+	purgeErr                     error
 	pauseErr                     error
 	archiveErr                   error
 	unpauseErr                   error
@@ -48,6 +51,19 @@ type pipelineAPIDecoratorState struct {
 	orderPipelinesArgs   [][]string
 	orderWithinGroupArgs []pipelineAPIWithinGroupCall
 	buildPages           []db.Page
+	destroys             []string
+}
+
+func (state *pipelineAPIDecoratorState) recordDestroy(kind string) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.destroys = append(state.destroys, kind)
+}
+
+func (state *pipelineAPIDecoratorState) destroyCalls() []string {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return append([]string(nil), state.destroys...)
 }
 
 func newPipelineAPIDecoratorState(faults pipelineAPIFaults) *pipelineAPIDecoratorState {
@@ -226,10 +242,19 @@ type pipelineAPIPipeline struct {
 }
 
 func (pipeline *pipelineAPIPipeline) Destroy() error {
+	pipeline.state.recordDestroy("destroy")
 	if err := pipeline.state.snapshotFaults().destroyErr; err != nil {
 		return err
 	}
 	return pipeline.Pipeline.Destroy()
+}
+
+func (pipeline *pipelineAPIPipeline) DestroyWithRunHistory() (int, error) {
+	pipeline.state.recordDestroy("purge")
+	if faults := pipeline.state.snapshotFaults(); faults.purgeOverride {
+		return faults.purgedRuns, faults.purgeErr
+	}
+	return pipeline.Pipeline.DestroyWithRunHistory()
 }
 
 func (pipeline *pipelineAPIPipeline) Pause(pausedBy string) error {
@@ -1102,15 +1127,21 @@ var _ = Describe("Pipelines API", func() {
 			response    *http.Response
 			deleteDB    *realDB
 			requestTeam string
+			query       string
 		)
 
 		BeforeEach(func() {
 			requestTeam = "a-team"
+			query = ""
 		})
 
 		JustBeforeEach(func() {
 			pipelineName := "a-pipeline-name"
-			req, err := http.NewRequest("DELETE", server.URL+"/api/v1/teams/"+requestTeam+"/pipelines/"+pipelineName, nil)
+			url := server.URL + "/api/v1/teams/" + requestTeam + "/pipelines/" + pipelineName
+			if query != "" {
+				url += "?" + query
+			}
+			req, err := http.NewRequest("DELETE", url, nil)
 			Expect(err).NotTo(HaveOccurred())
 
 			req.Header.Set("Content-Type", "application/json")
@@ -1158,6 +1189,132 @@ var _ = Describe("Pipelines API", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 					})
 				})
+
+				refusal := func() []string {
+					GinkgoHelper()
+					Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
+					var body atc.SaveConfigResponse
+					Expect(json.NewDecoder(response.Body).Decode(&body)).To(Succeed())
+					return body.Errors
+				}
+
+				Context("without purge_run_history", func() {
+					var fixture pipelineAPIFaultFixture
+
+					BeforeEach(func() {
+						fixture = persistPipelineAPIFaultFixture("a-team", "a-pipeline-name", pipelineAPIFaults{
+							destroyErr: db.ErrPipelineTemplateHasRunHistory,
+						})
+						server = fixture.Database.Serve()
+					})
+
+					It("destroys without purging and refuses a template with Run history as before", func() {
+						Expect(fixture.State.destroyCalls()).To(Equal([]string{"destroy"}))
+						Expect(response.StatusCode).To(Equal(http.StatusConflict))
+						Expect(refusal()).To(Equal([]string{db.ErrPipelineTemplateHasRunHistory.Error()}))
+					})
+
+					Context("set to false", func() {
+						BeforeEach(func() {
+							query = "purge_run_history=false"
+						})
+
+						It("destroys without purging", func() {
+							Expect(fixture.State.destroyCalls()).To(Equal([]string{"destroy"}))
+							Expect(response.StatusCode).To(Equal(http.StatusConflict))
+						})
+					})
+				})
+
+				Context("with purge_run_history=true", func() {
+					BeforeEach(func() {
+						query = "purge_run_history=true"
+					})
+
+					Context("on a pipeline with no Runs", func() {
+						BeforeEach(func() {
+							deleteDB = useRealDB()
+							deleteDB.SavePipeline(deleteDB.Main, "a-pipeline-name", atc.Config{Jobs: atc.JobConfigs{{Name: "job"}}})
+							server = deleteDB.Serve()
+							requestTeam = "main"
+						})
+
+						It("returns 200 with no Runs purged and removes the pipeline from PostgreSQL", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusOK))
+							Expect(response.Header.Get("Content-Type")).To(Equal("application/json"))
+							body, err := io.ReadAll(response.Body)
+							Expect(err).NotTo(HaveOccurred())
+							Expect(body).To(MatchJSON(`{"purged_runs": 0}`))
+							_, found, err := deleteDB.Main.Pipeline(atc.PipelineRef{Name: "a-pipeline-name"})
+							Expect(err).NotTo(HaveOccurred())
+							Expect(found).To(BeFalse())
+						})
+					})
+
+					Context("when the template's Runs are purged", func() {
+						var fixture pipelineAPIFaultFixture
+
+						BeforeEach(func() {
+							fixture = persistPipelineAPIFaultFixture("a-team", "a-pipeline-name", pipelineAPIFaults{
+								purgeOverride: true, purgedRuns: 3,
+							})
+							server = fixture.Database.Serve()
+						})
+
+						It("purges instead of destroying and answers how many Runs went", func() {
+							Expect(fixture.State.destroyCalls()).To(Equal([]string{"purge"}))
+							Expect(response.StatusCode).To(Equal(http.StatusOK))
+							body, err := io.ReadAll(response.Body)
+							Expect(err).NotTo(HaveOccurred())
+							Expect(body).To(MatchJSON(`{"purged_runs": 3}`))
+						})
+					})
+
+					Context("when a Run of the template is still active", func() {
+						BeforeEach(func() {
+							fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline-name", pipelineAPIFaults{
+								purgeOverride: true, purgeErr: db.ErrPipelineTemplateHasActiveRun,
+							})
+							server = fixture.Database.Serve()
+						})
+
+						It("returns 409 with the reason", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusConflict))
+							Expect(refusal()).To(Equal([]string{db.ErrPipelineTemplateHasActiveRun.Error()}))
+						})
+					})
+
+					Context("when the purge fails unexpectedly", func() {
+						BeforeEach(func() {
+							fixture := persistPipelineAPIFaultFixture("a-team", "a-pipeline-name", pipelineAPIFaults{
+								purgeOverride: true, purgeErr: errors.New("disaster!"),
+							})
+							server = fixture.Database.Serve()
+						})
+
+						It("returns a 500 Internal Server Error", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+						})
+					})
+				})
+
+				Context("with an unrecognised purge_run_history", func() {
+					var fixture pipelineAPIFaultFixture
+
+					BeforeEach(func() {
+						query = "purge_run_history=yes"
+						fixture = persistPipelineAPIFaultFixture("a-team", "a-pipeline-name", pipelineAPIFaults{})
+						server = fixture.Database.Serve()
+					})
+
+					It("returns 400 and destroys nothing", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
+						Expect(fixture.State.destroyCalls()).To(BeEmpty())
+						_, found, err := fixture.Team.Pipeline(atc.PipelineRef{Name: "a-pipeline-name"})
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+					})
+				})
 			})
 
 			Context("when requester does not belong to the team", func() {
@@ -1167,6 +1324,21 @@ var _ = Describe("Pipelines API", func() {
 
 				It("returns 403", func() {
 					Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+				})
+
+				Context("with purge_run_history=true", func() {
+					var fixture pipelineAPIFaultFixture
+
+					BeforeEach(func() {
+						query = "purge_run_history=true"
+						fixture = persistPipelineAPIFaultFixture("a-team", "a-pipeline-name", pipelineAPIFaults{})
+						server = fixture.Database.Serve()
+					})
+
+					It("returns 403 and purges nothing", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+						Expect(fixture.State.destroyCalls()).To(BeEmpty())
+					})
 				})
 			})
 		})
