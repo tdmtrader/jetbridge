@@ -102,6 +102,10 @@ type engineBuild struct {
 	release       chan bool
 	trackedStates *sync.Map
 	waitGroup     *sync.WaitGroup
+
+	// state is the build's run state once it has one, whose interpolated
+	// credentials the build's own error events are redacted of.
+	state exec.RunState
 }
 
 func (b *engineBuild) Run(ctx context.Context) {
@@ -170,6 +174,7 @@ func (b *engineBuild) Run(ctx context.Context) {
 		return
 	}
 	defer b.clearRunState()
+	b.state = state
 
 	abortSignal, unlisten, err := b.build.AbortSignal()
 	if err != nil {
@@ -276,7 +281,16 @@ func (b *engineBuild) abortRequested(logger lager.Logger) bool {
 	return aborted
 }
 
+// buildStepErrored saves an error event the build emits itself rather than
+// a step's delegate. It redacts with the build's root run state: that holds
+// every credential the build's var sources resolved, but not a value tracked
+// only in a child scope (a load_var inside an across step), which a step's
+// own delegate, holding that scope, redacts instead.
 func (b *engineBuild) buildStepErrored(logger lager.Logger, message string) {
+	if b.state != nil && !atc.DisableRedactSecrets {
+		message = redactCreds(b.state, message)
+	}
+
 	err := b.build.SaveEvent(event.Error{
 		Message: message,
 		Origin: event.Origin{

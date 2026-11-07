@@ -267,7 +267,14 @@ func (delegate *buildStepDelegate) SelectedWorker(logger lager.Logger, worker st
 	}
 }
 
+// Errored saves the step's error event. Its message is build output like the
+// step's logs, since a failure can echo a value the step interpolated, so it
+// is redacted on the same terms.
 func (delegate *buildStepDelegate) Errored(logger lager.Logger, message string) {
+	if !delegate.disableRedactSecrets {
+		message = delegate.buildOutputFilter(message)
+	}
+
 	err := delegate.build.SaveEvent(event.Error{
 		Message: message,
 		Origin: event.Origin{
@@ -613,8 +620,13 @@ func (delegate *buildStepDelegate) ConstructAcrossSubsteps(templateBytes []byte,
 }
 
 func (delegate *buildStepDelegate) buildOutputFilter(str string) string {
+	return redactCreds(delegate.state, str)
+}
+
+// redactCreds replaces in str every credential value state has interpolated.
+func redactCreds(state exec.RunState, str string) string {
 	it := &credVarsIterator{line: str}
-	delegate.state.IterateInterpolatedCreds(it)
+	state.IterateInterpolatedCreds(it)
 	return it.line
 }
 
