@@ -65,9 +65,52 @@ ServiceAccount, with no Kubernetes permissions and no API token mounted. A
 privilege-only grant (one that names no ServiceAccount) keeps this account and
 its token-less state; only a grant's own ServiceAccount carries a token.
 
+**Step runtime**:
+The operator's choice of how a step's command reaches its pod:
+`exec`, a pause pod the web execs into, or `job`, a step Job whose pod runs
+the command from its own spec under the launcher. One value per web
+(`--kubernetes-step-runtime`); a Run-owned exact execution runs on `exec`
+in either.
+_Avoid_: exec mode, job mode (as nouns), runtime flag
+
+**Step Job**:
+Under the `job` step runtime, the suspended `batch/v1` Job that is one step
+execution: its pod template carries the command, so admission control sees
+it; unsuspending it starts the step; its pod's terminated status is the
+exit. Its controller never retries (`backoffLimit: 0`, a disrupted pod fails
+the Job), the web deletes it on every path on which the command's exit was
+not read, and a step pod it owns is only ever deleted through it.
+_Avoid_: task Job, step pod job
+
+**Launcher**:
+The static binary a step Job's pod runs as its main container's entrypoint:
+it fetches the step envelope, runs the command in its own process group,
+forwards the pod's termination signal to that group, writes a resource
+command's answer to the answer directory and exits with the command's code.
+The launcher init copies it from the jetbridge image into an emptyDir.
+_Avoid_: entrypoint, emissary, wrapper, supervisor (that is the exec
+runtime's in-pod script)
+
+**Step envelope**:
+What a step Job's launcher fetches from the web before it runs the command:
+the bytes the command reads on stdin, a resource command's request with its
+interpolated source and params. It lives in the web's memory and the pod's,
+never in a Kubernetes object; the pod presents a projected ServiceAccount
+token bound to itself, with an audience the API server does not accept, and
+the web verifies it with a TokenReview and hands each envelope to one pod.
+_Avoid_: credential bundle, stdin secret
+
+**Answer directory**:
+Under the `job` step runtime, the directory on the node's artifact host
+path, `steps/<handle>/answer`, where the launcher writes a check, get or
+put's stdout, and the web reads it back through the artifact daemon. The
+container log is the command's stderr.
+_Avoid_: result file, stdout file
+
 **Pause pod**:
-A step pod started with a trap-and-sleep command so the web can exec the real
-command into it, and `fly intercept` can exec a shell later. A capture-selected
+The `exec` step runtime's step pod: started with a trap-and-sleep command so
+the web can exec the real command into it, and `fly intercept` can exec a
+shell later. A capture-selected
 task's pause pod is deleted gracefully once the node acknowledges its outcome,
 so the capture's seal sees it terminate; its result is then recovered from the
 node's ledger.
