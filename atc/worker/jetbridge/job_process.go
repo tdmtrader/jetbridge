@@ -118,9 +118,10 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	logCtx, cancelLogs := context.WithCancel(ctx)
 	defer cancelLogs()
 	logDone := make(chan struct{})
+	var mainStreamed bool
 	go func() {
 		defer close(logDone)
-		p.streamLogs(logCtx, podName, logWriter, sidecarWriters)
+		mainStreamed = p.streamLogs(logCtx, podName, logWriter, sidecarWriters)
 	}()
 
 	state, err := p.followPod(ctx, podName)
@@ -134,12 +135,20 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		return runtime.ProcessResult{}, wrapIfTransient(err)
 	}
 
-	// Let the log stream drain: it ends on its own when main terminates.
+	// Let the log stream drain: it ends on its own when main terminates. A
+	// follow that never opened (the kubelet would not follow) is replaced by
+	// one plain read of the finished container's log, which the kubelet
+	// keeps until the pod is deleted.
 	select {
 	case <-logDone:
 	case <-time.After(5 * time.Second):
 		cancelLogs()
 		<-logDone
+	}
+	if !mainStreamed && logWriter != nil {
+		if err := readContainerLogs(ctx, p.clientset, p.config.Namespace, podName, mainContainerName, logWriter); err != nil && p.processIO.Stderr != nil {
+			fmt.Fprintf(p.processIO.Stderr, "\nwarning: the command's log could not be read: %v\n", err)
+		}
 	}
 
 	if p.answer && p.processIO.Stdout != nil && state.result.ExitStatus == 0 {
@@ -279,9 +288,9 @@ func (p *jobProcess) sidecarLogWriters() (map[string]io.Writer, error) {
 
 // streamLogs follows main's log into w and each sidecar's into its writer.
 // Sidecars are native sidecars, so their streams end when the pod does.
-func (p *jobProcess) streamLogs(ctx context.Context, podName string, w io.Writer, sidecarWriters map[string]io.Writer) {
+func (p *jobProcess) streamLogs(ctx context.Context, podName string, w io.Writer, sidecarWriters map[string]io.Writer) bool {
 	if w == nil {
-		return
+		return true
 	}
 	var sidecars sync.WaitGroup
 	for name, writer := range sidecarWriters {
@@ -291,13 +300,18 @@ func (p *jobProcess) streamLogs(ctx context.Context, podName string, w io.Writer
 			followContainerLogs(ctx, p.clientset, p.config.Namespace, podName, name, writer, p.processIO.Stderr)
 		}(name, writer)
 	}
-	followContainerLogs(ctx, p.clientset, p.config.Namespace, podName, mainContainerName, w, p.processIO.Stderr)
+	streamed := followContainerLogs(ctx, p.clientset, p.config.Namespace, podName, mainContainerName, w, p.processIO.Stderr)
 	waitWithGrace(&sidecars, sidecarLogGrace)
+	return streamed
 }
 
 // followContainerLogs streams one container's log with follow, retrying
-// until the container has started.
-func followContainerLogs(ctx context.Context, clientset kubernetes.Interface, namespace, podName, containerName string, w, stderr io.Writer) {
+// until the container has started, and reports whether a stream was ever
+// opened. A follow that keeps failing is said once on the step's stderr, so
+// a kubelet that cannot follow (an exhausted inotify budget, say) does not
+// pass for a silent command.
+func followContainerLogs(ctx context.Context, clientset kubernetes.Interface, namespace, podName, containerName string, w, stderr io.Writer) bool {
+	failures := 0
 	for {
 		req := clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{Follow: true, Container: containerName})
 		stream, err := req.Stream(ctx)
@@ -306,14 +320,35 @@ func followContainerLogs(ctx context.Context, clientset kubernetes.Interface, na
 				fmt.Fprintf(stderr, "\nwarning: log stream interrupted for %s: %v\n", containerName, copyErr)
 			}
 			stream.Close()
-			return
+			return true
+		}
+		failures++
+		if failures == logStreamWarnAfter && stderr != nil && ctx.Err() == nil {
+			fmt.Fprintf(stderr, "\nwarning: cannot follow the log of %s yet (%v); still trying\n", containerName, err)
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-time.After(logStreamRetryDelay):
 		}
 	}
+}
+
+// logStreamWarnAfter is how many consecutive follow failures (at
+// logStreamRetryDelay apart) pass before the step is told. A container's
+// log is not followable until it has started, which takes a few of them.
+const logStreamWarnAfter = 60
+
+// readContainerLogs reads a finished container's whole log once, without
+// follow: the kubelet keeps it until the pod is deleted.
+func readContainerLogs(ctx context.Context, clientset kubernetes.Interface, namespace, podName, containerName string, w io.Writer) error {
+	stream, err := clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{Container: containerName}).Stream(ctx)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+	_, err = io.Copy(w, stream)
+	return err
 }
 
 // readAnswer reads the resource command's stdout from the step's answer
