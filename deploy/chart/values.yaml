@@ -80,9 +80,10 @@ web:
     interval: ""
 
   # -- Local user credentials. Comma-separated "user:password" pairs, e.g.
-  # "admin:s3cret,ci:token". The chart emits one --add-local-user flag per
-  # pair (Concourse's CLI flag does not itself split on commas). Leave it
-  # empty for an SSO-only deployment.
+  # "admin:s3cret,ci:token". The chart keeps them out of the pod's args: the
+  # web reads them as CONCOURSE_ADD_LOCAL_USER from the
+  # <fullname>-web-credentials Secret it renders. Leave it empty for an
+  # SSO-only deployment.
   localUsers: ""
 
   # -- Main team local user(s), granted admin on the main team, e.g. admin. A
@@ -328,7 +329,9 @@ postgresql:
   database: concourse
   # -- Database user
   user: concourse
-  # -- Database password (plaintext; use existingSecret for production)
+  # -- Database password (plaintext in values; use existingSecret for
+  # production). The web and migrate-db read it from the
+  # <fullname>-web-credentials Secret, never from their args.
   password: concourse
 
   # -- Use an existing K8s Secret for the database password.

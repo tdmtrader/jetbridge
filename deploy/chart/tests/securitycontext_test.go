@@ -222,33 +222,26 @@ func renderChartSetString(t *testing.T, sets ...string) string {
 	return string(out)
 }
 
-// TestWebLocalUsersSplitIntoSeparateFlags guards against the flag-parsing bug
-// where a comma-separated localUsers string was emitted as a single
-// `--add-local-user` argument. Concourse's CLI map parser splits only on the
-// first colon and does not split on commas, so a value like
-// "admin:pw,test:test" collapsed into one user "admin" whose password was the
-// entire remainder ("pw,test:test"). The chart must emit one flag per user.
-func TestWebLocalUsersSplitIntoSeparateFlags(t *testing.T) {
-	manifests := renderChartSetString(t, `web.localUsers=admin:Fish25\,test:test\,guest:guest`)
+// TestWebLocalUsersReachTheWebAsOneSplitList guards against the flag-parsing
+// bug where a comma-separated localUsers string reached the web as one map
+// entry. Concourse's map flag splits only on the first colon, so a value like
+// "admin:pw,test:test" once collapsed into one user "admin" whose password
+// was the entire remainder ("pw,test:test"). The users now reach the web as
+// CONCOURSE_ADD_LOCAL_USER, which go-flags splits on commas into one entry
+// per user, so the Secret holds each trimmed entry once, joined by commas.
+func TestWebLocalUsersReachTheWebAsOneSplitList(t *testing.T) {
+	manifests := renderChartSetString(t, `web.localUsers= admin:Fish25\, test:test\,\,guest:guest `)
 	web := findDeployment(t, manifests, "-web")
 	if len(web.Spec.Template.Spec.Containers) == 0 {
 		t.Fatal("web Deployment has no containers")
 	}
-	args := web.Spec.Template.Spec.Containers[0].Args
-
-	want := []string{
-		"--add-local-user=admin:Fish25",
-		"--add-local-user=test:test",
-		"--add-local-user=guest:guest",
-	}
-	for _, w := range want {
-		if !containsStr(args, w) {
-			t.Errorf("web args missing %q; got %v", w, args)
+	for _, arg := range web.Spec.Template.Spec.Containers[0].Args {
+		if strings.HasPrefix(arg, "--add-local-user") {
+			t.Errorf("web args carry a local user: %s", arg)
 		}
 	}
-	// The whole-string single-flag form must NOT be present.
-	if containsStr(args, "--add-local-user=admin:Fish25,test:test,guest:guest") {
-		t.Error("web args still contains the un-split single --add-local-user flag")
+	if got := webCredential(t, manifests, "add-local-user"); got != "admin:Fish25,test:test,guest:guest" {
+		t.Errorf("the local users Secret holds %q, want each trimmed entry once", got)
 	}
 }
 
