@@ -1,0 +1,51 @@
+# A Run template that lands one candidate by composing two Runs in one build:
+# a Run of landing-compose, then a Run of landing-land with compose's
+# `composition` result bound as its input. It is a manual landing path and the
+# proof that a parent build can compose Runs; the landing queue component
+# remains the automated path and does not use it.
+#
+# Install landing-compose and landing-land first (see their headers), on the
+# same team, then this one:
+#   fly set-pipeline -p landing-parent -c deploy/landing-parent-template.yml
+# and start a Run of it with the same three params the queue passes:
+#   repository=<git url>  trunk=<branch>  entries=<id=sha,...>
+# This template needs no vars of its own: the image and the push token are
+# the child templates' vars, set when they were installed.
+#
+# `wait: true` holds no pod, volume or worker: the step runs on the web node
+# and polls the child Run's status, holding nothing between polls. Aborting
+# the parent build asks for the child Run that is still running to be
+# cancelled.
+#
+# A run_pipeline step is named by its template, so `from: landing-compose`
+# names the first step.
+template: true
+params:
+  - name: repository
+    type: string
+    required: true
+  - name: trunk
+    type: string
+    required: true
+  - name: entries
+    type: string
+    required: true
+jobs:
+  - name: land
+    plan:
+      - run_pipeline: landing-compose
+        wait: true
+        params:
+          repository: ((repository))
+          trunk: ((trunk))
+          entries: ((entries))
+      - run_pipeline: landing-land
+        wait: true
+        params:
+          repository: ((repository))
+          trunk: ((trunk))
+          entries: ((entries))
+        inputs:
+          composition:
+            from: landing-compose
+            result: composition
