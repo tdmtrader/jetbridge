@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -498,16 +499,24 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	// handle, or an alias keyed on something a caller can also name -- the fix
 	// is the daemon-wide precedence rule resolveOne already uses: consult the
 	// registry before the filesystem.
-	info, err := s.root.Stat(osName(loc))
-	if err != nil && os.IsNotExist(err) {
+	//
+	// statLocation, not s.root.Stat: a location reached through a symlink is
+	// one tarTree refuses, and refusing it here answers 422 instead of a 200
+	// followed by an aborted stream.
+	info, err := statLocation(s.root, osName(loc))
+	if errors.Is(err, fs.ErrNotExist) {
 		if regLoc, found := s.lookupRegistryAlias(r); found {
 			loc = regLoc
-			info, err = s.root.Stat(osName(loc))
+			info, err = statLocation(s.root, osName(loc))
 		}
 	}
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			http.NotFound(w, r)
+			return
+		}
+		if errors.Is(err, ErrRefused) {
+			s.refuse(w, r, http.StatusUnprocessableEntity, reasonSymlinkedPath, err)
 			return
 		}
 		s.logger.Error("failed-to-stat-artifact", err, lager.Data{"rel": string(loc)})
@@ -889,17 +898,21 @@ func (s *Server) handleHeadArtifact(w http.ResponseWriter, r *http.Request) {
 
 	// Check filesystem first, then fall back to registry aliases. Both stats go
 	// through the root handle now that the registry value is a location under
-	// the same root.
-	info, err := s.root.Stat(osName(loc))
-	if err != nil && os.IsNotExist(err) {
+	// the same root, and both under GET's rule: a symlinked location is refused.
+	info, err := statLocation(s.root, osName(loc))
+	if errors.Is(err, fs.ErrNotExist) {
 		if regLoc, found := s.lookupRegistryAlias(r); found {
 			loc = regLoc
-			info, err = s.root.Stat(osName(loc))
+			info, err = statLocation(s.root, osName(loc))
 		}
 	}
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, ErrRefused) {
+			s.refuse(w, r, http.StatusUnprocessableEntity, reasonSymlinkedPath, err)
 			return
 		}
 		s.logger.Error("failed-to-stat-artifact", err, lager.Data{"key": key})
@@ -1435,11 +1448,16 @@ func (s *Server) handleHeadResourceCache(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Verify the location still exists on disk — aliases can become stale if
-	// the sweeper removed the step directory. Through the handle.
-	if _, err := s.root.Stat(osName(loc)); err != nil {
-		if os.IsNotExist(err) {
+	// the sweeper removed the step directory. Through the handle, under the
+	// walk's rule: a symlinked location is refused, as GET would refuse it.
+	if _, err := statLocation(s.root, osName(loc)); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
 			s.registry.Remove(key)
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, ErrRefused) {
+			s.refuse(w, r, http.StatusUnprocessableEntity, reasonSymlinkedPath, err)
 			return
 		}
 		s.logger.Error("resource-cache-stat-error", err, lager.Data{"key": key, "rel": string(loc)})
@@ -1468,11 +1486,15 @@ func (s *Server) handleGetResourceCache(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	info, err := s.root.Stat(osName(loc))
+	info, err := statLocation(s.root, osName(loc))
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			s.registry.Remove(key)
 			http.NotFound(w, r)
+			return
+		}
+		if errors.Is(err, ErrRefused) {
+			s.refuse(w, r, http.StatusUnprocessableEntity, reasonSymlinkedPath, err)
 			return
 		}
 		s.logger.Error("resource-cache-stat-error", err, lager.Data{"key": key, "rel": string(loc)})
