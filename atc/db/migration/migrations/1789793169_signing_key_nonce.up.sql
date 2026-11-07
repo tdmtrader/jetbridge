@@ -1,0 +1,12 @@
+-- An idtoken signing key can be stored encrypted under the database
+-- encryption key, like every other secret column. An encrypted row's jwk
+-- holds the hex ciphertext as a JSON string, so the column stays json, and
+-- nonce holds the nonce. A row without a nonce is plaintext, as every row
+-- written before this was.
+--
+-- The change is only additive, so a web that predates it keeps working
+-- against this schema while a rolling upgrade overlaps the two: that web
+-- never names the nonce, and no column it selects changes type. Changing
+-- jwk's type would not be safe: pgx caches that web's SELECT as a prepared
+-- statement, and Postgres refuses a cached plan whose result type changed.
+ALTER TABLE signing_keys ADD COLUMN nonce text;
