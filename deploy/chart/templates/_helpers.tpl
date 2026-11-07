@@ -166,3 +166,25 @@ web container renders every set row; an empty one keeps the binary's default.
   (list "CONCOURSE_SECRET_RETRY_INTERVAL" "web.secretRetry.interval" $web.secretRetry.interval)
   | toJson -}}
 {{- end -}}
+
+{{/*
+Whether the web reads Secrets: "true" when the Kubernetes credential manager
+is on, else empty. That manager is the web's only reader of Secrets: it
+resolves ((vars)) from <namespacePrefix><team>, a namespace per team, so the
+web ClusterRole's grant is cluster-wide. kubernetes.credentialManager.enabled
+turns it on, and a deployment that predates that value turns it on through
+web.env with CONCOURSE_KUBERNETES_IN_CLUSTER or
+CONCOURSE_KUBERNETES_CONFIG_PATH. Nothing else in web reads a Secret: image
+pull Secrets are named on step pods and read by the kubelet. Kept here, beside
+the other web env names, so web_env_architecture_test.go checks these two
+names are still web flags.
+*/}}
+{{- define "concourse.web.readsSecrets" -}}
+{{- $reads := .Values.kubernetes.credentialManager.enabled -}}
+{{- range .Values.web.env -}}
+{{- if has .name (list "CONCOURSE_KUBERNETES_IN_CLUSTER" "CONCOURSE_KUBERNETES_CONFIG_PATH") -}}
+{{- $reads = true -}}
+{{- end -}}
+{{- end -}}
+{{- if $reads -}}true{{- end -}}
+{{- end -}}

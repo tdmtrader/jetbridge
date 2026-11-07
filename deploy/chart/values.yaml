@@ -290,8 +290,9 @@ kubernetes:
   #   kubectl create ns concourse-main
   #   kubectl -n concourse-main create secret generic github-token \
   #     --from-literal=value=<PAT>
-  # The web ServiceAccount already has cluster-wide secrets:get via
-  # rbac.yaml (requires rbac.create=true), so no extra RBAC is needed.
+  # Turning this on grants the web ServiceAccount cluster-wide secrets:get
+  # (rbac.yaml, with rbac.create=true), so no extra RBAC is needed. With it
+  # off the web is granted no Secrets at all.
   credentialManager:
     # -- Enable the in-cluster Kubernetes credential manager
     # (passes --kubernetes-in-cluster to the web command).

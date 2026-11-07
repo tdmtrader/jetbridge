@@ -1,6 +1,7 @@
 {{- if .Values.rbac.create }}
 ---
-# ClusterRole for cluster-scoped resources (nodes, secrets).
+# ClusterRole for cluster-scoped resources (nodes, and secrets when the
+# Kubernetes credential manager is on).
 # The web SA needs node/get to resolve node names to IPs for artifact
 # daemon communication (RegisterResourceCache, RecordOutputs).
 apiVersion: rbac.authorization.k8s.io/v1
@@ -10,11 +11,13 @@ metadata:
   labels:
     {{- include "concourse.labels" . | nindent 4 }}
 rules:
+  {{- if include "concourse.web.readsSecrets" . }}
   # Read pipeline credential secrets from the cluster. Limited to get
   # (no list/watch) to prevent enumerating all secrets in the cluster.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
+  {{- end }}
   # Resolve node names to IPs for artifact daemon communication
   # (DaemonClient uses node IP to reach the local daemon pod).
   #
@@ -70,17 +73,9 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list"]
-  # Worker registrar updates the web deployment's annotations to
-  # record worker state and heartbeat timestamps.
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["get", "list", "watch", "patch", "update"]
-  # Self-upgrade/verify-upgrade pipeline runs `kubectl rollout status/restart`
-  # against the artifact-daemon DaemonSet. rollout status needs list/watch;
-  # without them the check hangs until timeout and the job errors.
-  - apiGroups: ["apps"]
-    resources: ["daemonsets"]
-    verbs: ["get", "list", "watch", "patch", "update"]
+  # No apps/deployments or apps/daemonsets: web calls neither API. The
+  # self-upgrade pipeline's `kubectl rollout` runs as its own step pod grant's
+  # ServiceAccount, never as this one.
   # EndpointSlice discovery for artifact daemon peer resolution.
   # DaemonClient uses this to find daemon pod IPs for cross-node
   # artifact streaming and resource cache probing. Read-only.
