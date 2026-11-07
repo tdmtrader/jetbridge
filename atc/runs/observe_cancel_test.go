@@ -127,12 +127,13 @@ var _ = Describe("observing and cancelling an admitted run", func() {
 			Expect(err).To(BeIdenticalTo(runs.ErrRunNotFound))
 		})
 
-		It("refuses a build that has been aborted", func() {
+		It("is honoured for a build that has been aborted, so the step reaches its cancel", func() {
 			admitted := admit(templateRef, buildPrincipal, "observe-test.aborted")
 			Expect(callerBuild.MarkAsAborted()).To(Succeed())
 
-			_, err := admitter.ObserveRun(ctx, admitted.ID, buildPrincipal)
-			Expect(err).To(BeIdenticalTo(runs.ErrUnauthorized))
+			status, err := admitter.ObserveRun(ctx, admitted.ID, buildPrincipal)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status.Run.ID).To(Equal(admitted.ID))
 		})
 
 		It("refuses a principal that is two identities before reading anything", func() {
