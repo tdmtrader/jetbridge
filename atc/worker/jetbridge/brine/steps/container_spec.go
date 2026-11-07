@@ -128,7 +128,7 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 			"the main container image",
 			func(in PodCreated) (string, error) {
 				main, err := mainContainer(in.Pod)
-				return main.Image, err
+				return builtinImageName(main.Image), err
 			}),
 
 		CheckString[PodCreated]("the main container image pull policy is {string}",

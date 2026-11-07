@@ -269,7 +269,7 @@ func RegistrarDefinitions() []brine.StepDefinition {
 				}
 				for _, rt := range in.Worker.ResourceTypes() {
 					if rt.Type == name {
-						if want == "" || rt.Image == want {
+						if want == "" || builtinImageName(rt.Image) == want {
 							return nil
 						}
 						return fmt.Errorf("expected resource type %q to be %q, got %q", name, want, rt.Image)

@@ -189,7 +189,7 @@ func ConfigDefinitions() []brine.StepDefinition {
 				if !found {
 					return "", fmt.Errorf("expected resource type %q to be present, it was not", name)
 				}
-				return got, nil
+				return builtinImageName(got), nil
 			}),
 
 		// The parameter is the type being looked up, not a value to compare
@@ -291,4 +291,20 @@ func ConfigCompletenessDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 	}
+}
+
+// builtinImageName names a built-in resource type image by its repository, as
+// the feature files do. The defaults are pinned (repository:release@digest),
+// and a scenario about which image a type gets is about the repository; the
+// pin itself is held by imageresolver's own test. Any other image -- an
+// operator's override, a pipeline's own -- is returned unchanged, so it is
+// still compared exactly.
+func builtinImageName(image string) string {
+	for _, pinned := range imageresolver.DefaultResourceTypeImages {
+		if image == pinned {
+			repository, _, _ := strings.Cut(pinned, ":")
+			return repository
+		}
+	}
+	return image
 }

@@ -98,7 +98,7 @@ func exerciseReviewLand(in RunInputAdmission, auth *AuthFixture, change ReviewCh
 	if err != nil {
 		return err
 	}
-	if first.exit == nil || interrupted.Outcome != "" || interrupted.RunNumber != receipt.Number || !strings.Contains(interrupted.Message, "context canceled") {
+	if first.exit == nil || interrupted.Outcome != "" || interrupted.RunNumber != receipt.Number || !interruptedByCancellation(interrupted.Message) {
 		return fmt.Errorf("interrupted landing lost its admitted Run: %v, %+v", first.exit, interrupted)
 	}
 	if err = l.requireCore(change.Base); err != nil {
@@ -236,4 +236,12 @@ func (l landing) requireCore(want string) error {
 		return fmt.Errorf("origin core is %s, want %s", got, want)
 	}
 	return nil
+}
+
+// interruptedByCancellation reports whether a landing's message is the
+// cancellation its interrupt caused. Before Go 1.26 an HTTP call cut short by
+// the CLI's signal.NotifyContext said "context canceled"; since then it
+// reports the context's cause, "interrupt signal received".
+func interruptedByCancellation(message string) bool {
+	return strings.Contains(message, "context canceled") || strings.Contains(message, "interrupt signal received")
 }
