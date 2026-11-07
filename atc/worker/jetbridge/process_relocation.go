@@ -33,7 +33,8 @@ const (
 func (p *execProcess) canRelocate(pod *corev1.Pod) bool {
 	return p.container != nil && p.container.relocate != nil &&
 		p.control != nil && p.control.Node != nil &&
-		pod.Spec.NodeName == "" && !p.execTransportLive.Load() && !p.relocationSpent
+		pod.Spec.NodeName == "" && !p.execTransportLive.Load() && !p.relocationSpent &&
+		(pod.ResourceVersion == "" || pod.ResourceVersion != p.relocationTried)
 }
 
 // relocateUnboundPod moves a Run execution whose pod could not be scheduled on
@@ -81,6 +82,7 @@ func (p *execProcess) relocateUnboundPod(ctx context.Context, pod *corev1.Pod, r
 		// Changed (perhaps bound) or already gone: either way this is not the
 		// pod that was seen unbound, and the ordinary path deals with it.
 		logger.Info("not-relocating-changed-pod", lager.Data{"error": err.Error()})
+		p.relocationTried = pod.ResourceVersion
 		resume()
 		return podUntouched, nil
 	}

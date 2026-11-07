@@ -753,6 +753,10 @@ type execProcess struct {
 	// the pod waits where it is (process_relocation.go).
 	relocatedFrom   []string
 	relocationSpent bool
+	// relocationTried is the resourceVersion of the pod a move was last
+	// attempted on and left untouched: that pod is not tried again, only a
+	// newer observation of it.
+	relocationTried string
 }
 
 func newExecProcess(
@@ -1678,7 +1682,19 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 	countsSet := false
 	tracker := newPodEventTracker()
 	for {
-		pod, err := watcher.Next(timeoutCtx)
+		// An Unschedulable pod is updated once and then left alone, so a move
+		// that falls due must not wait for an event that may never come: the
+		// wait is bounded by what is left of the grace, and when it runs out
+		// the last pod seen is looked at again.
+		nextCtx, cancelNext := timeoutCtx, context.CancelFunc(func() {})
+		if !unschedulableFirstSeen.IsZero() && lastPod != nil && p.canRelocate(lastPod) {
+			nextCtx, cancelNext = context.WithTimeout(timeoutCtx, max(relocationGrace-time.Since(unschedulableFirstSeen), 0)+10*time.Millisecond)
+		}
+		pod, err := watcher.Next(nextCtx)
+		cancelNext()
+		if err != nil && nextCtx != timeoutCtx && timeoutCtx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+			pod, err = lastPod, nil
+		}
 		if err != nil {
 			if errors.Is(err, ErrPodDeleted) && pod != nil {
 				writePodDiagnostics(pod, p.processIO.Stderr)

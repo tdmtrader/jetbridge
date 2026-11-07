@@ -243,3 +243,29 @@ func TestARefusedMoveLeavesThePodWhereItWas(t *testing.T) {
 		t.Fatalf("the replacement pod is pinned to %q; want the node the execution is still admitted on", pinnedNode(pod))
 	}
 }
+
+// A pod the scheduler cannot place gets its Unschedulable condition once and
+// then no further update, so the move has to happen when the grace runs out,
+// not on the next event: there may never be one. On concourse.home a step
+// waited on a full node for its whole timeout with no move at all.
+func TestAPodThatStaysUnschedulableMovesWhenTheGraceRunsOut(t *testing.T) {
+	h := newRelocationHarness(t)
+	relocationGrace = 300 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bound := h.bindWhen(ctx, func(pod *corev1.Pod) bool { return pinnedNode(pod) == "roomy" })
+
+	started := time.Now()
+	if err := h.process.waitForRunning(ctx); err != nil {
+		t.Fatalf("waitForRunning: %v (relocate asked %d times, %d pods created)", err, len(h.asked), h.created)
+	}
+	if err := <-bound; err != nil {
+		t.Fatal(err)
+	}
+	if len(h.asked) != 1 || h.process.control.Node.Name != "roomy" {
+		t.Fatalf("relocate asked %v; node %s", h.asked, h.process.control.Node.Name)
+	}
+	if waited := time.Since(started); waited < relocationGrace {
+		t.Fatalf("moved after %s, inside the %s grace", waited, relocationGrace)
+	}
+}
