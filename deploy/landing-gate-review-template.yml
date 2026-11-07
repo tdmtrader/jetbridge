@@ -1,0 +1,167 @@
+# The landing queue's review gate (ADR-0011): the review worker reviews the
+# change a candidate introduces, base to candidate, and the gate fails on any
+# finding of severity high or blocker. Install with
+#
+#   fly -t <target> set-pipeline -p landing-gate-review -c deploy/landing-gate-review-template.yml \
+#     -v change_image=registry.home/concourse-test-runner:v12 \
+#     -v review_worker_image=<registry>/jb-review-worker@sha256:<digest> \
+#     -v review_model=<Codex model, for example gpt-5.5>
+#
+# Install vars:
+#   change_image         an image with /bin/sh, git, tar and a Go toolchain that
+#                        can build this repository (the pipeline's test runner
+#                        is one). It builds the review bundle.
+#   review_worker_image  deploy/Dockerfile.review-worker built from a source
+#                        that has `jb-review-worker --auth-file` and
+#                        `jb-review-worker verdict`; pin it by digest.
+#   review_model         the Codex model the review runs on.
+# ((codex-auth)) is NOT an install var: leave it off set-pipeline, and the
+# team's credential manager resolves it when the review task starts. On the
+# Kubernetes credential manager it is the secret concourse-main/codex-auth,
+# key `value`, holding a Codex auth.json. The ATC fills ((run_id)) per Run.
+#
+# The queue admits a Run of it per candidate, binding the compose Run's
+# composition as the `composition` run input and the queue's repository,
+# trunk and entries as params.
+#
+# change. The worker reads a capture bundle (review-input/v1: base and head
+# trees, the diff, a manifest), not a tree, and the compose image has git but
+# not the Go capture code, so the bundle is built here rather than by compose.
+# The task fetches the trunk to get the base the manifest names, proves the
+# candidate is the tree compose composed (every file and mode, by git's tree
+# hash), commits that tree on the base as a stand-in head ("landing candidate
+# <head>"; the tree is compose's exactly, the commit's identity is fixed), and
+# runs `jb review capture` from the base's own source -- the trunk's reviewed
+# code, never the change under review -- over base..head. The review sees the
+# whole change the entry introduces, as one diff, whatever its commit count.
+#
+# review. The credential reaches only this task, as a param, and is written to
+# an owner-only file on /dev/shm (a tmpfs) that never leaves the container;
+# the worker removes it the moment it holds it open, the trap removes it if the
+# worker never ran, and nothing echoes it (no `set -x`). Codex may refresh its
+# tokens during a review and cannot write them back to the secret, so the
+# stored copy goes stale as the subscription's refresh token rotates. When
+# reviews start failing to authenticate, refresh the secret from a machine
+# that is logged in, from its ~/.codex/auth.json.
+#
+# verdict. After the worker publishes review.json and review.md, the full
+# review.md is printed to the build log and `jb-review-worker verdict
+# --block-at high` decides: any finding of severity high or blocker fails the
+# task, listing each one's id, severity and title; medium and low pass, and so
+# does an incomplete review with no such finding (it says so). On a pass the
+# Run publishes the report as its `review` result. A failed Run publishes no
+# result, so a red review's report is in its Run's build log, which the
+# entry's eject reason names.
+#
+# Budgets: change 20m, review 35m (the worker's own session cap is 30m). Give
+# the gate a wait above their sum, for example `wait: 60m`.
+template: true
+params:
+  - name: repository
+    type: string
+    required: true
+  - name: trunk
+    type: string
+    required: true
+  - name: entries
+    type: string
+    required: true
+jobs:
+  - name: review
+    plan:
+      - task: change
+        timeout: 20m
+        task_id: a696bd8f-e049-45b1-bf54-40b24f68782a
+        run_inputs:
+          - name: composition
+            input: composition
+        run_result:
+          name: change
+          output: change
+        config:
+          platform: linux
+          rootfs_uri: docker:///((change_image))
+          inputs:
+            - name: composition
+          outputs:
+            - name: change
+          run:
+            path: /bin/sh
+            args:
+              - -eu
+              - -c
+              - |
+                # change: the review bundle of base..candidate.
+                # $1 repository, $2 trunk; input composition/: manifest/ and candidate/
+                repo=$1 trunk=$2
+                top=$PWD candidate=$PWD/composition/candidate
+                val() { grep "^$1=" composition/manifest/manifest.env 2>/dev/null | head -1 | cut -d= -f2-; }
+                base=$(val base) head=$(val head) tree=$(val tree)
+                [ -n "$base" ] && [ -n "$head" ] && [ -n "$tree" ] || { echo "change: the composition's manifest.env names no base, head or tree" >&2; exit 1; }
+                [ -d "$candidate" ] || { echo "change: the composition has no candidate/" >&2; exit 1; }
+                export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+                export GIT_AUTHOR_NAME=landing-queue GIT_AUTHOR_EMAIL=landing-queue@jetbridge GIT_COMMITTER_NAME=landing-queue GIT_COMMITTER_EMAIL=landing-queue@jetbridge
+                export GIT_AUTHOR_DATE=2000-01-01T00:00:00+0000 GIT_COMMITTER_DATE=2000-01-01T00:00:00+0000
+                git init -q "$top/work"
+                git -C "$top/work" fetch -q --no-tags -- "$repo" "refs/heads/$trunk"
+                git -C "$top/work" cat-file -e "$base^{commit}" 2>/dev/null || git -C "$top/work" fetch -q --no-tags -- "$repo" "$base"
+                # Every file, ignored ones too, with its mode, into a scratch index.
+                got=$(cd "$candidate" && GIT_DIR=$top/work/.git GIT_INDEX_FILE=$top/candidate.index git add -A -f . && GIT_DIR=$top/work/.git GIT_INDEX_FILE=$top/candidate.index git write-tree)
+                [ "$got" = "$tree" ] || { echo "change: the candidate's tree is $got, but compose composed $tree; not reviewing it" >&2; exit 1; }
+                change=$(printf 'landing candidate %s\n\nThe tree compose composed on %s, as one commit.\n' "$head" "$base" | git -C "$top/work" commit-tree "$tree" -p "$base")
+                git -C "$top/work" checkout -q "$change"
+                # jb from the base's own source: the trunk's reviewed code, never the change's.
+                mkdir "$top/tools"
+                git -C "$top/work" archive "$base" | tar -x -C "$top/tools"
+                (cd "$top/tools" && go build -o "$top/jb" ./cmd/jb)
+                "$top/jb" review capture --repo "$top/work" --base "$base" --head "$change" --output "$top/change/bundle"
+                echo "change: bundle of $base..$change, the candidate $head"
+              - change
+              - ((repository))
+              - ((trunk))
+      - task: review
+        timeout: 35m
+        task_id: 802a73a2-7c07-4b06-bf70-8191dc2dd48f
+        run_inputs:
+          - name: change
+            input: change
+            result: change
+        run_result:
+          name: review
+          output: result
+        params:
+          CODEX_AUTH: ((codex-auth))
+        config:
+          platform: linux
+          rootfs_uri: docker:///((review_worker_image))
+          inputs:
+            - name: change
+          outputs:
+            - name: result
+          run:
+            path: /bin/sh
+            args:
+              - -eu
+              - -c
+              - |
+                # review: the worker on the bundle, then the verdict on its report.
+                # $1 model, $2 --run-id=<Run ID>; CODEX_AUTH the owner's Codex auth.json
+                umask 077
+                auth=/dev/shm/jb-review-auth.json
+                trap 'rm -f "$auth"' EXIT
+                [ -n "${CODEX_AUTH:-}" ] || { echo "review: ((codex-auth)) is empty; set the codex-auth secret for this team" >&2; exit 1; }
+                printf '%s' "$CODEX_AUTH" > "$auth"
+                unset CODEX_AUTH
+                mkdir -p /dev/shm/jb-review
+                /usr/local/bin/jb-review-worker \
+                  --input change/bundle --output result/report \
+                  --runtime-dir /dev/shm/jb-review \
+                  --auth-file "$auth" \
+                  --model "$1" "$2"
+                mv result/report/review.json result/report/review.md result/
+                rmdir result/report
+                cat result/review.md
+                /usr/local/bin/jb-review-worker verdict --report result/review.json --block-at high
+              - review
+              - ((review_model))
+              - --run-id=((run_id))

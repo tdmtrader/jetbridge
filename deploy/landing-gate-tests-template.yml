@@ -1,0 +1,175 @@
+# The landing queue's test gate (ADR-0011): the jetbridge pipeline's own
+# build-and-vet and unit-tests tasks, run against the candidate a compose Run
+# composed. Install with
+#
+#   fly -t <target> set-pipeline -p landing-gate-tests -c deploy/landing-gate-tests-template.yml
+#
+# It takes no install vars: the runner image, resources and scripts are the
+# pipeline's (deploy/concourse-pipeline.yml), copied verbatim, and
+# deploy/landing/gates_test.go fails if either task's config, timeout or
+# attempts drift from the job's. Change them there, then here.
+#
+# The queue admits a Run of it per candidate with the queue's repository,
+# trunk and entries as params (unused here) and the compose Run's composition
+# bound as the `composition` run input. A gate passes when its Run succeeds.
+#
+# What the jobs assume about `repo`, and what this gate gives them. In the
+# pipeline `repo` is a depth-1 git checkout of core; hack/ci-check.sh, the
+# pre-merge check, runs the same tasks on a `git archive` tree with no .git,
+# and both pass: nothing in either task needs .git (the archive-aware tests
+# walk the tree instead of running git ls-files, and the one ancestry check
+# skips loudly), and the repository has no submodules (the review capture
+# refuses one). The candidate is exactly such a tree: compose's `git archive`
+# of the composed head. stage checks that the tree it received is the one
+# compose composed -- every file and mode, by git's own tree hash -- and
+# publishes a copy as `repo`, so each task gets the candidate as `repo`, at
+# the path its script expects, in a pod of its own.
+#
+# The two tasks run in parallel, as two pods of 6 CPU each. Their budgets
+# (20m and 45m, each attempted twice) are the pipeline's; give the gate a
+# wait above the slower one's worst case, for example `wait: 100m`.
+template: true
+params:
+  - name: repository
+    type: string
+    required: true
+  - name: trunk
+    type: string
+    required: true
+  - name: entries
+    type: string
+    required: true
+jobs:
+  - name: tests
+    plan:
+      - task: stage
+        timeout: 10m
+        task_id: 92a95079-ee9f-4651-93ff-02a38f24cf9d
+        run_inputs:
+          - name: composition
+            input: composition
+        run_result:
+          name: repo
+          output: repo
+        config:
+          platform: linux
+          rootfs_uri: docker:///registry.home/concourse-test-runner:v12
+          inputs:
+            - name: composition
+          outputs:
+            - name: repo
+          run:
+            path: /bin/sh
+            args:
+              - -eu
+              - -c
+              - |
+                # stage: the candidate, proven to be compose's tree, as `repo`.
+                top=$PWD candidate=$PWD/composition/candidate
+                val() { grep "^$1=" composition/manifest/manifest.env 2>/dev/null | head -1 | cut -d= -f2-; }
+                head=$(val head) tree=$(val tree)
+                [ -n "$head" ] && [ -n "$tree" ] || { echo "stage: the composition's manifest.env names no head or tree" >&2; exit 1; }
+                [ -d "$candidate" ] || { echo "stage: the composition has no candidate/" >&2; exit 1; }
+                export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+                git init -q "$top/check"
+                # Every file, ignored ones too, with its mode, into a scratch index.
+                got=$(cd "$candidate" && GIT_DIR=$top/check/.git GIT_INDEX_FILE=$top/check.index git add -A -f . && GIT_DIR=$top/check/.git GIT_INDEX_FILE=$top/check.index git write-tree)
+                [ "$got" = "$tree" ] || { echo "stage: the candidate's tree is $got, but compose composed $tree; not testing it" >&2; exit 1; }
+                cp -a "$candidate/." "$top/repo/"
+                echo "stage: repo is candidate $head (tree $tree)"
+              - stage
+      - in_parallel:
+          - task: build-and-vet
+            task_id: 637b242a-0375-44ee-ae00-e7ba675fa8bb
+            run_inputs:
+              - name: repo
+                input: repo
+                result: repo
+            timeout: 20m
+            # Retry transient k8s-runtime pod disruptions (single-node contention);
+            # this task errors (not fails) when its pod is lost mid-run.
+            attempts: 2
+            config:
+              platform: linux
+              container_requests: {cpu: 6000}  # millicores; see deploy/concourse-pipeline.yml's header
+              rootfs_uri: docker:///registry.home/concourse-test-runner:v12
+              inputs:
+              - name: repo
+              run:
+                path: sh
+                args:
+                - -exc
+                - |
+                  cd repo
+                  echo "=== Verifying full build ==="
+                  go build ./cmd/concourse
+                  go build ./cmd/artifact-daemon
+                  echo "=== Build successful ==="
+                  echo ""
+                  echo "=== Running go vet ==="
+                  go vet ./atc/worker/jetbridge/... ./vars/... ./tracing/... \
+                         ./fly/commands/... ./fly/rc/... ./fly/eventstream/... \
+                         ./atc/engine/... ./atc/resource/... \
+                         ./atc/scheduler/... ./atc/metric/... ./atc/creds/... \
+                         ./skymarshal/token/... ./skymarshal/skyserver/...
+                  echo "=== Vet passed ==="
+                  echo ""
+                  # The live-tagged suites only run in k8s-live-tests, at the end of the
+                  # pipeline. Compiling them here catches an API drift the moment it
+                  # lands, instead of the month later when the live tier next runs.
+                  echo "=== Compiling live-tagged suites ==="
+                  go vet -tags live ./atc/worker/jetbridge/...
+                  # The Hangar generated-Pod contract is hangar_live only: it relabels
+                  # a node, so it cannot run against the deployed cluster. It RUNS in
+                  # the k8s-e2e pipeline's hangar-generated-pod-contract job, on a
+                  # throwaway K3s cluster; compiling it here keeps it honest between
+                  # those runs.
+                  go vet -tags hangar_live ./atc/worker/jetbridge/...
+                  echo "=== Live-tagged suites compile ==="
+          - task: unit-tests
+            task_id: 8e249897-75c0-40f5-9ee6-0c5d23d00da7
+            run_inputs:
+              - name: repo
+                input: repo
+                result: repo
+            timeout: 45m
+            attempts: 2
+            config:
+              platform: linux
+              container_requests: {cpu: 6000}  # millicores; see deploy/concourse-pipeline.yml's header
+              rootfs_uri: docker:///registry.home/concourse-test-runner:v12
+              inputs:
+              - name: repo
+              # The Hangar output plane's tier-2 conformance suite runs against the
+              # fake-gcs-server already deployed in this namespace (deployment
+              # hangar-fake-gcs, service fake-gcs on 4443). HANGAR_CI is what turns a
+              # missing or unreachable endpoint into a FAILURE there rather than a
+              # skip: Req 41 makes that profile the store's conformance bar, and a
+              # skipped run reported as conformance is worse than no run at all.
+              #
+              # The same variable is what the brine Hangar fixture reads instead of
+              # starting fake-gcs-server in-process, so one deployment serves both
+              # runners and both share one failure mode.
+              #
+              # This repository does not self-apply its pipeline: after this merges,
+              # `fly set-pipeline` has to be re-run before the params take effect.
+              params:
+                HANGAR_FAKE_GCS_ENDPOINT: http://fake-gcs.cicd.svc:4443
+                HANGAR_CI: "1"
+              run:
+                path: sh
+                args:
+                - -exc
+                - |
+                  cd repo
+                  # The unit tier lives in hack/unit-tests.sh, which `make test-unit`
+                  # runs too: one package list, one exclusion list. --ci adds the
+                  # checks and the node-sized scheduling only this pod needs.
+                  hack/unit-tests.sh --ci
+                  echo ""
+                  # fly/integration is outside the unit tier and runs here, through the same
+                  # entry point a developer uses. It builds fly and drives it against a
+                  # mock ATC -- no cluster, no postgres -- so it needs no job of its
+                  # own; until 2026-10-30 no job ran it at all.
+                  echo "=== Running fly integration tests ==="
+                  make test-fly-integration
