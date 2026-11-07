@@ -244,6 +244,22 @@ docker run --rm -i --read-only \
   --auth-stdin --timeout 30m < /owner/selected/auth.json
 ```
 
+A task that receives the credential as a param, as the landing queue's review
+gate (`deploy/landing-gate-review-template.yml`) receives `((codex-auth))`,
+writes it to an owner-only (0600) file on `/dev/shm` and passes
+`--auth-file /dev/shm/<name>`. The worker refuses a relative path, a link, a
+file anyone else can read and a file off a tmpfs, removes the file as soon as
+it holds it open, and prints nothing of it. Exactly one of `--auth-stdin`,
+`--auth-socket` and `--auth-file` is given. Codex may refresh the tokens during
+the session and cannot write them back, so a stored copy goes stale as the
+refresh token rotates: refresh it from a logged-in `~/.codex/auth.json`.
+
+`jb-review-worker verdict --report review.json --block-at high` applies a
+severity floor to a published report: it exits non-zero, listing each finding
+at or above the floor (id, severity, title, location), and passes otherwise.
+An incomplete review passes when none of its findings reaches the floor, and
+says it is incomplete.
+
 The private-fixture subscription smoke passes with Codex 0.153.1 and `gpt-6-astra`.
 The owner accepted this deployment's account-auth risks on 2026-09-16, resolving
 **AUTH-1** for reviewing JetBridge on controlled private workers. This is an owner
