@@ -308,7 +308,7 @@ Kubernetes flags are optional.
 | `--kubernetes-artifact-daemon-port` | `7780` | Port the artifact daemon serves on. |
 | `--kubernetes-artifact-daemon-service` | `artifact-daemon` | Service used to reach daemon pods. |
 | `--kubernetes-artifact-daemon-tls-cert` / `-key` / `-ca-cert` | (none) | Client mTLS material for the daemon data plane. |
-| `--kubernetes-artifact-helper-image` | `alpine:latest` | Image for the artifact init containers. Must have `tar`. |
+| `--kubernetes-artifact-helper-image` | `alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4` | Image for the artifact init containers. Must have `tar`. |
 | `--kubernetes-image-pull-secret` | (none) | K8s Secret for imagePullSecrets on task pods. Repeatable. |
 | `--kubernetes-service-account` | namespace default | ServiceAccount for task pods. |
 | `--kubernetes-image-registry-secret` | (none) | K8s Secret (type `kubernetes.io/dockerconfigjson`) for registry auth. Auto-added to every pod. |

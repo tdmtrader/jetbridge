@@ -284,7 +284,7 @@ jobs:
           echo "=== Loading the contracts' images into the cluster's containerd ==="
           # The generated Pods' main containers and the capture stand-in run
           # busybox:latest; the managed-input init runs alpine:latest (the
-          # chart's artifactHelperImage, whose wget speaks TLS); the
+          # helper image the contract sets, whose wget speaks TLS); the
           # managed-read stand-in runs alpine/socat:latest to terminate that
           # TLS. Every container is PullIfNotPresent, so importing the images
           # the task already pulled keeps the contracts off the public registry
@@ -365,9 +365,9 @@ jobs:
 # The image is built here, not pulled: static artifact-daemon and hangar-store
 # binaries on busybox at the chart's /usr/local/concourse/bin paths, imported
 # into the cluster's containerd with busybox (the step pod's main container)
-# and alpine (the chart's artifactHelperImage, which runs the managed-input
-# init). The contract reads the image name from HANGAR_DISK_IMAGE and renders
-# the chart with image.pullPolicy=Never.
+# and alpine:latest (the helper image the contract sets, which runs the
+# managed-input init). The contract reads the image name from
+# HANGAR_DISK_IMAGE and renders the chart with image.pullPolicy=Never.
 - name: hangar-disk-store-contract
   serial: true
   serial_groups: [k8s-tests]
@@ -650,6 +650,22 @@ jobs:
           rm -f /tmp/hangar-cluster-images.tar
           docker exec ${CLUSTER} ctr -n=k8s.io images import --all-platforms /tmp/hangar-cluster-images.tar
           docker exec ${CLUSTER} rm -f /tmp/hangar-cluster-images.tar
+
+          # The chart's default kubernetes.artifactHelperImage, which the
+          # rendered web's step pods run (alpine:latest above is the
+          # contract's own helper). Best effort, and never fatal: whether
+          # containerd matches the pinned index digest after docker save and
+          # ctr import depends on Docker's image store; where it does not, the
+          # kubelet pulls the image once (IfNotPresent) instead.
+          HELPER_IMAGE="alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4"
+          if docker pull "${HELPER_IMAGE}" && docker save "${HELPER_IMAGE}" -o /tmp/helper-image.tar; then
+            docker cp /tmp/helper-image.tar ${CLUSTER}:/tmp/helper-image.tar &&
+              docker exec ${CLUSTER} ctr -n=k8s.io images import --all-platforms /tmp/helper-image.tar ||
+              echo "warning: could not preload ${HELPER_IMAGE}; the kubelet will pull it"
+          else
+            echo "warning: could not save ${HELPER_IMAGE}; the kubelet will pull it"
+          fi
+          rm -f /tmp/helper-image.tar
 
           export KUBECONFIG=${KUBECONFIG_PATH}
           export HANGAR_CLUSTER_IMAGE=${CLUSTER_IMAGE}

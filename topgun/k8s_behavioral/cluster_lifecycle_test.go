@@ -173,6 +173,10 @@ var testImages = []string{
 	"docker.io/library/busybox:latest",
 	"docker.io/library/alpine:3.19",
 	"docker.io/library/alpine:latest",
+	// The chart's default kubernetes.artifactHelperImage, which every step
+	// pod's artifact init containers run. Best effort: if the loaded copy
+	// does not carry the pinned index digest, the kubelet pulls it once.
+	"docker.io/library/alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4",
 	"docker.io/library/nginx:alpine",
 }
 

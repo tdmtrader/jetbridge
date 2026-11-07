@@ -45,7 +45,10 @@ const (
 
 	// DefaultArtifactHelperImage is the container image used for init
 	// containers that fetch artifacts from the DaemonSet. Only needs tar.
-	DefaultArtifactHelperImage = "alpine:latest"
+	// Pinned by tag and multi-arch index digest: these init containers carry
+	// warrants, so a mutable tag would let whoever controls it run code
+	// beside them. deploy/chart/values.yaml pins the same image.
+	DefaultArtifactHelperImage = "alpine:3.24.4@sha256:93b41ef40b1677fce8fcc64ff4af09daddfacf5040afde618bc46c1e2d1cc7d4"
 
 	// ArtifactMountPath is the mount path inside init containers where
 	// the artifact hostPath volume is attached.

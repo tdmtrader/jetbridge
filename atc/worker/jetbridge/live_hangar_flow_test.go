@@ -151,8 +151,10 @@ func TestLiveHangarGeneratedPodMaterializesManagedRead(t *testing.T) {
 	cfg.ArtifactDaemonPort = 31780
 	cfg.ArtifactDaemonTLSEnabled = true
 	cfg.ArtifactDaemonTLSCert, cfg.ArtifactDaemonTLSKey, cfg.ArtifactDaemonTLSCACert = clientCertPath, clientKeyPath, caPath
-	// The chart's own kubernetes.artifactHelperImage: Alpine's wget speaks
-	// TLS through ssl_client, as it does in every deployment.
+	// Alpine, as the chart's kubernetes.artifactHelperImage is: Alpine's wget
+	// speaks TLS through ssl_client, as it does in every deployment. The chart
+	// pins its helper by digest; this contract runs the alpine:latest its
+	// pipeline job preloads.
 	cfg.ArtifactHelperImage = "alpine:latest"
 	cfg.OutputPlaneEnabled = true
 

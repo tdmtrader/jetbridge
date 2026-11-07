@@ -289,9 +289,11 @@ func TestLiveHangarDiskStoreRoundTripSurvivesRestart(t *testing.T) {
 	cfg.ArtifactDaemonPort = liveDiskPort
 	cfg.ArtifactDaemonTLSEnabled = true
 	cfg.ArtifactDaemonTLSCert, cfg.ArtifactDaemonTLSKey, cfg.ArtifactDaemonTLSCACert = clientCertPath, clientKeyPath, caPath
-	// The chart's own kubernetes.artifactHelperImage, not BusyBox: the init
-	// speaks TLS to a real artifact daemon, and Alpine's wget does that
-	// through ssl_client, as it does in every deployment.
+	// Alpine, as the chart's kubernetes.artifactHelperImage is, not BusyBox:
+	// the init speaks TLS to a real artifact daemon, and Alpine's wget does
+	// that through ssl_client, as it does in every deployment. The chart pins
+	// its helper by digest; this contract runs the alpine:latest its pipeline
+	// job preloads.
 	cfg.ArtifactHelperImage = "alpine:latest"
 	cfg.OutputPlaneEnabled = true
 	liveDiskMaterialize(t, ctx, client, cfg, signer, nodeUID, "before-restart-"+suffix, published.Ref)
