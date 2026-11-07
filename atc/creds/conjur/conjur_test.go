@@ -64,6 +64,31 @@ var _ = Describe("Conjur", func() {
 			Expect(err).To(BeNil())
 		})
 
+		It("refuses a quoted '..' in a var name without asking conjur", func() {
+			mockService.stubGetParameter = func(input string) ([]byte, error) {
+				Fail("a refused var name reached conjur: " + input)
+				return nil, nil
+			}
+
+			_, found, err := variables.Get(vars.Reference{Path: "../../other-team/secret"})
+			Expect(err).To(MatchError(ContainSubstring(`invalid var '"../../other-team/secret"': path segment '..' is not allowed`)))
+			Expect(found).To(BeFalse())
+		})
+
+		It("gets a var name with slashes beneath the pipeline prefix", func() {
+			mockService.stubGetParameter = func(input string) ([]byte, error) {
+				if input == "concourse/alpha/bogus/foo/bar" {
+					return []byte("slashed"), nil
+				}
+				return nil, errors.New("Variable not found")
+			}
+
+			value, found, err := variables.Get(vars.Reference{Path: "foo/bar"})
+			Expect(err).To(BeNil())
+			Expect(found).To(BeTrue())
+			Expect(value).To(BeEquivalentTo("slashed"))
+		})
+
 		It("should get team parameter if exists", func() {
 			mockService.stubGetParameter = func(input string) ([]byte, error) {
 				if input != "concourse/alpha/cheery" {

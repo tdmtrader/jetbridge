@@ -2,6 +2,7 @@ package vault_test
 
 import (
 	"encoding/json"
+	"net/http"
 	"regexp"
 	"time"
 
@@ -33,6 +34,14 @@ func (msr *MockSecretReader) Read(lookupPath string) (*vaultapi.Secret, error) {
 		}
 	}
 
+	return nil, nil
+}
+
+// recordingReader records every path it is asked to read and finds none.
+type recordingReader struct{ read []string }
+
+func (r *recordingReader) Read(lookupPath string) (*vaultapi.Secret, error) {
+	r.read = append(r.read, lookupPath)
 	return nil, nil
 }
 
@@ -300,6 +309,18 @@ var _ = Describe("Vault", func() {
 						Expect(err).To(BeNil())
 						Expect(found).To(BeTrue())
 					})
+
+					// A pipeline's own vault var_source is built this way
+					// (atc/db/pipeline.go, allowRootPath true).
+					It("refuses a quoted '..' before reading any path", func() {
+						reader := &recordingReader{}
+						v.SecretReader = reader
+
+						_, found, err := variables.Get(vars.Reference{Path: "../outside-the-prefix"})
+						Expect(err).To(MatchError(ContainSubstring("path segment '..' is not allowed")))
+						Expect(found).To(BeFalse())
+						Expect(reader.read).To(BeEmpty())
+					})
 				})
 
 				Context("is false", func() {
@@ -390,6 +411,30 @@ var _ = Describe("Vault KV2", func() {
 			Expect(err).To(BeNil())
 		})
 
+		It("refuses a quoted '..' in a var name before any request reaches the kv2 mount", func() {
+			// Any request at all would be unhandled and fail the spec;
+			// the mount preflight route is the only one registered.
+			server.RouteToHandler("GET", regexp.MustCompile("/v1/sys/internal/ui/mounts/.*"), func(http.ResponseWriter, *http.Request) {
+				Fail("a refused var name reached vault")
+			})
+
+			_, found, err := variables.Get(vars.Reference{Path: "../../other-team/secret"})
+			Expect(err).To(MatchError(ContainSubstring(`invalid var '"../../other-team/secret"': path segment '..' is not allowed`)))
+			Expect(found).To(BeFalse())
+		})
+
+		It("gets a var name with slashes beneath the pipeline prefix", func() {
+			server.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/v1/concourse/data/team/pipeline/foo/bar"),
+					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV2Secret("baz")),
+				),
+			)
+			value, found, err := variables.Get(vars.Reference{Path: "foo/bar"})
+			Expect(err).To(BeNil())
+			Expect(found).To(BeTrue())
+			Expect(value).To(BeEquivalentTo("baz"))
+		})
 		It("should get secret from pipeline", func() {
 			server.AppendHandlers(
 				ghttp.CombineHandlers(
@@ -649,6 +694,30 @@ var _ = Describe("Vault KV1", func() {
 	})
 
 	Describe("Get()", func() {
+		It("refuses a quoted '..' in a var name before any request reaches the kv1 mount", func() {
+			// Any request at all would be unhandled and fail the spec;
+			// the mount preflight route is the only one registered.
+			server.RouteToHandler("GET", regexp.MustCompile("/v1/sys/internal/ui/mounts/.*"), func(http.ResponseWriter, *http.Request) {
+				Fail("a refused var name reached vault")
+			})
+
+			_, found, err := variables.Get(vars.Reference{Path: "../../other-team/secret"})
+			Expect(err).To(MatchError(ContainSubstring(`invalid var '"../../other-team/secret"': path segment '..' is not allowed`)))
+			Expect(found).To(BeFalse())
+		})
+
+		It("gets a var name with slashes beneath the pipeline prefix", func() {
+			server.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/v1/concourse/team/pipeline/foo/bar"),
+					ghttp.RespondWithJSONEncodedPtr(&statusCodeOK, createMockV1Secret("baz")),
+				),
+			)
+			value, found, err := variables.Get(vars.Reference{Path: "foo/bar"})
+			Expect(err).To(BeNil())
+			Expect(found).To(BeTrue())
+			Expect(value).To(BeEquivalentTo("baz"))
+		})
 		It("should get secret from pipeline", func() {
 			server.AppendHandlers(
 				ghttp.CombineHandlers(

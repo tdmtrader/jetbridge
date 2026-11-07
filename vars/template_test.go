@@ -74,6 +74,23 @@ var _ = Describe("Template", func() {
 		Entry("undeclared", "other", false),
 	)
 
+	// fly set-pipeline evaluates the whole config, so this is where a pipeline
+	// author learns that a secret path cannot climb out of the team's prefix.
+	It("refuses a reference whose quoted path has a '..' segment", func() {
+		template := NewTemplate([]byte(`secret: ((vault:"../other-team/secret"))`))
+
+		_, err := template.Evaluate(StaticVariables{}, EvaluateOpts{})
+		Expect(err).To(MatchError(`invalid var 'vault:"../other-team/secret"': path segment '..' is not allowed`))
+	})
+
+	It("still resolves a reference whose path has slashes", func() {
+		template := NewTemplate([]byte(`secret: ((foo/bar))`))
+
+		result, err := template.Evaluate(StaticVariables{"foo/bar": "baz"}, EvaluateOpts{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(result)).To(Equal("secret: baz\n"))
+	})
+
 	It("leaves excluded references exactly as written, whole-field or inline", func() {
 		// This fails if a supplied var with the same name as a declared
 		// template parameter consumes the placeholder, baking a constant into

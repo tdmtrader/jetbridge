@@ -66,6 +66,30 @@ var _ = Describe("Kubernetes", func() {
 		vs = creds.NewVariables(factory.NewSecrets(), creds.SecretLookupParams{Team: "some-team", Pipeline: "some-pipeline"}, false)
 	})
 
+	Describe("dot-segment var names", func() {
+		BeforeEach(func() {
+			fakeClientset.CoreV1().Secrets("prefix-some-team").Create(context.TODO(), &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: secretName},
+				Data:       map[string][]byte{"value": []byte("some-value")},
+			}, metav1.CreateOptions{})
+			fakeClientset.ClearActions()
+		})
+
+		It("refuses a quoted '..' without asking the API server", func() {
+			_, found, err := vs.Get(vars.Reference{Path: ".."})
+			Expect(err).To(MatchError(ContainSubstring(`invalid var '".."': path segment '..' is not allowed`)))
+			Expect(found).To(BeFalse())
+			Expect(fakeClientset.Actions()).To(BeEmpty())
+		})
+
+		It("still resolves an ordinary name", func() {
+			val, found, err := vs.Get(vars.Reference{Path: secretName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(val).To(Equal("some-value"))
+		})
+	})
+
 	DescribeTable("var lookup", func(ex Example) {
 		ex.Assert(vs)
 	},
