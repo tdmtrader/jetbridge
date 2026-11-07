@@ -475,7 +475,7 @@ different encryption key restores the database from a backup taken under it.
 |-----------|---------|-------------|
 | `networkPolicy.enabled` | `false` | Enable NetworkPolicy resources. |
 | `networkPolicy.ingressFrom` | `[]` | Allow ingress from these pod selectors. Empty = allow all. |
-| `networkPolicy.taskEgressTo` | `[]` | Egress rules for task pods. Empty = allow all outbound. |
+| `networkPolicy.taskEgressTo` | `[]` | Egress rules for task pods. Empty = allow all outbound. The policy renders in the release namespace, so it confines task pods only when `kubernetes.namespace` is unset or names that namespace. |
 
 ### Pod Disruption Budget
 

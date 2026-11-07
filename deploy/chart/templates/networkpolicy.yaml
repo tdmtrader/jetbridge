@@ -84,6 +84,13 @@ daemon's own switch. tests/networkpolicy_test.go holds both halves.
 # Task pod egress: restrict outbound traffic from CI task pods.
 # Always allows DNS, artifact daemon, and GKE metadata server
 # (required for Workload Identity token refresh at 169.254.169.254).
+#
+# It renders in the release namespace, so it confines step pods only when
+# kubernetes.namespace is unset or names the release namespace. Moving it to
+# kubernetes.namespace would start confining step pods that run unconfined
+# today, and its artifact-daemon peer would then select no pod (the daemon
+# runs in the release namespace), so that move is a behaviour change for its
+# own release, not a fix.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -109,6 +116,19 @@ spec:
   egress:
     # DNS resolution (kube-dns / CoreDNS)
     - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # NodeLocal DNSCache, which answers on a link-local address on every node:
+    # 169.254.20.10 by default, though a cluster can choose another. The rule
+    # above names no destination, so it already admits any address; this one
+    # matches only the default address by IP, and keeps resolution working on
+    # such a cluster should the rule above ever name kube-dns.
+    - to:
+        - ipBlock:
+            cidr: 169.254.20.10/32
+      ports:
         - port: 53
           protocol: UDP
         - port: 53

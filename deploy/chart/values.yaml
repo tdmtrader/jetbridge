@@ -524,6 +524,8 @@ networkPolicy:
   # When set, task pods are restricted to: DNS, artifact daemon, GKE metadata
   # server (169.254.169.254 — required for Workload Identity), plus these entries.
   # When empty (default), task pods have unrestricted egress.
+  # The policy renders in the release namespace, so it confines task pods only
+  # when kubernetes.namespace is unset or names that namespace.
   # IMPORTANT: On GKE with Workload Identity, the metadata server allowlist is
   # included automatically. Do NOT remove 169.254.169.254 from the template.
   taskEgressTo: []
