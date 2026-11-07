@@ -36,6 +36,7 @@ var _ = Describe("Mutation error status", func() {
 		Entry("template has runs", db.ErrPipelineTemplateHasRuns),
 		Entry("template history", db.ErrPipelineTemplateHasRunHistory),
 		Entry("template with an active run", db.ErrPipelineTemplateHasActiveRun),
+		Entry("template with a pending landing", db.ErrPipelineTemplateHasPendingLanding),
 		Entry("ordinary template transition state", db.ErrPipelineTemplateHasOrdinaryJobState),
 		Entry("completed run", db.ErrPipelineRunNotRunning),
 		Entry("build into a terminal run", db.ErrPipelineRunTerminal{Number: 7, Status: atc.RunStatusFailed}),

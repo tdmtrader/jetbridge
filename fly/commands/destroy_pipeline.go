@@ -97,6 +97,7 @@ func (command *DestroyPipelineCommand) purge(team concourse.Team, pipeline atc.P
 	warn("  - its results and captured outputs")
 	warn("  - its bound inputs and input uploads (their Hangar claims are released, so the stored trees become reclaimable)")
 	warn("  - its credential handoffs and cancellation records")
+	warn("  - landing queue entries that used these Runs keep their outcome but lose the link to them")
 	if runs, ok := command.countRuns(team, pipeline); ok {
 		warn("`%s` has %s.", name, runs)
 	}
