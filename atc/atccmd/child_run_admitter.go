@@ -84,6 +84,7 @@ func (a childRunAdmitter) AdmitChildRun(ctx context.Context, req exec.ChildRunRe
 
 		Template:  req.Template,
 		Params:    req.Params,
+		Inputs:    req.Inputs,
 		Principal: req.Principal,
 
 		InputDigest: req.InputDigest,
