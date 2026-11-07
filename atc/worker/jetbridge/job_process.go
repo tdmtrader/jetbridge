@@ -225,6 +225,14 @@ func (p *jobProcess) followPod(ctx context.Context, podName string) (jobPodOutco
 		if err := reportPodFailure(ctx, p.clientset, pod, p.processIO.Stderr, state); err != nil {
 			return jobPodOutcome{}, err
 		}
+		// A failed init container ends the pod before main ever ran; the
+		// phase is Failed and no main status exists, which podExitCode would
+		// read as the command's exit 1. Name the init instead.
+		if name, exit, failed := failedInitContainer(pod); failed && !mainStarted(pod) {
+			writePodDiagnostics(pod, p.processIO.Stderr)
+			fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, podName, p.processIO.Stderr)
+			return jobPodOutcome{}, fmt.Errorf("init container %q failed with exit %d before the command ran", name, exit)
+		}
 		if state.complete {
 			return jobPodOutcome{result: state.result, nodeName: pod.Spec.NodeName}, nil
 		}
