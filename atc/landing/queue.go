@@ -1,7 +1,8 @@
 // Package landing is the landing queue's engine (ADR-0011): one bounded pass
 // at a time over every queue, settling the Runs its intents name and
-// admitting the next compose. It decides from Run statuses and one small
-// verdict result; it never runs git and never holds a repository credential.
+// admitting the next compose, gate or land Run. It decides from Run statuses
+// and one small verdict result; it never runs git and never holds a
+// repository credential.
 package landing
 
 import (
@@ -20,9 +21,11 @@ import (
 	"github.com/concourse/concourse/hangar"
 )
 
-// Runs is what the engine reads of a Run: its status.
+// Runs is what the engine reads of a Run, its status and number, and the one
+// thing it asks of one: to stop a gate Run whose verdict no longer counts.
 type Runs interface {
 	GetRunByID(int) (db.PipelineRun, bool, error)
+	AcceptRunCancellation(context.Context, db.Tx, int, string, *string) (atc.RunCancelOutcome, error)
 }
 
 // Results reads a Run's small named result. runs.ResultReader is the
@@ -71,8 +74,12 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 // pass settles every open intent of the queue whose Run is terminal, then
-// composes the oldest queued entry if nothing is in flight.
+// composes the oldest queued entry if nothing is in flight. A paused queue
+// gets no pass: it admits and settles nothing until it is resumed.
 func (e *Engine) pass(ctx context.Context, queue db.LandingQueue) error {
+	if queue.Paused {
+		return nil
+	}
 	intents, err := e.openIntents(ctx, queue)
 	if err != nil {
 		return err
@@ -110,6 +117,8 @@ func (e *Engine) settle(ctx context.Context, queue db.LandingQueue, intent db.La
 	switch intent.State {
 	case db.LandingIntentComposing:
 		return e.settleCompose(ctx, queue, intent)
+	case db.LandingIntentGating:
+		return e.settleGates(ctx, queue, intent)
 	case db.LandingIntentLanding:
 		return e.settleLand(ctx, queue, intent)
 	}
@@ -126,6 +135,8 @@ func (e *Engine) settleCompose(ctx context.Context, queue db.LandingQueue, inten
 		return e.eject(ctx, intent, "compose Run is gone")
 	case status == atc.RunStatusRunning:
 		return true, nil
+	case status == atc.RunStatusSucceeded && len(queue.Config.Gates) > 0:
+		return e.admitGates(ctx, queue, intent)
 	case status == atc.RunStatusSucceeded:
 		return e.admitLand(ctx, queue, intent)
 	default:

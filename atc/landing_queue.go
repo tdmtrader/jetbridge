@@ -10,9 +10,9 @@ import (
 )
 
 // LandingQueueConfig is the YAML a team sets for one landing queue: the
-// repository and trunk it lands on, and the templates whose Runs do the
-// composing and landing. gates is accepted empty only until the gate track
-// lands; a non-empty list is refused naming the key.
+// repository and trunk it lands on, the templates whose Runs do the composing
+// and landing, and the gates a candidate must pass in between. A queue with no
+// gate is a complete queue: compose, then land.
 type LandingQueueConfig struct {
 	Repository string             `json:"repository"`
 	Trunk      string             `json:"trunk"`
@@ -21,10 +21,32 @@ type LandingQueueConfig struct {
 	Gates      []LandingQueueGate `json:"gates,omitempty"`
 }
 
-// LandingQueueGate is one gate a queue declares: a template.
-// deferred: gates and their params, track landing_queue_unit_test_gate.
+// LandingQueueGate is one gate a queue declares: a template the queue admits
+// a Run of for every candidate, with the compose Run's composition bound as
+// its `composition` run input and the queue's repository, trunk and entries as
+// its params, and how long that Run may take before it counts as no verdict.
+// Wait is a Go duration ("45m"); empty means DefaultLandingGateWait.
 type LandingQueueGate struct {
 	Template string `json:"template"`
+	Wait     string `json:"wait,omitempty"`
+}
+
+// DefaultLandingGateWait is how long a gate Run may take when its gate names
+// no wait: the pipeline's own unit-tests task budget.
+const DefaultLandingGateWait = 45 * time.Minute
+
+// MaxLandingGateWait bounds a gate's wait, so a typo cannot park a queue for
+// a week.
+const MaxLandingGateWait = 24 * time.Hour
+
+// WaitDuration is the gate's wait cap. Validate refuses anything it cannot
+// parse, so an unparsable value here falls back to the default.
+func (gate LandingQueueGate) WaitDuration() time.Duration {
+	wait, err := time.ParseDuration(gate.Wait)
+	if gate.Wait == "" || err != nil || wait < time.Second {
+		return DefaultLandingGateWait
+	}
+	return wait
 }
 
 // ParseLandingQueueConfig decodes a queue's YAML strictly: an unknown key is
@@ -37,8 +59,9 @@ func ParseLandingQueueConfig(body []byte) (LandingQueueConfig, error) {
 	return config, config.Validate()
 }
 
-// Validate names the first missing required key, or the gates key while gates
-// are not yet supported.
+// Validate names the first missing required key, or the first gate that is
+// not usable. That each gate's template exists on the team and is a template
+// is the API's check, which can see the team.
 func (config LandingQueueConfig) Validate() error {
 	for _, required := range []struct{ key, value string }{
 		{"repository", config.Repository},
@@ -56,8 +79,25 @@ func (config LandingQueueConfig) Validate() error {
 	if !validRepository(config.Repository) {
 		return errors.New("landing queue config: repository is a URL starting with https://, ssh://, git@, file:/// or /")
 	}
-	if len(config.Gates) != 0 {
-		return errors.New("landing queue config: gates are not supported yet; set an empty list")
+	seen := map[string]bool{}
+	for i, gate := range config.Gates {
+		switch {
+		case strings.TrimSpace(gate.Template) == "":
+			return fmt.Errorf("landing queue config: gates[%d].template is required", i)
+		case strings.ContainsAny(gate.Template, " \t\n/"):
+			return fmt.Errorf("landing queue config: gates[%d].template %q is not a pipeline name", i, gate.Template)
+		case seen[gate.Template]:
+			return fmt.Errorf("landing queue config: gates[%d].template %q is declared twice", i, gate.Template)
+		case gate.Template == config.Compose || gate.Template == config.Land:
+			return fmt.Errorf("landing queue config: gates[%d].template %q is the queue's compose or land template", i, gate.Template)
+		}
+		seen[gate.Template] = true
+		if gate.Wait == "" {
+			continue
+		}
+		if wait, err := time.ParseDuration(gate.Wait); err != nil || wait < time.Second || wait > MaxLandingGateWait {
+			return fmt.Errorf("landing queue config: gates[%d].wait %q is not a duration from 1s to %s, like 45m", i, gate.Wait, MaxLandingGateWait)
+		}
 	}
 	return nil
 }
@@ -80,7 +120,32 @@ type LandingSubmission struct {
 	Commit string `json:"commit"`
 }
 
-// LandingEntry is one entry as the API presents it, with its settle record.
+// LandingGateVerdict is where one gate of a candidate is: pending (its Run is
+// admitted and running, or is about to be admitted again), passed, failed (a
+// red verdict, which ejected the entry), or no_verdict (its Run errored,
+// aborted or overran its wait twice in a row, and the queue is paused on it).
+type LandingGateVerdict string
+
+const (
+	LandingGatePending   LandingGateVerdict = "pending"
+	LandingGatePassed    LandingGateVerdict = "passed"
+	LandingGateFailed    LandingGateVerdict = "failed"
+	LandingGateNoVerdict LandingGateVerdict = "no_verdict"
+)
+
+// LandingGate is one gate of an entry's candidate as the API presents it:
+// the template, its latest Run's number, its verdict, how many Runs it has
+// had, and why the last one did not count.
+type LandingGate struct {
+	Template  string             `json:"template"`
+	Run       int                `json:"run,omitempty"`
+	Verdict   LandingGateVerdict `json:"verdict"`
+	Attempts  int                `json:"attempts"`
+	LastError string             `json:"last_error,omitempty"`
+}
+
+// LandingEntry is one entry as the API presents it, with its settle record
+// and the gates of its latest candidate.
 type LandingEntry struct {
 	ID           string            `json:"id"`
 	Commit       string            `json:"commit"`
@@ -91,13 +156,17 @@ type LandingEntry struct {
 	SettleReason string            `json:"settle_reason,omitempty"`
 	ComposeRun   int               `json:"compose_run,omitempty"`
 	LandRun      int               `json:"land_run,omitempty"`
+	Gates        []LandingGate     `json:"gates,omitempty"`
 }
 
 // LandingQueueStatus is a queue with its entries and the state of its
-// landings: how many land Runs in a row did not land, and the last error.
+// landings: whether it is paused and why, how many land Runs in a row did not
+// land, and the last error.
 type LandingQueueStatus struct {
 	Name        string             `json:"name"`
 	Config      LandingQueueConfig `json:"config"`
+	Paused      bool               `json:"paused"`
+	PauseReason string             `json:"pause_reason,omitempty"`
 	Entries     []LandingEntry     `json:"entries"`
 	FailedLands int                `json:"failed_lands"`
 	LastError   string             `json:"last_error,omitempty"`

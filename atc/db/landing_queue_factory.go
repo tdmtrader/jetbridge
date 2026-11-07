@@ -27,6 +27,10 @@ type LandingQueue struct {
 	TeamName string
 	Name     string
 	Config   atc.LandingQueueConfig
+	// Paused is set when a gate gave no verdict twice in a row; the engine
+	// passes over a paused queue until it is resumed.
+	Paused      bool
+	PauseReason string
 }
 
 // LandingEntryRow is one row of landing_entries.
@@ -59,6 +63,7 @@ type LandingIntent struct {
 
 const (
 	LandingIntentComposing = "composing"
+	LandingIntentGating    = "gating"
 	LandingIntentLanding   = "landing"
 	LandingIntentDone      = "done"
 )
@@ -84,6 +89,41 @@ type LandingQueueFactory interface {
 	EjectEntry(context.Context, Tx, LandingIntent, string) (bool, error)
 	Recompose(context.Context, Tx, LandingIntent, string) (bool, error)
 	FailLand(context.Context, Tx, LandingIntent, string) (bool, error)
+
+	Gates(context.Context, int) ([]LandingGateRow, error)
+	RecordGates(context.Context, Tx, LandingIntent, []LandingGateAdmission) (bool, error)
+	RecordGateRun(context.Context, Tx, LandingGateRow, int) (bool, error)
+	PassGate(context.Context, Tx, LandingGateRow) (bool, error)
+	FailGate(context.Context, Tx, LandingGateRow, string) (bool, error)
+	RetryGate(context.Context, Tx, LandingGateRow, string) (bool, error)
+	HoldGate(context.Context, Tx, LandingIntent, LandingGateRow, string) (bool, error)
+	Resume(context.Context, int) (bool, error)
+}
+
+// LandingGateRow is one row of landing_gates: one gate of one candidate.
+type LandingGateRow struct {
+	ID           int
+	ComposeRunID int
+	Ordinal      int
+	Template     string
+	Wait         time.Duration
+	// RunID is the gate's current Run; nil while it is due another.
+	RunID      *int
+	Attempts   int
+	NoVerdicts int
+	Verdict    atc.LandingGateVerdict
+	LastError  string
+	// Overdue is whether the current Run was admitted longer than Wait ago,
+	// by the database's clock.
+	Overdue bool
+}
+
+// LandingGateAdmission is one gate Run admitted for a candidate.
+type LandingGateAdmission struct {
+	Ordinal  int
+	Template string
+	Wait     time.Duration
+	RunID    int
 }
 
 type landingQueueFactory struct {
@@ -110,12 +150,12 @@ func (f *landingQueueFactory) SetQueue(ctx context.Context, teamID int, name str
 	return err
 }
 
-var landingQueuesQuery = psql.Select("q.id", "q.team_id", "t.name", "q.name", "q.config").From("landing_queues q").Join("teams t ON t.id = q.team_id")
+var landingQueuesQuery = psql.Select("q.id", "q.team_id", "t.name", "q.name", "q.config", "q.paused", "q.pause_reason").From("landing_queues q").Join("teams t ON t.id = q.team_id")
 
 func scanLandingQueue(row scannable) (LandingQueue, error) {
 	var queue LandingQueue
 	var body []byte
-	if err := row.Scan(&queue.ID, &queue.TeamID, &queue.TeamName, &queue.Name, &body); err != nil {
+	if err := row.Scan(&queue.ID, &queue.TeamID, &queue.TeamName, &queue.Name, &body, &queue.Paused, &queue.PauseReason); err != nil {
 		return LandingQueue{}, err
 	}
 	return queue, json.Unmarshal(body, &queue.Config)
@@ -362,7 +402,11 @@ func (f *landingQueueFactory) FailLand(ctx context.Context, tx Tx, intent Landin
 // Status is the queue as fly prints it: every entry with its Runs' numbers,
 // and the open intent's count of land Runs that did not land.
 func (f *landingQueueFactory) Status(ctx context.Context, queue LandingQueue) (atc.LandingQueueStatus, error) {
-	status := atc.LandingQueueStatus{Name: queue.Name, Config: queue.Config, Entries: []atc.LandingEntry{}}
+	status := atc.LandingQueueStatus{Name: queue.Name, Config: queue.Config, Paused: queue.Paused, PauseReason: queue.PauseReason, Entries: []atc.LandingEntry{}}
+	gates, err := f.entryGates(ctx, queue.ID)
+	if err != nil {
+		return status, err
+	}
 	rows, err := psql.Select("e.entry_id", "e.commit", "e.state", "e.submitted_by", "e.submitted_at", "e.settled_at", "e.settle_reason",
 		"COALESCE(c.number, 0)", "COALESCE(l.number, 0)").
 		From("landing_entries e").
@@ -384,6 +428,7 @@ func (f *landingQueueFactory) Status(ctx context.Context, queue LandingQueue) (a
 			t := settledAt.Time
 			entry.SettledAt = &t
 		}
+		entry.Gates = gates[entry.ID]
 		status.Entries = append(status.Entries, entry)
 	}
 	if err := rows.Err(); err != nil {

@@ -351,8 +351,31 @@ _Avoid_: candidate branch, queue-next
 **Landing intent**:
 The row created when a candidate's compose Run is admitted, keyed by that
 Run and completed by its land Run, so a land Run for a candidate is admitted
-at most once across restarts.
+at most once across restarts. It is composing, then gating while its gates
+run (a queue with no gate skips that), then landing, then done.
 _Avoid_: queue lease, fence
+
+**Gate**:
+A template a landing queue declares, with a wait. Once a candidate's compose
+Run succeeds the queue admits one Run of every gate at once, each binding the
+composition as its `composition` run input; the candidate lands when every
+gate's Run has succeeded. Its row in `landing_gates` is keyed by the
+candidate's compose Run and the gate's place in the queue's list.
+_Avoid_: check, required status
+
+**Gate verdict**:
+What a gate Run's outcome says. Succeeded passes. Failed is red: the entry is
+ejected naming the gate and its Run. Errored, aborted, gone, or not finished
+within the gate's wait is no verdict: the gate gets one more Run, and a second
+no verdict in a row pauses the queue. A composition no longer bindable when a
+gate Run is admitted is moved: the entry is composed again.
+_Avoid_: flake (for no verdict), result (for the verdict)
+
+**Paused queue**:
+A landing queue held on a gate that gave no verdict twice in a row: it admits
+and settles nothing until `fly resume-landing-queue` clears it, which gives
+that gate a fresh Run and its retry back.
+_Avoid_: stopped, disabled
 
 **Queue principal**:
 The third form of the run admission port's principal: a landing queue acting
@@ -362,7 +385,9 @@ _Avoid_: system principal, service account
 
 **Settle record**:
 Why an entry left the queue: landed with its land Run, or ejected naming the
-Run and status that ejected it. `fly landing-queue` prints them.
+Run and status that ejected it, or the gate and its Run for a red verdict.
+`fly landing-queue` prints them, with each in-flight entry's gate Runs and
+verdicts.
 _Avoid_: event, notification
 
 ### Sidecar
