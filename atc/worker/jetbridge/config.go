@@ -47,6 +47,11 @@ const (
 	// containers that fetch artifacts from the DaemonSet. Only needs tar.
 	DefaultArtifactHelperImage = "alpine:latest"
 
+	// StepRuntimeExec and StepRuntimeJob are the two values of
+	// Config.StepRuntime.
+	StepRuntimeExec = "exec"
+	StepRuntimeJob  = "job"
+
 	// ArtifactMountPath is the mount path inside init containers where
 	// the artifact hostPath volume is attached.
 	ArtifactMountPath = "/artifacts"
@@ -147,6 +152,23 @@ type Config struct {
 	// ArtifactHelperImage overrides DefaultArtifactHelperImage for init
 	// containers that fetch artifacts from the DaemonSet.
 	ArtifactHelperImage string
+
+	// StepRuntime selects how a step's command reaches its pod: StepRuntimeExec
+	// (a pause pod the web execs into) or StepRuntimeJob (a suspended
+	// batch/v1 Job whose pod runs the command from its spec under the
+	// launcher). Empty means exec.
+	StepRuntime string
+
+	// LauncherImage is the image the launcher init container copies the
+	// jb-launcher binary from under StepRuntimeJob: the jetbridge image
+	// itself, which ships the binary beside the web.
+	LauncherImage string
+
+	// StepEnvelopeURL is where a step pod's launcher fetches its step
+	// envelope (a resource command's request JSON) under StepRuntimeJob,
+	// presenting its pod-bound projected ServiceAccount token. The web's
+	// in-cluster Service URL.
+	StepEnvelopeURL string
 
 	// ImageRegistry names the registry auth secret for resource type images.
 	// When set, its SecretName is auto-added to imagePullSecrets on every
