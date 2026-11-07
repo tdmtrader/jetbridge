@@ -95,6 +95,15 @@ type Container struct {
 	// identities resolves the ServiceAccount this container's pods run as,
 	// from the build its metadata names and nothing else.
 	identities stepPodIdentities
+
+	// jobPodName is the Job's pod under the job step runtime, once found
+	// (step_job.go). podName names the Job there.
+	jobPodName string
+	// jobUID is the step Job's UID once known; its pod carries it as a label.
+	jobUID types.UID
+	// envelopes is where the job step runtime registers a step's envelope
+	// for its pod to fetch. Nil on the exec runtime.
+	envelopes *StepEnvelopes
 }
 
 // ContainerWiring is what a Container was built with: the collaborators its
@@ -204,6 +213,12 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		processID = spec.ID
 	}
 
+	// The job step runtime: one suspended Job per step, the command in its
+	// pod spec, nothing exec'd (step_job.go).
+	if c.jobRuntime() {
+		return c.runAsJob(ctx, spec, io)
+	}
+
 	// Exec mode: use a pause Pod and exec the real command via SPDY.
 	// If the pod already exists and is Running (e.g. fly hijack or
 	// repeated check on the same container handle), reuse it. If the
@@ -212,7 +227,13 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	// create a fresh one. Otherwise create a new pause pod.
 	if execMode {
 		podName := c.podName
-		existingPod, getErr := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
+		if c.lookedUp {
+			// On a job-runtime worker the step's pod is its Job's.
+			if name, err := c.resolvePodName(ctx); err == nil {
+				podName = name
+			}
+		}
+		existingPod, getErr := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
 		needsCreate := getErr != nil // pod doesn't exist
 
 		// A looked-up Container (fly hijack/intercept) carries no
@@ -347,6 +368,12 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 		}
 	}
 
+	if c.jobRuntime() {
+		process, err := c.attachJob(ctx, processID)
+		spanErr = err
+		return process, err
+	}
+
 	// Check whether the Pod actually exists in K8s. If it does not, return
 	// an error so that attachOrRun falls through to Run() which creates
 	// the Pod.
@@ -420,7 +447,11 @@ func (c *Container) loadPersistedAnnotations() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
+	name, err := c.resolvePodName(ctx)
+	if err != nil {
+		return
+	}
+	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return
 	}
@@ -446,9 +477,13 @@ func (c *Container) annotatePod(annotationKey, value string) {
 	if err != nil {
 		return
 	}
+	name, err := c.resolvePodName(ctx)
+	if err != nil {
+		return
+	}
 	patch := fmt.Sprintf(`{"metadata":{"annotations":{"%s":%s}}}`, annotationKey, string(valueJSON))
 	_, _ = c.clientset.CoreV1().Pods(c.config.Namespace).Patch(
-		ctx, c.podName, types.MergePatchType, []byte(patch), metav1.PatchOptions{},
+		ctx, name, types.MergePatchType, []byte(patch), metav1.PatchOptions{},
 	)
 }
 
