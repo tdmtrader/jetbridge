@@ -287,6 +287,7 @@ web:
 | `kubernetes.preferredStepNode` | `""` | Node label `key=value` every step pod prefers but does not require. Step pods also tolerate the taint `key=value:NoSchedule`, so tainting the node reserves it for builds. |
 | `kubernetes.imagePullSecrets` | `[]` | Pull secrets for task pod images. |
 | `kubernetes.artifactHelperImage` | `alpine:latest` | Image for init containers and sidecar. Must have `tar`. |
+| `kubernetes.stepRuntime` | `exec` | How a step's command reaches its pod. `exec`: a pause pod the web execs into (needs `pods/exec`). `job`: one suspended `batch/v1` Job per step with the command in the pod spec, run under the jb-launcher from the jetbridge image, so admission control sees every command; adds `batch/jobs` to the Role and `tokenreviews` to the ClusterRole. A Run-owned exact execution still uses exec in this release, so `pods/exec` stays granted in both. |
 | `kubernetes.imageRegistrySecret` | `""` | Pull secret name for resource type images. |
 
 ### Storage

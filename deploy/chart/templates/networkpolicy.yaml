@@ -27,6 +27,21 @@ spec:
       from:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+    {{- if eq .Values.kubernetes.stepRuntime "job" }}
+    # Step pods fetch their step envelope from the web on the HTTP port. Not
+    # under ingressFrom, which names the UI and TSA's callers: every step pod
+    # the runtime builds carries the worker label, in whichever namespace
+    # kubernetes.namespace puts it.
+    - ports:
+        - port: 8080
+          protocol: TCP
+      from:
+        - namespaceSelector: {}
+          podSelector:
+            matchExpressions:
+              - key: concourse.ci/worker
+                operator: Exists
+    {{- end }}
     {{- if .Values.metrics.enabled }}
     # Prometheus, from whatever namespace it runs in. Not under ingressFrom,
     # which restricts the UI and TSA to their callers, and no source selector
@@ -132,6 +147,17 @@ spec:
       ports:
         - port: {{ .Values.artifactDaemon.port | default 7780 }}
           protocol: TCP
+    {{- if eq .Values.kubernetes.stepRuntime "job" }}
+    # The web, for the step envelope (job step runtime).
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              {{- include "concourse.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: 8080
+          protocol: TCP
+    {{- end }}
     # Operator-configured additional egress targets
     {{- range .Values.networkPolicy.taskEgressTo }}
     - to:

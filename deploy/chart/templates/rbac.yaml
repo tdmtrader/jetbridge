@@ -29,6 +29,13 @@ rules:
     {{- else }}
     verbs: ["get"]
     {{- end }}
+  {{- if eq .Values.kubernetes.stepRuntime "job" }}
+  # The web validates a step pod's projected ServiceAccount token when the
+  # pod fetches its step envelope.
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -59,9 +66,18 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # pods/exec stays granted in both step runtimes: a Run-owned exact
+  # execution still uses exec in this release even under stepRuntime=job.
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create"]
+  {{- if eq .Values.kubernetes.stepRuntime "job" }}
+  # stepRuntime=job: one suspended batch/v1 Job per step, which the web
+  # creates, unsuspends, watches and deletes.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- end }}
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
