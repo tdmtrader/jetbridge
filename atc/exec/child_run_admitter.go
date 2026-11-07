@@ -21,6 +21,15 @@ import (
 // docs/superpowers/specs/2026-09-08-run-pipeline-step-design.md.
 type ChildRunAdmitter interface {
 	AdmitChildRun(context.Context, ChildRunRequest) (ChildRun, error)
+
+	// ObserveChildRun reads a child run's status. Each call is one short
+	// read: a waiting step polls it and holds nothing in between.
+	ObserveChildRun(context.Context, ChildRunObservation) (ChildRunStatus, error)
+
+	// CancelChildRun asks for a child run to stop. It is nil when the run
+	// was already being cancelled or had already finished, so a step
+	// cancelling on its way out need not tell those apart.
+	CancelChildRun(context.Context, ChildRunCancellation) error
 }
 
 // ChildRunRequest is one node of one build asking for one child run.
@@ -39,6 +48,11 @@ type ChildRunRequest struct {
 	Params    atc.RunParams
 	Principal runs.Principal
 
+	// Inputs binds the child's declared run inputs, each to a result of an
+	// earlier child run. Core's replay compares them with the inputs the
+	// run was first admitted with, so a moved binding is refused.
+	Inputs map[string]atc.RunInputSource
+
 	InputDigest string
 }
 
@@ -52,4 +66,33 @@ type ChildRun struct {
 	RunID    int
 	Number   int
 	Replayed bool
+}
+
+// ChildRunObservation is a step asking after the child run it admitted, as
+// the build it is running in.
+type ChildRunObservation struct {
+	RunID     int
+	Principal runs.Principal
+}
+
+// ChildRunStatus is a child run's status as the step reads it: running until
+// the run publishes a terminal status, then that status for good.
+// CancellationRequested says a stop has been asked for while the run may
+// still read running.
+type ChildRunStatus struct {
+	RunID                 int
+	Number                int
+	Status                atc.RunStatus
+	CancellationRequested bool
+}
+
+// Terminal reports whether the child run has finished.
+func (s ChildRunStatus) Terminal() bool { return s.Status != atc.RunStatusRunning }
+
+// ChildRunCancellation is a step asking for the child run it admitted to be
+// stopped. Reason is recorded on the run when it is not empty.
+type ChildRunCancellation struct {
+	RunID     int
+	Principal runs.Principal
+	Reason    string
 }
