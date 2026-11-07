@@ -189,8 +189,12 @@ spec:
             {{- if .Values.kubernetes.artifactHelperImage }}
             - --kubernetes-artifact-helper-image={{ .Values.kubernetes.artifactHelperImage }}
             {{- end }}
-            - --kubernetes-step-runtime={{ .Values.kubernetes.stepRuntime }}
             {{- if eq .Values.kubernetes.stepRuntime "job" }}
+            # Rendered only for job: exec is the binary's default, and a chart
+            # that passed the flag for it would refuse to start a web built
+            # before the flag existed (the chart tracks core; the image lags it
+            # by one pipeline run).
+            - --kubernetes-step-runtime=job
             # The launcher init container copies jb-launcher from the jetbridge
             # image itself, and a step pod fetches its envelope from the web's
             # in-cluster Service, presenting its projected token. Always the

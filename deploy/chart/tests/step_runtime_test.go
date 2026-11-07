@@ -12,18 +12,16 @@ import (
 
 // kubernetes.stepRuntime is a mode (ADR-0008): exec, today's pause pod the
 // web execs the command into, or job, one suspended batch/v1 Job per step
-// with the command in the pod spec. The web is told the mode in every render;
+// with the command in the pod spec. Only job is passed to the web: exec is the
+// binary's default, and a flag an older web does not know would refuse to
+// start it (the chart tracks core; the image lags it by one pipeline run).
 // job adds the launcher image and the envelope URL the step pod fetches its
 // request from, and the grants that runtime needs. pods/exec stays in both
 // modes: a Run-owned exact execution still uses exec in this release.
 
 func TestTheDefaultStepRuntimeIsExecWithNoJobGrants(t *testing.T) {
 	out := render(t)
-	web := webDeployment(t, out)
-	if !strings.Contains(web, "- --kubernetes-step-runtime=exec\n") {
-		t.Error("the default render does not pass --kubernetes-step-runtime=exec on web")
-	}
-	for _, flag := range []string{"--kubernetes-launcher-image", "--kubernetes-step-envelope-url"} {
+	for _, flag := range []string{"--kubernetes-step-runtime", "--kubernetes-launcher-image", "--kubernetes-step-envelope-url"} {
 		if strings.Contains(out, flag) {
 			t.Errorf("the default render passes %s", flag)
 		}

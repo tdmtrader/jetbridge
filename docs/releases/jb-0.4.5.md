@@ -23,7 +23,9 @@ JetBridge 0.4.5 follows jb-0.4.4 (cf122f8a09).
 
 ## Chart (0.2.4 → 0.2.5)
 
-- `kubernetes.stepRuntime` (`exec` | `job`). Under `job` the pod-manager Role
+- `kubernetes.stepRuntime` (`exec` | `job`), passed to the web only as `job`: an
+  exec render is byte-identical to 0.4.4's, so a chart ahead of its image still
+  starts. Under `job` the pod-manager Role
   gains `batch/jobs` and the web ClusterRole gains `tokenreviews create`; the web
   gets `--kubernetes-launcher-image` (its own image) and
   `--kubernetes-step-envelope-url` (its in-cluster Service).
