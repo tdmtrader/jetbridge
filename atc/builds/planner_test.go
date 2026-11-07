@@ -1538,6 +1538,316 @@ var factoryTests = []PlannerTest{
 		}`,
 	},
 	{
+		Title: "run_pipeline input from an earlier waited run_pipeline step",
+
+		Config: &atc.DoStep{
+			Steps: []atc.Step{
+				{Config: waitedRun("landing-compose")},
+				{Config: runFrom("landing-land", "composition", "landing-compose")},
+			},
+		},
+
+		CompareIDs: true,
+		PlanJSON: `{
+			"id": "3",
+			"do": [
+				{
+					"id": "1",
+					"run_pipeline": {"name": "landing-compose", "wait": true}
+				},
+				{
+					"id": "2",
+					"run_pipeline": {
+						"name": "landing-land",
+						"wait": true,
+						"inputs": {
+							"composition": {"from": "1", "result": "composition"}
+						}
+					}
+				}
+			]
+		}`,
+	},
+	{
+		Title: "run_pipeline input from the nearest earlier call of the same name",
+
+		Config: &atc.DoStep{
+			Steps: []atc.Step{
+				{Config: waitedRun("landing-compose")},
+				{Config: waitedRun("landing-compose")},
+				{Config: runFrom("landing-land", "composition", "landing-compose")},
+			},
+		},
+
+		CompareIDs: true,
+		PlanJSON: `{
+			"id": "4",
+			"do": [
+				{"id": "1", "run_pipeline": {"name": "landing-compose", "wait": true}},
+				{"id": "2", "run_pipeline": {"name": "landing-compose", "wait": true}},
+				{
+					"id": "3",
+					"run_pipeline": {
+						"name": "landing-land",
+						"wait": true,
+						"inputs": {
+							"composition": {"from": "2", "result": "composition"}
+						}
+					}
+				}
+			]
+		}`,
+	},
+	{
+		Title: "run_pipeline input from a step inside an earlier in_parallel",
+
+		Config: &atc.DoStep{
+			Steps: []atc.Step{
+				{Config: &atc.InParallelStep{Config: atc.InParallelConfig{Steps: []atc.Step{
+					{Config: waitedRun("landing-compose")},
+					{Config: waitedRun("some-other-pipeline")},
+				}}}},
+				{Config: runFrom("landing-land", "composition", "landing-compose")},
+			},
+		},
+
+		CompareIDs: true,
+		PlanJSON: `{
+			"id": "5",
+			"do": [
+				{
+					"id": "3",
+					"in_parallel": {
+						"steps": [
+							{"id": "1", "run_pipeline": {"name": "landing-compose", "wait": true}},
+							{"id": "2", "run_pipeline": {"name": "some-other-pipeline", "wait": true}}
+						]
+					}
+				},
+				{
+					"id": "4",
+					"run_pipeline": {
+						"name": "landing-land",
+						"wait": true,
+						"inputs": {
+							"composition": {"from": "1", "result": "composition"}
+						}
+					}
+				}
+			]
+		}`,
+	},
+	{
+		Title: "run_pipeline input from an earlier call in the same retry attempt",
+
+		Config: &atc.RetryStep{
+			Attempts: 2,
+			Step: &atc.DoStep{
+				Steps: []atc.Step{
+					{Config: waitedRun("landing-compose")},
+					{Config: runFrom("landing-land", "composition", "landing-compose")},
+				},
+			},
+		},
+
+		CompareIDs: true,
+		PlanJSON: `{
+			"id": "7",
+			"retry": [
+				{
+					"id": "3",
+					"do": [
+						{"id": "1", "run_pipeline": {"name": "landing-compose", "wait": true}},
+						{
+							"id": "2",
+							"run_pipeline": {
+								"name": "landing-land",
+								"wait": true,
+								"inputs": {"composition": {"from": "1", "result": "composition"}}
+							}
+						}
+					]
+				},
+				{
+					"id": "6",
+					"do": [
+						{"id": "4", "run_pipeline": {"name": "landing-compose", "wait": true}},
+						{
+							"id": "5",
+							"run_pipeline": {
+								"name": "landing-land",
+								"wait": true,
+								"inputs": {"composition": {"from": "4", "result": "composition"}}
+							}
+						}
+					]
+				}
+			]
+		}`,
+	},
+	{
+		Title: "run_pipeline input from an unknown step",
+
+		Config: &atc.DoStep{
+			Steps: []atc.Step{
+				{Config: waitedRun("landing-compose")},
+				{Config: runFrom("landing-land", "composition", "no-such-step")},
+			},
+		},
+
+		Err: builds.RunPipelineInputError{
+			Step:   "landing-land",
+			Input:  "composition",
+			From:   "no-such-step",
+			Reason: builds.RunPipelineFromUnknown,
+		},
+	},
+	{
+		Title: "run_pipeline input from a step that is not a run_pipeline step",
+
+		Config: &atc.DoStep{
+			Steps: []atc.Step{
+				{Config: &atc.LoadVarStep{Name: "landing-compose", File: "some-file"}},
+				{Config: runFrom("landing-land", "composition", "landing-compose")},
+			},
+		},
+
+		Err: builds.RunPipelineInputError{
+			Step:   "landing-land",
+			Input:  "composition",
+			From:   "landing-compose",
+			Reason: builds.RunPipelineFromUnknown,
+		},
+	},
+	{
+		Title: "run_pipeline input from a run_pipeline step that does not wait",
+
+		Config: &atc.DoStep{
+			Steps: []atc.Step{
+				{Config: &atc.RunPipelineStep{Name: "landing-compose"}},
+				{Config: runFrom("landing-land", "composition", "landing-compose")},
+			},
+		},
+
+		Err: builds.RunPipelineInputError{
+			Step:   "landing-land",
+			Input:  "composition",
+			From:   "landing-compose",
+			Reason: builds.RunPipelineFromNotWaited,
+		},
+	},
+	{
+		Title: "run_pipeline input from a later step",
+
+		Config: &atc.DoStep{
+			Steps: []atc.Step{
+				{Config: runFrom("landing-land", "composition", "landing-compose")},
+				{Config: waitedRun("landing-compose")},
+			},
+		},
+
+		Err: builds.RunPipelineInputError{
+			Step:   "landing-land",
+			Input:  "composition",
+			From:   "landing-compose",
+			Reason: builds.RunPipelineFromUnknown,
+		},
+	},
+	{
+		Title: "run_pipeline input from a step in parallel with it",
+
+		Config: &atc.InParallelStep{Config: atc.InParallelConfig{Steps: []atc.Step{
+			{Config: waitedRun("landing-compose")},
+			{Config: runFrom("landing-land", "composition", "landing-compose")},
+		}}},
+
+		Err: builds.RunPipelineInputError{
+			Step:   "landing-land",
+			Input:  "composition",
+			From:   "landing-compose",
+			Reason: builds.RunPipelineFromUnknown,
+		},
+	},
+	{
+		Title: "run_pipeline input from a name two parallel steps call",
+
+		Config: &atc.DoStep{
+			Steps: []atc.Step{
+				{Config: &atc.InParallelStep{Config: atc.InParallelConfig{Steps: []atc.Step{
+					{Config: waitedRun("landing-compose")},
+					{Config: waitedRun("landing-compose")},
+				}}}},
+				{Config: runFrom("landing-land", "composition", "landing-compose")},
+			},
+		},
+
+		Err: builds.RunPipelineInputError{
+			Step:   "landing-land",
+			Input:  "composition",
+			From:   "landing-compose",
+			Reason: builds.RunPipelineFromParallel,
+		},
+	},
+	{
+		Title: "run_pipeline input from a step inside an earlier retry",
+
+		Config: &atc.DoStep{
+			Steps: []atc.Step{
+				{Config: &atc.RetryStep{Attempts: 2, Step: waitedRun("landing-compose")}},
+				{Config: runFrom("landing-land", "composition", "landing-compose")},
+			},
+		},
+
+		Err: builds.RunPipelineInputError{
+			Step:   "landing-land",
+			Input:  "composition",
+			From:   "landing-compose",
+			Reason: builds.RunPipelineFromRetry,
+		},
+	},
+	{
+		Title: "run_pipeline input from an earlier call in the same across iteration",
+
+		Config: &atc.AcrossStep{
+			Vars: []atc.AcrossVarConfig{{Var: "v", Values: []any{"a", "b"}}},
+			Step: &atc.DoStep{
+				Steps: []atc.Step{
+					{Config: waitedRun("landing-compose")},
+					{Config: runFrom("landing-land", "composition", "landing-compose")},
+				},
+			},
+		},
+
+		CompareIDs: true,
+		PlanJSON: `{
+			"id": "4",
+			"across": {
+				"vars": [{"name": "v", "values": ["a", "b"]}],
+				"substep_template": "{\"id\":\"3\",\"do\":[{\"id\":\"1\",\"run_pipeline\":{\"name\":\"landing-compose\",\"wait\":true}},{\"id\":\"2\",\"run_pipeline\":{\"name\":\"landing-land\",\"wait\":true,\"inputs\":{\"composition\":{\"from\":\"1\",\"result\":\"composition\"}}}}]}"
+			}
+		}`,
+	},
+	{
+		Title: "run_pipeline input from a step inside an earlier across",
+
+		Config: &atc.DoStep{
+			Steps: []atc.Step{
+				{Config: &atc.AcrossStep{
+					Vars: []atc.AcrossVarConfig{{Var: "v", Values: []any{"a", "b"}}},
+					Step: waitedRun("landing-compose"),
+				}},
+				{Config: runFrom("landing-land", "composition", "landing-compose")},
+			},
+		},
+
+		Err: builds.RunPipelineInputError{
+			Step:   "landing-land",
+			Input:  "composition",
+			From:   "landing-compose",
+			Reason: builds.RunPipelineFromAcross,
+		},
+	},
+	{
 		Title: "load_var step",
 
 		Config: &atc.LoadVarStep{
@@ -2019,4 +2329,18 @@ func newCPULimit(cpuLimit uint64) *atc.CPULimit {
 func newMemoryLimit(memoryLimit uint64) *atc.MemoryLimit {
 	limit := atc.MemoryLimit(memoryLimit)
 	return &limit
+}
+
+func waitedRun(name string) *atc.RunPipelineStep {
+	return &atc.RunPipelineStep{Name: name, Wait: true}
+}
+
+func runFrom(name, input, from string) *atc.RunPipelineStep {
+	return &atc.RunPipelineStep{
+		Name: name,
+		Wait: true,
+		Inputs: map[string]atc.RunPipelineInput{
+			input: {From: from, Result: input},
+		},
+	}
 }
