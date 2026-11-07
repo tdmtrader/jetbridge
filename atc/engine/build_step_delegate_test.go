@@ -1453,6 +1453,38 @@ var _ = Describe("BuildStepDelegate", func() {
 					})
 				})
 			})
+
+			// An error message is build output too: a step's failure can
+			// echo a value it interpolated.
+			Context("Errored", func() {
+				It("redacts a tracked secret from the message", func() {
+					delegate.Errored(logger, "fetching super-secret-source: 403")
+					Expect(build.events).To(Equal([]atc.Event{event.Error{
+						Time:    now.Unix(),
+						Message: "fetching ((redacted)): 403",
+						Origin: event.Origin{
+							ID: "some-plan-id",
+						},
+					}}))
+				})
+
+				Context("is disabled", func() {
+					BeforeEach(func() {
+						delegate = engine.NewBuildStepDelegate(build, "some-plan-id", runState, fakeClock, true)
+					})
+
+					It("does not redact secrets", func() {
+						delegate.Errored(logger, "fetching super-secret-source: 403")
+						Expect(build.events).To(Equal([]atc.Event{event.Error{
+							Time:    now.Unix(),
+							Message: "fetching super-secret-source: 403",
+							Origin: event.Origin{
+								ID: "some-plan-id",
+							},
+						}}))
+					})
+				})
+			})
 		})
 
 		Describe("ContainerOwner", func() {

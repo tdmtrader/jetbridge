@@ -714,6 +714,39 @@ var _ = Describe("Engine", func() {
 											Expect(ev.EventType()).To(Equal(event.EventTypeError))
 											Expect(ev.(event.Error).Message).To(Equal("nope"))
 										})
+
+										// The engine emits this one itself, so it
+										// redacts it as the step's delegate would.
+										Context("when the message carries a credential the build interpolated", func() {
+											BeforeEach(func() {
+												fakeStep.RunStub = func(_ context.Context, state exec.RunState) (bool, error) {
+													val, found, err := state.Get(vars.Reference{Path: "foo"})
+													Expect(err).NotTo(HaveOccurred())
+													Expect(found).To(BeTrue())
+													return false, fmt.Errorf("check refused with %s", val)
+												}
+											})
+
+											It("redacts it from the error event", func() {
+												waitGroup.Wait()
+												Expect(recorder.events).To(HaveLen(1))
+												Expect(recorder.events[0].(event.Error).Message).To(Equal("check refused with ((redacted))"))
+											})
+
+											Context("when secret redaction is disabled", func() {
+												BeforeEach(func() {
+													was := atc.DisableRedactSecrets
+													atc.DisableRedactSecrets = true
+													DeferCleanup(func() { atc.DisableRedactSecrets = was })
+												})
+
+												It("saves the message as it is", func() {
+													waitGroup.Wait()
+													Expect(recorder.events).To(HaveLen(1))
+													Expect(recorder.events[0].(event.Error).Message).To(Equal("check refused with bar"))
+												})
+											})
+										})
 									})
 								})
 
