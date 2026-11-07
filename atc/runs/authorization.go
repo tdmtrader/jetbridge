@@ -210,7 +210,13 @@ func authorizeBuild(tx db.Tx, teams []db.Team, teamName string, build *BuildPrin
 	// A finished or aborted build is not acting. Whatever is still running a
 	// step on its behalf has outlived the build's authority, and the port is
 	// the last place that can say so.
-	if caller.completed || caller.aborted {
+	//
+	// Cancelling a child Run is the one exception for an aborted build, because
+	// it is how the build carries out the stop its operator asked for: abort
+	// sets the flag before the step's context is cancelled, so the step asks
+	// for the cancellation after the flag is set. A completed build has no
+	// step left to ask.
+	if caller.completed || (caller.aborted && action != atc.CancelPipelineRun) {
 		return authorization{}, ErrUnauthorized
 	}
 

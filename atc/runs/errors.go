@@ -114,6 +114,10 @@ var (
 	// hold because the port handed it back at admission, so there is no name
 	// to guess at and no oracle to protect. Deleted between the admission and
 	// the lookup is the case this actually reports.
+	//
+	// ObserveRun and CancelRun take an id with a principal and so do have an
+	// oracle to protect: they report a missing run as ErrUnauthorized, and as
+	// this only to an admin, who may know about every team's runs.
 	ErrRunNotFound = errors.New("pipeline run not found")
 )
 
@@ -196,6 +200,12 @@ var refusalSentinels = []error{
 	// The same invocation key presented with different caller intent.
 	atc.ErrRunResultsUnavailable,
 	ErrInvocationConflict,
+
+	// A bound input whose source is gone, reclaimed or another team's, and
+	// inputs that do not match the template's declarations. Both are facts
+	// about what was asked for: the same binding fails the same way again.
+	atc.ErrRunInputUnavailable,
+	atc.ErrInvalidRunInputs,
 
 	ErrTemplateNotFound,
 	ErrNotATemplate,

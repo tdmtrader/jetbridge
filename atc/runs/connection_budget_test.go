@@ -113,4 +113,79 @@ var _ = Describe("admission's connection budget", func() {
 				"second connection, and the caller is holding the only one.")
 		}
 	})
+
+	// Observe and cancel open their own transaction, so each must fit in the
+	// one connection that transaction holds: a read on the pool beside it
+	// would park forever on a pool of one, exactly as above.
+	It("observes and cancels with one connection", func() {
+		conn := postgresRunner.OpenConn()
+		var closeOnce sync.Once
+		closeConn := func() error {
+			var err error
+			closeOnce.Do(func() { err = conn.Close() })
+
+			return err
+		}
+		DeferCleanup(func() {
+			Expect(closeConn()).To(Succeed())
+		})
+
+		displayUserIds, err := skycmd.NewSkyDisplayUserIdGenerator(map[string]string{"local": "user_id"})
+		Expect(err).NotTo(HaveOccurred())
+
+		port := runs.NewAdmitter(conn,
+			db.NewPipelineRunFactory(conn, lockFactory),
+			db.NewTeamFactory(conn, lockFactory),
+			displayUserIds, nil)
+		port.SetOutputPlane(true)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		DeferCleanup(cancel)
+
+		done := make(chan error, 1)
+		go func() {
+			defer GinkgoRecover()
+
+			tx, err := port.Begin(ctx)
+			if err != nil {
+				done <- err
+
+				return
+			}
+			run, err := admitIn(ctx, port, tx, runs.Admission{
+				Template:    templateRef,
+				Principal:   buildPrincipal,
+				ContractKey: "connection-budget.observe",
+			})
+			if err == nil {
+				err = tx.Commit()
+			} else {
+				_ = tx.Rollback()
+			}
+			if err != nil {
+				done <- err
+
+				return
+			}
+
+			if _, err := port.ObserveRun(ctx, run.ID, buildPrincipal); err != nil {
+				done <- err
+
+				return
+			}
+
+			done <- port.CancelRun(ctx, run.ID, buildPrincipal, "budget")
+		}()
+
+		select {
+		case err := <-done:
+			Expect(err).NotTo(HaveOccurred())
+		case <-time.After(30 * time.Second):
+			Expect(closeConn()).To(Succeed())
+			Eventually(done, 30*time.Second).Should(Receive())
+
+			Fail("observe or cancel did not finish within 30s on a one-connection " +
+				"pool. One of them reads on the pool beside its own transaction.")
+		}
+	})
 })

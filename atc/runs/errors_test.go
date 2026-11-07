@@ -38,6 +38,11 @@ var _ = Describe("IsRefusal", func() {
 		Entry("Hangar output unavailable", atc.ErrRunResultsUnavailable),
 		Entry("no output plane in service to create a Run on", atc.ErrRunOutputPlaneNotInService),
 		Entry("changed intent under the same invocation key", runs.ErrInvocationConflict),
+		// A bound input's source is gone, reclaimed or another team's, or the
+		// inputs do not match the template's declarations: the same binding
+		// fails the same way on every retry.
+		Entry("a bound input that cannot be had", atc.ErrRunInputUnavailable),
+		Entry("inputs the template does not declare", atc.ErrInvalidRunInputs),
 		Entry("no such template", runs.ErrTemplateNotFound),
 		Entry("not a template", runs.ErrNotATemplate),
 		Entry("an instanced pipeline", runs.ErrTemplateInstanced),

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"io"
+	"strconv"
+	"strings"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -16,7 +18,8 @@ import (
 // A consumer opens the transaction, then admits a versioned Run inside it, so
 // it can commit its own rows in the same transaction as the Run. Every Run is
 // v2; there is no other class. LookupRun reads a previously admitted Run
-// through that same transaction boundary.
+// through that same transaction boundary. ObserveRun and CancelRun act on an
+// admitted Run outside any caller's transaction.
 type Admitter interface {
 	SetCredentialHandoffConfig(CredentialHandoffConfig)
 	InspectCredentialHandoff(context.Context, TemplateRef, Principal, int, string) (atc.RunCredentialSession, error)
@@ -40,6 +43,19 @@ type Admitter interface {
 	// AdmitVersionedRun returns whether the
 	// invocation already committed. The caller still owns the transaction.
 	AdmitVersionedRun(context.Context, Tx, Admission) (Run, bool, error)
+
+	// ObserveRun reads a run's status for a principal entitled to view it:
+	// one whose team owns the run's template. It opens and finishes its own
+	// short transaction, so it must never be called while the caller holds
+	// one from Begin.
+	ObserveRun(ctx context.Context, runID int, principal Principal) (RunStatus, error)
+
+	// CancelRun requests cancellation of a run for a principal entitled to
+	// cancel it, through the one operation that records the cancel fence. It
+	// returns nil when the request is recorded and also when the run is
+	// already being cancelled or already terminal: either way the caller's
+	// wish holds. Like ObserveRun it uses its own transaction.
+	CancelRun(ctx context.Context, runID int, principal Principal, reason string) error
 }
 
 type admitter struct {
@@ -175,6 +191,159 @@ func (a *admitter) LookupRun(ctx context.Context, tx Tx, runID int) (Run, error)
 	return run, nil
 }
 
+// observedRunQuery reads a run's identity, its status and its cancel fence,
+// with the name of the team that owns its template, which is what
+// authorization is decided against. One statement, so the team a run is
+// authorized against and the status reported are one snapshot.
+const observedRunQuery = `
+	SELECT r.id, r.number, r.template_pipeline_id, r.created_by, payload.id,
+	       r.status, r.cancel_requested_at IS NOT NULL, owner.name
+	FROM pipeline_runs r
+	JOIN pipelines tp ON tp.id = r.template_pipeline_id
+	JOIN teams owner ON owner.id = tp.team_id
+	LEFT JOIN pipelines payload ON payload.pipeline_run_id = r.id
+	WHERE r.id = $1
+`
+
+// ObserveRun reads a run's status, for a principal who may view the runs of
+// the team that owns its template.
+//
+// It takes no Tx because nothing a caller holds is a place to read status
+// from: a waiting step polls, and between polls it holds no connection. The
+// transaction opened here is short and finished before return, which keeps
+// the port within the one-connection budget so long as the caller does not
+// hold Begin's transaction at the same time.
+func (a *admitter) ObserveRun(ctx context.Context, runID int, principal Principal) (RunStatus, error) {
+	tx, err := a.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return RunStatus{}, err
+	}
+	defer db.Rollback(tx)
+
+	status, err := a.authorizedRun(ctx, tx, runID, principal, atc.GetPipelineRun)
+	if err != nil {
+		return RunStatus{}, err
+	}
+
+	return status, tx.Commit()
+}
+
+// CancelRun requests cancellation of a run, for a principal who may cancel
+// the runs of the team that owns its template.
+//
+// The fence is written by AcceptRunCancellation and nothing else, which
+// architecture_test.go pins; this is one more caller of it, in the shape the
+// HTTP cancel route uses. All three of its outcomes -- accepted, already
+// requested, already terminal -- are nil here: a caller that asked for a run
+// to stop has what it asked for in each, and a step cancelling a child on its
+// way out has nothing to do differently for any of them. A caller that wants
+// to know which reads the run with ObserveRun.
+//
+// An empty reason records none.
+func (a *admitter) CancelRun(ctx context.Context, runID int, principal Principal, reason string) error {
+	var why *string
+	if reason != "" {
+		why = &reason
+	}
+
+	tx, err := a.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer db.Rollback(tx)
+
+	if _, err := a.authorizedRun(ctx, tx, runID, principal, atc.CancelPipelineRun); err != nil {
+		return err
+	}
+
+	requester, err := cancelRequester(principal)
+	if err != nil {
+		return err
+	}
+
+	if _, err := a.runFactory.AcceptRunCancellation(ctx, tx, runID, requester, why); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// authorizedRun reads a run and decides whether the principal may take the
+// action on it.
+//
+// The team is the one that owns the run's template, read in the same
+// statement as the run, and the decision is the same authorizeAction
+// admission makes, so a build is held against its builds row here too.
+//
+// A run that does not exist is refused exactly as another team's run is, so
+// the port is no oracle over run ids: ErrUnauthorized for everyone but an
+// admin, who is entitled to every team's answer and so is told
+// ErrRunNotFound -- the same split resolveTemplate makes for a missing team.
+func (a *admitter) authorizedRun(ctx context.Context, tx db.Tx, runID int, principal Principal, action string) (RunStatus, error) {
+	var (
+		status    RunStatus
+		payloadID sql.NullInt64
+		state     string
+		teamName  string
+	)
+
+	err := tx.QueryRowContext(ctx, observedRunQuery, runID).Scan(
+		&status.Run.ID, &status.Run.Number, &status.Run.TemplateID, &status.Run.CreatedBy, &payloadID,
+		&state, &status.CancellationRequested, &teamName)
+	if errors.Is(err, sql.ErrNoRows) {
+		// No team to authorize against. The empty name authorizes nobody but
+		// an admin, through the accessor's own short-circuit.
+		auth, err := a.authorizeAction(tx, "", principal, action)
+		if err != nil {
+			return RunStatus{}, err
+		}
+		if auth.isAdmin {
+			return RunStatus{}, ErrRunNotFound
+		}
+
+		return RunStatus{}, ErrUnauthorized
+	}
+	if err != nil {
+		return RunStatus{}, err
+	}
+
+	if _, err := a.authorizeAction(tx, teamName, principal, action); err != nil {
+		return RunStatus{}, err
+	}
+
+	status.Run.PayloadID = int(payloadID.Int64)
+	status.Status = atc.RunStatus(state)
+
+	return status, nil
+}
+
+// buildRequesterPrefix is under the "system:" prefix the HTTP cancel route
+// reserves for requesters the server records itself and refuses to any
+// caller, so no person's subject can pass for a build.
+const buildRequesterPrefix = "system:build/"
+
+// cancelRequester is the requester recorded on the cancel fence.
+//
+// A build is its id under the reserved prefix: the id is what the builds row,
+// and the parent's log, are addressed by. A person is their verified subject,
+// as on the HTTP route, and a subject claiming the reserved prefix is refused
+// there and here. A landing queue is its team and name under the same prefix.
+func cancelRequester(principal Principal) (string, error) {
+	switch {
+	case principal.Build != nil:
+		return buildRequesterPrefix + strconv.Itoa(principal.Build.BuildID), nil
+	case principal.Queue != nil:
+		return "system:landing-queue/" + principal.Queue.TeamName + "/" + principal.Queue.QueueName, nil
+	}
+
+	subject, _ := principal.Claims["sub"].(string)
+	if subject == "" || strings.HasPrefix(subject, "system:") {
+		return "", ErrUnauthorized
+	}
+
+	return subject, nil
+}
+
 // resolveTemplate turns a reference into the pipeline to admit against.
 //
 // The team it resolves against is the one authorization already picked out of
@@ -280,6 +449,10 @@ func refusal(err error) error {
 		return atc.ErrRunOutputPlaneNotInService
 	case errors.Is(err, atc.ErrRunResultsUnavailable):
 		return atc.ErrRunResultsUnavailable
+	case errors.Is(err, atc.ErrRunInputUnavailable):
+		return atc.ErrRunInputUnavailable
+	case errors.Is(err, atc.ErrInvalidRunInputs):
+		return atc.ErrInvalidRunInputs
 	case errors.Is(err, db.ErrPipelineRunNotTemplate):
 		return ErrNotATemplate
 	case errors.Is(err, db.ErrPipelineRunInstanced):

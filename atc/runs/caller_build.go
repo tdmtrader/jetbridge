@@ -37,7 +37,8 @@ type callerBuild struct {
 	// running somewhere it should not be; an aborted one is a build whose
 	// operator has already said stop, and `aborted` is set at the moment of
 	// the request rather than when the build settles, which is exactly when
-	// the port should stop honouring it.
+	// the port should stop honouring it -- for everything but cancelling a
+	// child Run, which is how the build obeys that stop (see authorizeBuild).
 	completed bool
 	aborted   bool
 
