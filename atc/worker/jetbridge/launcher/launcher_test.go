@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -362,7 +364,15 @@ func waitExit(t *testing.T, cmd *exec.Cmd, within time.Duration) int {
 	go func() { done <- cmd.Wait() }()
 	select {
 	case err := <-done:
-		return waitExitCode(err)
+		if err == nil {
+			return 0
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return statusExitCode(exitErr.Sys().(syscall.WaitStatus))
+		}
+		t.Fatalf("waiting for the launcher: %v", err)
+		return -1
 	case <-time.After(within):
 		_ = cmd.Process.Kill()
 		t.Fatalf("launcher did not exit within %s", within)
@@ -413,5 +423,22 @@ func TestKillGraceEscalatesToSIGKILL(t *testing.T) {
 	}
 	if time.Since(start) < 150*time.Millisecond {
 		t.Fatalf("exited after %s, before the grace period", time.Since(start))
+	}
+}
+
+// An orphan the command leaves behind is reaped by the launcher, which is
+// what a pod's PID 1 owes everything below it: a zombie would answer
+// kill(pid, 0) as alive for as long as the pod lived.
+func TestOrphansAreReaped(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the launcher is a child subreaper on Linux only")
+	}
+	// The inner shell's parent is the launcher. After the orphan has exited
+	// and had time to be reaped, no zombie child of the launcher may remain.
+	script := `(sleep 0.2 &); sleep 0.8; z=0; for s in /proc/[0-9]*/status; do ` +
+		`if grep -q "^PPid:[[:space:]]*$PPID\$" "$s" 2>/dev/null && grep -q "^State:[[:space:]]*Z" "$s" 2>/dev/null; then z=1; fi; done; exit $z`
+	code := Run([]string{"--", "sh", "-c", script}, nil, io.Discard, os.Stderr)
+	if code != 0 {
+		t.Fatalf("exit %d: a zombie child of the launcher remained", code)
 	}
 }
