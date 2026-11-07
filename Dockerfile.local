@@ -13,6 +13,9 @@ COPY artifact-daemon-linux-arm64 /usr/local/concourse/bin/artifact-daemon
 # two files in step with the chart. The output plane's publisher is the
 # artifact daemon, and its reclaim and orphan sweep run in web.
 COPY hangar-store-linux-arm64 /usr/local/concourse/bin/hangar-store
+# The step pod launcher (kubernetes.stepRuntime=job); build it beside the
+# others: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o jb-launcher-linux-arm64 ./cmd/jb-launcher
+COPY jb-launcher-linux-arm64 /usr/local/concourse/bin/jb-launcher
 COPY fly-assets /usr/local/concourse/fly-assets
 RUN chmod +x /usr/local/concourse/bin/*
 

@@ -84,10 +84,40 @@ func TestEveryCommandTheChartRunsIsInTheImage(t *testing.T) {
 		}
 	}
 
-	// Two: the artifact daemon and the disk store owner. The output plane's
-	// controllers and activation command were removed, and their work moved
-	// into web, which runs from the image's ENTRYPOINT rather than a path.
-	if len(wanted) < 2 {
+	// What the runtime copies OUT of the image into a step pod: the launcher
+	// init container runs `cp /usr/local/concourse/bin/jb-launcher` from the
+	// jetbridge image under the job step runtime (step_job.go). It is named in
+	// Go, not in a template, and a missing one fails every step at its first
+	// init container -- which is how the launcher shipped in Dockerfile.build
+	// and not in the pipeline's image on 2026-11-07.
+	runtimeSources, err := filepath.Glob(filepath.Join(root, "atc", "worker", "jetbridge", "*.go"))
+	if err != nil {
+		t.Fatalf("listing runtime sources: %v", err)
+	}
+	for _, source := range runtimeSources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatalf("reading %s: %v", source, err)
+		}
+		for _, match := range commandPath.FindAllStringSubmatch(string(body), -1) {
+			name := "atc/worker/jetbridge/" + filepath.Base(source)
+			if !contains(wanted[match[1]], name) {
+				wanted[match[1]] = append(wanted[match[1]], name)
+			}
+		}
+	}
+	if !contains(wanted["jb-launcher"], "atc/worker/jetbridge/step_job.go") {
+		t.Fatalf("the runtime scan did not find the launcher in step_job.go (found %v); the pattern no longer matches", sortedCommandNames(wanted))
+	}
+
+	// Three: the artifact daemon, the disk store owner and the launcher. The
+	// output plane's controllers and activation command were removed, and
+	// their work moved into web, which runs from the image's ENTRYPOINT rather
+	// than a path.
+	if len(wanted) < 3 {
 		t.Fatalf("found only %d commands across the chart's templates (%v), which is fewer "+
 			"than this chart runs; the scan failed and this rule would pass vacuously",
 			len(wanted), sortedCommandNames(wanted))
