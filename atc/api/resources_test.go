@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
@@ -1164,6 +1166,26 @@ var _ = Describe("Resources API", func() {
 			Expect(requestResourceAPI(
 				fixture, http.MethodPost, basePath+"?webhook_token=wrong", nil,
 			).StatusCode).To(Equal(http.StatusUnauthorized))
+		})
+
+		// The supplied token is the caller's guess at a secret; a mismatch is
+		// recorded, never the guess.
+		It("logs a mismatched token without its value", func() {
+			Expect(requestResourceAPI(
+				fixture, http.MethodPost, basePath+"?webhook_token=guessed-token-value", nil,
+			).StatusCode).To(Equal(http.StatusUnauthorized))
+
+			var mismatches []lager.LogFormat
+			for _, log := range logger.Logs() {
+				if strings.HasSuffix(log.Message, "check-resource-webhook.invalid-token") {
+					mismatches = append(mismatches, log)
+				}
+			}
+			Expect(mismatches).To(HaveLen(1))
+			Expect(mismatches[0].Data).To(HaveKeyWithValue("resource", "resource-name"))
+			for _, log := range logger.Logs() {
+				Expect(fmt.Sprint(log.Data)).NotTo(ContainSubstring("guessed-token-value"))
+			}
 		})
 
 		It("refuses a webhook check on a template pipeline", func() {

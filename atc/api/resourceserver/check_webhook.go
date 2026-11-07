@@ -2,6 +2,7 @@ package resourceserver
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 
@@ -70,8 +71,10 @@ func (s *Server) CheckResourceWebHook(dbPipeline db.Pipeline) http.Handler {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		if token != webhookToken {
-			logger.Info("invalid-token", lager.Data{"token": webhookToken})
+		// The token is the only thing guarding this route, so it is compared
+		// in constant time, and the caller's guess is never logged.
+		if subtle.ConstantTimeCompare([]byte(token), []byte(webhookToken)) != 1 {
+			logger.Info("invalid-token")
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
