@@ -2,29 +2,72 @@ package migration
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db/encryption"
 )
 
+// SigningKeysEncryptedAtRest says whether idtoken signing keys are stored
+// encrypted under the database encryption key: the signing key factory
+// encrypts what it writes, and the start-up pass encrypts plaintext rows.
+// Rotation and decryption cover encrypted rows either way, and reads decrypt
+// them either way.
+//
+// It stays false until no web that may run against this database predates
+// the nonce column (1789793169). Such a web json-decodes jwk directly, so an
+// encrypted row breaks its JWKS and token signing, and its lifecycler mints
+// a fresh key. Turn it on in a release whose every supported predecessor
+// reads encrypted keys. signing_keys' RotateOnly follows it; drop RotateOnly
+// from the entry below when this goes, as it then has no other reader.
+const SigningKeysEncryptedAtRest = false
+
 var encryptedColumns = []encryptedColumn{
-	{"teams", "legacy_auth", "id", false},
-	{"resources", "config", "id", false},
-	{"jobs", "config", "id", false},
-	{"resource_types", "config", "id", false},
-	{"builds", "private_plan", "id", false},
-	{"pipelines", "var_sources", "id", false},
-	{"pipeline_run_definitions", "config", "run_id", true},
-	{"mcp_oauth_state", "data", "id", true},
+	{Table: "teams", Column: "legacy_auth", PrimaryKey: "id"},
+	{Table: "resources", Column: "config", PrimaryKey: "id"},
+	{Table: "jobs", Column: "config", PrimaryKey: "id"},
+	{Table: "resource_types", Column: "config", PrimaryKey: "id"},
+	{Table: "builds", Column: "private_plan", PrimaryKey: "id"},
+	{Table: "pipelines", Column: "var_sources", PrimaryKey: "id"},
+	{Table: "pipeline_run_definitions", Column: "config", PrimaryKey: "run_id", Optional: true},
+	{Table: "mcp_oauth_state", Column: "data", PrimaryKey: "id", Optional: true},
+	{Table: "signing_keys", Column: "jwk", PrimaryKey: "kid", Optional: true, JSON: true, RotateOnly: !SigningKeysEncryptedAtRest},
 }
 
 type encryptedColumn struct {
 	Table      string
 	Column     string
 	PrimaryKey string
-	// A newer table can be absent at a supported historical schema version.
+	// A newer table, or its nonce, can be absent at a supported historical
+	// schema version.
 	Optional bool
+	// JSON marks a json column. Its ciphertext is stored as a JSON string,
+	// which the column accepts; its plaintext is the JSON itself.
+	JSON bool
+	// RotateOnly leaves the column's plaintext rows out of the start-up
+	// encryption pass; rotation and decryption still cover its encrypted
+	// rows.
+	RotateOnly bool
+}
+
+// storedCiphertext is how ciphertext is written to the column.
+func (ec encryptedColumn) storedCiphertext(ciphertext string) (string, error) {
+	if !ec.JSON {
+		return ciphertext, nil
+	}
+	encoded, err := json.Marshal(ciphertext)
+	return string(encoded), err
+}
+
+// ciphertext is the ciphertext of an encrypted row as the column stores it.
+func (ec encryptedColumn) ciphertext(stored string) (string, error) {
+	if !ec.JSON {
+		return stored, nil
+	}
+	var ciphertext string
+	err := json.Unmarshal([]byte(stored), &ciphertext)
+	return ciphertext, err
 }
 
 func (m migrator) encryptedColumnsInSchema() ([]encryptedColumn, error) {
@@ -32,7 +75,11 @@ func (m migrator) encryptedColumnsInSchema() ([]encryptedColumn, error) {
 	for _, column := range encryptedColumns {
 		if column.Optional {
 			var present bool
-			if err := m.db.QueryRow("SELECT to_regclass($1) IS NOT NULL", column.Table).Scan(&present); err != nil {
+			if err := m.db.QueryRow(`
+				SELECT EXISTS (
+					SELECT 1 FROM pg_attribute
+					WHERE attrelid = to_regclass($1) AND attname = 'nonce' AND NOT attisdropped
+				)`, column.Table).Scan(&present); err != nil {
 				return nil, err
 			}
 			if !present {
@@ -64,6 +111,10 @@ func (m migrator) encryptPlaintext(key *encryption.Key) error {
 	}
 
 	for _, ec := range columns {
+		if ec.RotateOnly {
+			continue
+		}
+
 		tLog := logger.Session("table", lager.Data{
 			"table": ec.Table,
 		})
@@ -119,6 +170,10 @@ func (m migrator) encryptPlaintextBatch(tLog lager.Logger, key *encryption.Key, 
 		encrypted, nonce, err := key.Encrypt([]byte(row.value))
 		if err != nil {
 			rLog.Error("failed-to-encrypt", err)
+			return 0, err
+		}
+		encrypted, err = ec.storedCiphertext(encrypted)
+		if err != nil {
 			return 0, err
 		}
 
@@ -274,6 +329,10 @@ func (m migrator) encryptWithNewKey(newKey *encryption.Key, oldKey *encryption.K
 				rLog.Error("failed-to-encrypt", err)
 				return err
 			}
+			encrypted, err = ec.storedCiphertext(encrypted)
+			if err != nil {
+				return err
+			}
 
 			_, err = m.db.Exec(`
 				UPDATE `+ec.Table+`
@@ -321,8 +380,15 @@ func encryptedRows(db *sql.DB, ec encryptedColumn) ([]encryptedRow, error) {
 
 	var encrypted []encryptedRow
 	for rows.Next() {
-		var row encryptedRow
-		if err := rows.Scan(&row.primaryKey, &row.nonce, &row.value); err != nil {
+		var (
+			row    encryptedRow
+			stored string
+		)
+		if err := rows.Scan(&row.primaryKey, &row.nonce, &stored); err != nil {
+			return nil, err
+		}
+		row.value, err = ec.ciphertext(stored)
+		if err != nil {
 			return nil, err
 		}
 		encrypted = append(encrypted, row)
