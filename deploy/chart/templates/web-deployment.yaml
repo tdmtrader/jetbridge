@@ -1,4 +1,6 @@
 {{- include "concourse.validate" . }}
+{{- $credentials := include "concourse.web.credentials" . | fromJson }}
+{{- $argCredentials := include "concourse.web.argCredentials" . | fromJsonArray }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,6 +21,13 @@ spec:
     metadata:
       annotations:
         checksum/mcp-clients: {{ toJson .Values.mcp.clients | sha256sum }}
+        {{- if $credentials }}
+        # A changed password or local user rolls the pods, as it did when
+        # these were args. The checksum is unsalted: whoever may get the pod
+        # can test guesses at the Secret's whole content against it, which
+        # is far less than the plaintext args gave them.
+        checksum/web-credentials: {{ toJson $credentials | sha256sum }}
+        {{- end }}
       labels:
         {{- include "concourse.selectorLabels" . | nindent 8 }}
     spec:
@@ -46,7 +55,7 @@ spec:
             - --postgres-socket={{ .Values.postgresql.socket }}
             {{- end }}
             - --postgres-user={{ .Values.postgresql.user }}
-            {{- if not .Values.postgresql.existingSecret }}
+            {{- if and (not .Values.postgresql.existingSecret) (not (hasKey $credentials "postgres-password")) }}
             - --postgres-password={{ .Values.postgresql.password }}
             {{- end }}
             - --postgres-database={{ .Values.postgresql.database }}
@@ -73,6 +82,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.postgresql.existingSecret }}
                   key: {{ .Values.postgresql.passwordSecretKey }}
+            {{- else if hasKey $credentials "postgres-password" }}
+            {{- include "concourse.web.credentialEnv" (dict "root" . "name" "CONCOURSE_POSTGRES_PASSWORD" "key" "postgres-password") | nindent 12 }}
             {{- end }}
           {{- if or .Values.web.tls.enabled .Values.web.extraVolumeMounts }}
           volumeMounts:
@@ -93,7 +104,7 @@ spec:
             - --postgres-socket={{ .Values.postgresql.socket }}
             {{- end }}
             - --postgres-user={{ .Values.postgresql.user }}
-            {{- if not .Values.postgresql.existingSecret }}
+            {{- if and (not .Values.postgresql.existingSecret) (or (not (hasKey $credentials "postgres-password")) (has "CONCOURSE_POSTGRES_PASSWORD" $argCredentials)) }}
             - --postgres-password={{ .Values.postgresql.password }}
             {{- end }}
             - --postgres-database={{ .Values.postgresql.database }}
@@ -123,12 +134,18 @@ spec:
             - {{ printf "--mcp-disable-operation=%s" . | quote }}
             {{- end }}
             # Auth
-            # localUsers is a comma-separated "user:pass,user2:pass2" list, but
-            # Concourse's CLI map flag splits only on the first colon and does
-            # NOT split on commas — so emit one --add-local-user per user.
+            # The local users reach the web as CONCOURSE_ADD_LOCAL_USER from
+            # <fullname>-web-credentials (env, below), out of the pod's args.
+            # They stay here only when a web.env entry names that variable
+            # (the flag beat it, and still does) or when an entry holds what a
+            # Secret cannot reproduce, such as a $(VAR) the kubelet resolves
+            # (concourse.web.argValue). The map flag splits only on the first
+            # colon and not on commas, so it is one --add-local-user per user.
+            {{- if not (hasKey $credentials "add-local-user") }}
             {{- range splitList "," .Values.web.localUsers }}
             {{- if trim . }}
             - --add-local-user={{ trim . }}
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- range splitList "," .Values.web.mainTeamLocalUser }}
@@ -315,6 +332,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.postgresql.existingSecret }}
                   key: {{ .Values.postgresql.passwordSecretKey }}
+            {{- else if and (hasKey $credentials "postgres-password") (not (has "CONCOURSE_POSTGRES_PASSWORD" $argCredentials)) }}
+            {{- include "concourse.web.credentialEnv" (dict "root" . "name" "CONCOURSE_POSTGRES_PASSWORD" "key" "postgres-password") | nindent 12 }}
+            {{- end }}
+            {{- if hasKey $credentials "add-local-user" }}
+            {{- include "concourse.web.credentialEnv" (dict "root" . "name" "CONCOURSE_ADD_LOCAL_USER" "key" "add-local-user") | nindent 12 }}
             {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: CONCOURSE_PROMETHEUS_BIND_IP

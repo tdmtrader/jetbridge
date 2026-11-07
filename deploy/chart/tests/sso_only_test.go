@@ -22,6 +22,14 @@ func TestAnSSOOnlyDeploymentRendersWithoutLocalUsers(t *testing.T) {
 			t.Errorf("an SSO-only render passes %s", arg)
 		}
 	}
+	if _, ok := webCredentials(t, render(t,
+		"web.localUsers=",
+		"web.mainTeamLocalUser=",
+		"web.env[0].name=CONCOURSE_MAIN_TEAM_OIDC_GROUP",
+		"web.env[0].value=platform-admins",
+	))["add-local-user"]; ok {
+		t.Error("an SSO-only render hands the web local users")
+	}
 }
 
 func TestTheRenderFailsWhenTheMainTeamHasNoOwner(t *testing.T) {

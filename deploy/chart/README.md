@@ -187,7 +187,7 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `web.externalUrl` | `""` | **Required.** URL users use to reach the UI. |
 | `web.clusterName` | `jetbridge` | Cluster name displayed in the UI. |
 | `web.logLevel` | `info` | Log level: `debug`, `info`, `error`. |
-| `web.localUsers` | `""` | Local user credentials (`user:password`, comma-separated). Empty for SSO only. |
+| `web.localUsers` | `""` | Local user credentials (`user:password`, comma-separated). The web reads them from the `<fullname>-web-credentials` Secret, not its args. Empty for SSO only. |
 | `web.mainTeamLocalUser` | `""` | User granted admin on the main team. The main team needs an owner: set this, or give it one through `web.env` (`CONCOURSE_MAIN_TEAM_OIDC_GROUP`, `CONCOURSE_MAIN_TEAM_GITHUB_ORG`, ...) for an SSO-only deployment. |
 | `web.apiMaxConns` | `10` | API connection pool max (per replica). |
 | `web.backendMaxConns` | `50` | Backend connection pool max (per replica). |
@@ -356,7 +356,7 @@ pre-1.21 loopback profile is not included.
 | `postgresql.image` | `postgres:16` | PostgreSQL image (bundled mode only). |
 | `postgresql.database` | `concourse` | Database name. |
 | `postgresql.user` | `concourse` | Database user. |
-| `postgresql.password` | `concourse` | Database password (plaintext; use `existingSecret` for production). |
+| `postgresql.password` | `concourse` | Database password (plaintext in values; use `existingSecret` for production). The web and migrate-db read it from the `<fullname>-web-credentials` Secret, not their args. |
 | `postgresql.existingSecret` | `""` | K8s Secret name for password. Overrides `password`. |
 | `postgresql.passwordSecretKey` | `postgresql-password` | Key in Secret containing the password. |
 | `postgresql.host` | `""` | External database host (required when `enabled=false`). |

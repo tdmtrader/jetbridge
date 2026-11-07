@@ -188,3 +188,102 @@ names are still web flags.
 {{- end -}}
 {{- if $reads -}}true{{- end -}}
 {{- end -}}
+
+{{/*
+The web's secret flag values, kept out of the pod's args (which anyone who may
+get the pod can read) and handed over as environment variables from the
+<fullname>-web-credentials Secret. A JSON object, key -> value; empty when
+there is nothing to hand over, and then no Secret renders.
+
+- postgres-password: postgresql.password, unless postgresql.existingSecret
+  names the operator's own Secret.
+- add-local-user: web.localUsers, each entry trimmed and the empty ones
+  dropped, joined with the comma go-flags splits CONCOURSE_ADD_LOCAL_USER on.
+  Left out when web.env names CONCOURSE_ADD_LOCAL_USER: that entry used to
+  lose to the flags, so the flags stay (concourse.web.argCredentials).
+
+Each value is what the old flag delivered (concourse.web.argValue). A value a
+Secret cannot reproduce exactly is left out, and its flag stays an arg as
+before; for the local users, one such entry keeps them all flags.
+*/}}
+{{- define "concourse.web.credentials" -}}
+{{- $data := dict -}}
+{{- if not .Values.postgresql.existingSecret -}}
+{{- $password := include "concourse.web.argValue" (dict "flag" "postgres-password" "value" .Values.postgresql.password) | fromJson -}}
+{{- if $password.ok -}}
+{{- $_ := set $data "postgres-password" $password.value -}}
+{{- end -}}
+{{- end -}}
+{{- $users := list -}}
+{{- $reproduced := true -}}
+{{- range splitList "," .Values.web.localUsers -}}
+{{- if trim . -}}
+{{- $user := include "concourse.web.argValue" (dict "flag" "add-local-user" "value" (trim .)) | fromJson -}}
+{{- if $user.ok -}}
+{{- $users = append $users $user.value -}}
+{{- else -}}
+{{- $reproduced = false -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and $users $reproduced (not (has "CONCOURSE_ADD_LOCAL_USER" (include "concourse.web.argCredentials" . | fromJsonArray))) -}}
+{{- $_ := set $data "add-local-user" (join "," $users) -}}
+{{- end -}}
+{{- toJson $data -}}
+{{- end -}}
+
+{{/*
+What the arg `- --<flag>=<value>`, as web-deployment.yaml used to render it,
+handed the binary: JSON {"ok": true, "value": ...}, or {"ok": false} when a
+Secret cannot hand over the same string.
+
+The arg reached the container through two parsers. YAML read it as an
+unquoted scalar: a " #" began a comment, trailing spaces went, and ": " made
+it a mapping. The kubelet then turned $$ into $ and replaced $(VAR) with the
+container's variable VAR, which it never does to a value from a Secret. So
+the arg is rebuilt and parsed the same way, and refused when it is not one
+string starting with the flag, when it spans lines (that broke the
+manifest), or when it holds $( (a reference the kubelet resolved, or a $$(
+it unescaped).
+*/}}
+{{- define "concourse.web.argValue" -}}
+{{- $prefix := printf "--%s=" .flag -}}
+{{- $value := toString .value -}}
+{{- $out := dict "ok" false -}}
+{{- if not (or (contains "\n" $value) (contains "\r" $value)) -}}
+{{- $parsed := printf "- %s%s" $prefix $value | fromYamlArray -}}
+{{- if and (eq (len $parsed) 1) (kindIs "string" (first $parsed)) -}}
+{{- $arg := first $parsed -}}
+{{- if and (hasPrefix $prefix $arg) (not (contains "$(" $arg)) -}}
+{{- $out = dict "ok" true "value" (trimPrefix $prefix $arg | replace "$$" "$") -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end -}}
+
+{{/*
+The credential variables the web container still takes as flags, as a JSON
+list: each one a web.env entry also names. A flag beats its environment
+variable in go-flags, so until now the flag won; keeping it keeps that.
+*/}}
+{{- define "concourse.web.argCredentials" -}}
+{{- $names := list -}}
+{{- range .Values.web.env -}}
+{{- if has .name (list "CONCOURSE_POSTGRES_PASSWORD" "CONCOURSE_ADD_LOCAL_USER") -}}
+{{- $names = append $names .name -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $names -}}
+{{- end -}}
+
+{{/*
+One env entry reading a key of <fullname>-web-credentials.
+*/}}
+{{- define "concourse.web.credentialEnv" -}}
+- name: {{ .name }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "concourse.fullname" .root }}-web-credentials
+      key: {{ .key }}
+{{- end -}}
