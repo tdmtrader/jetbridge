@@ -114,7 +114,7 @@ func (r *Reaper) Run(ctx context.Context) error {
 
 	reapNow, retained := r.splitCompletedPods(logger, completedPods)
 	for _, podMeta := range reapNow {
-		if err := r.clientset.CoreV1().Pods(r.cfg.Namespace).Delete(ctx, podMeta.Name, metav1.DeleteOptions{}); err != nil {
+		if err := deleteStepPod(ctx, r.clientset, r.cfg.Namespace, podMeta, metav1.DeleteOptions{}); err != nil {
 			if !apierrors.IsNotFound(err) {
 				logger.Error("failed-to-cleanup-completed-pod", err, lager.Data{"pod": podMeta.Name})
 			}
@@ -132,7 +132,7 @@ func (r *Reaper) Run(ctx context.Context) error {
 	// use that as the DB handle. Otherwise fall back to pod.Name for
 	// backward compatibility.
 	handles := make([]string, len(remainingPods))
-	handleToPodName := make(map[string]string, len(remainingPods))
+	handleToPod := make(map[string]metav1.ObjectMeta, len(remainingPods))
 	activePodNames := make([]string, len(remainingPods))
 	for i, podMeta := range remainingPods {
 		handle := podMeta.Name
@@ -140,7 +140,7 @@ func (r *Reaper) Run(ctx context.Context) error {
 			handle = h
 		}
 		handles[i] = handle
-		handleToPodName[handle] = podMeta.Name
+		handleToPod[handle] = podMeta
 		activePodNames[i] = podMeta.Name
 	}
 
@@ -181,21 +181,54 @@ func (r *Reaper) Run(ctx context.Context) error {
 		// Look up the actual pod name from the handle→podName map.
 		// If the handle isn't in the map (pod already gone), try
 		// deleting by handle directly for backward compatibility.
-		podName := handle
-		if name, ok := handleToPodName[handle]; ok {
-			podName = name
+		podMeta := metav1.ObjectMeta{Name: handle}
+		if meta, ok := handleToPod[handle]; ok {
+			podMeta = meta
 		}
-		err := r.clientset.CoreV1().Pods(r.cfg.Namespace).Delete(ctx, podName, metav1.DeleteOptions{})
+		err := deleteStepPod(ctx, r.clientset, r.cfg.Namespace, podMeta, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
-			logger.Error("failed-to-delete-pod", err, lager.Data{"handle": handle, "pod": podName})
-			return fmt.Errorf("deleting pod %s: %w", podName, err)
+			logger.Error("failed-to-delete-pod", err, lager.Data{"handle": handle, "pod": podMeta.Name})
+			return fmt.Errorf("deleting pod %s: %w", podMeta.Name, err)
 		}
 	}
 
 	// Drop the artifacts those containers produced.
 	r.cleanupDaemonSetArtifacts(ctx, logger, destroying)
 
+	r.reapPodlessStepJobs(ctx, logger, workerName)
+
 	return nil
+}
+
+// podlessStepJobGrace is how old a step Job with no pod must be before the
+// reaper takes it: longer than the Job controller needs to create a pod,
+// and than a web needs to unsuspend what it created.
+const podlessStepJobGrace = 10 * time.Minute
+
+// reapPodlessStepJobs deletes step Jobs that own no pod and have for a
+// while: a Job a web created and died before unsuspending, or whose pod the
+// cluster took. Everything above keys on pods, so a Job without one is
+// invisible to it and would stay forever.
+func (r *Reaper) reapPodlessStepJobs(ctx context.Context, logger lager.Logger, workerName string) {
+	jobs, err := r.clientset.BatchV1().Jobs(r.cfg.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("%s=%s", workerLabelKey, workerName),
+	})
+	if err != nil {
+		logger.Error("failed-to-list-step-jobs", err)
+		return
+	}
+	for _, job := range jobs.Items {
+		if job.DeletionTimestamp != nil || time.Since(job.CreationTimestamp.Time) < podlessStepJobGrace {
+			continue
+		}
+		if _, err := findPodOfJob(ctx, r.clientset, r.cfg.Namespace, job.Name, job.UID); !errors.Is(err, errJobPodNotFound) {
+			continue
+		}
+		logger.Info("deleting-podless-step-job", lager.Data{"job": job.Name, "age": time.Since(job.CreationTimestamp.Time).String()})
+		if err := deleteStepJob(ctx, r.clientset, r.cfg.Namespace, job.Name); err != nil {
+			logger.Error("failed-to-delete-podless-step-job", err, lager.Data{"job": job.Name})
+		}
+	}
 }
 
 // cleanupDaemonSetArtifacts asks the artifact daemon to drop each destroyed

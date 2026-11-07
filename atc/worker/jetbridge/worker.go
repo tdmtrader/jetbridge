@@ -32,6 +32,7 @@ type Worker struct {
 	// without an ExecutionControl on the spec anyway.
 	outputControls    OutputControlResolver
 	executionPreparer ExecutionPreparer
+	stepEnvelopes     *StepEnvelopes
 
 	// identities resolves which ServiceAccount a container's pods run as.
 	identities stepPodIdentities
@@ -69,6 +70,10 @@ type WorkerDeps struct {
 	// resolve its step pod grant. Nil means every pod runs as the default
 	// step pod identity.
 	StepPodBuilds StepPodBuilds
+	// StepEnvelopes is where the job step runtime registers each step's
+	// envelope for its pod to fetch (step_envelopes.go). Nil means a job
+	// runtime step that reads stdin is refused.
+	StepEnvelopes *StepEnvelopes
 }
 
 // NewWorker creates a Worker backed by the given Kubernetes clientset, with
@@ -101,6 +106,7 @@ func NewWorker(dbWorker db.Worker, clientset kubernetes.Interface, config Config
 		nodeIPResolver:    nodeIPResolver,
 		outputControls:    deps.OutputControls,
 		executionPreparer: deps.ExecutionPreparer,
+		stepEnvelopes:     deps.StepEnvelopes,
 		identities: stepPodIdentities{
 			grants:         config.StepPodGrants,
 			builds:         deps.StepPodBuilds,
@@ -180,6 +186,7 @@ func (w *Worker) FindOrCreateContainer(
 		mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
 		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, w.identities, true, false)
 		container.outputControls = w.outputControls
+		container.envelopes = w.stepEnvelopes
 		w.bindStartCheck(container, owner)
 		return container, mounts, nil
 	}
@@ -197,6 +204,7 @@ func (w *Worker) FindOrCreateContainer(
 	mounts, volumes := w.buildVolumeMountsForSpec(containerHandle, containerSpec)
 	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, w.identities, false, false)
 	container.outputControls = w.outputControls
+	container.envelopes = w.stepEnvelopes
 	w.bindStartCheck(container, owner)
 	return container, mounts, nil
 }
