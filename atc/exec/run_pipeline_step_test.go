@@ -3,6 +3,7 @@ package exec_test
 import (
 	"context"
 	"errors"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -35,16 +36,32 @@ func (digestConflictRefusal) Error() string {
 
 func (digestConflictRefusal) AdmissionRefusal() {}
 
-// scriptedAdmitter answers every admission the same way and keeps the requests.
+// scriptedAdmitter answers every admission the same way, answers observations
+// from a script, and keeps every request.
 //
 // The only production admitter is atc/agent/composition, which this package may
 // not import -- the boundary architecture_test.go defends -- so the port is
-// stood in for here. The step's whole contract with it is the request it sends
-// and what it does with the answer, which is all this records.
+// stood in for here. The step's whole contract with it is the requests it sends
+// and what it does with the answers, which is all this records.
 type scriptedAdmitter struct {
 	run      exec.ChildRun
 	err      error
 	requests []exec.ChildRunRequest
+
+	// statuses answers ObserveChildRun in order, the last one repeating.
+	// With none scripted every observation errors, so a step that observes
+	// when it should not cannot pass.
+	statuses     []exec.ChildRunStatus
+	observeErr   error
+	observations []exec.ChildRunObservation
+
+	// afterObserve runs after each observation, numbered from one; a spec
+	// ends the build's context from it to land mid-wait.
+	afterObserve func(n int)
+
+	cancelErr     error
+	cancellations []exec.ChildRunCancellation
+	cancelCtxErrs []error
 }
 
 func (a *scriptedAdmitter) AdmitChildRun(_ context.Context, request exec.ChildRunRequest) (exec.ChildRun, error) {
@@ -52,12 +69,36 @@ func (a *scriptedAdmitter) AdmitChildRun(_ context.Context, request exec.ChildRu
 	return a.run, a.err
 }
 
-func (a *scriptedAdmitter) ObserveChildRun(context.Context, exec.ChildRunObservation) (exec.ChildRunStatus, error) {
-	return exec.ChildRunStatus{}, errors.New("the step does not observe yet")
+func (a *scriptedAdmitter) ObserveChildRun(_ context.Context, observation exec.ChildRunObservation) (exec.ChildRunStatus, error) {
+	a.observations = append(a.observations, observation)
+	if a.afterObserve != nil {
+		defer a.afterObserve(len(a.observations))
+	}
+
+	if a.observeErr != nil {
+		return exec.ChildRunStatus{}, a.observeErr
+	}
+	if len(a.statuses) == 0 {
+		return exec.ChildRunStatus{}, errors.New("no observation scripted")
+	}
+
+	next := a.statuses[0]
+	if len(a.statuses) > 1 {
+		a.statuses = a.statuses[1:]
+	}
+
+	return next, nil
 }
 
-func (a *scriptedAdmitter) CancelChildRun(context.Context, exec.ChildRunCancellation) error {
-	return errors.New("the step does not cancel yet")
+func (a *scriptedAdmitter) CancelChildRun(ctx context.Context, cancellation exec.ChildRunCancellation) error {
+	a.cancellations = append(a.cancellations, cancellation)
+	a.cancelCtxErrs = append(a.cancelCtxErrs, ctx.Err())
+	return a.cancelErr
+}
+
+// childStatus is the child run as the scripted port reports it.
+func childStatus(status atc.RunStatus) exec.ChildRunStatus {
+	return exec.ChildRunStatus{RunID: 42, Number: 7, Status: status}
 }
 
 var _ = Describe("RunPipelineStep", func() {
@@ -85,9 +126,14 @@ var _ = Describe("RunPipelineStep", func() {
 		stepErr error
 
 		planID = "58"
+
+		observeInterval time.Duration
 	)
 
 	BeforeEach(func() {
+		observeInterval = exec.RunPipelineObserveInterval
+		exec.RunPipelineObserveInterval = time.Millisecond
+
 		testLogger = lagertest.NewTestLogger("run-pipeline-action-test")
 		ctx, cancel = context.WithCancel(context.Background())
 		ctx = lagerctx.NewContext(ctx, testLogger)
@@ -134,6 +180,7 @@ var _ = Describe("RunPipelineStep", func() {
 
 	AfterEach(func() {
 		cancel()
+		exec.RunPipelineObserveInterval = observeInterval
 	})
 
 	JustBeforeEach(func() {
@@ -171,6 +218,14 @@ var _ = Describe("RunPipelineStep", func() {
 		It("writes nothing to stderr", func() {
 			Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(BeEmpty())
 		})
+
+		// Without wait the step stops at the admission, as it always has.
+		It("neither observes the run nor records it for a later call", func() {
+			Expect(scriptedPort.observations).To(BeEmpty())
+
+			var runID int
+			Expect(state.Result(atc.PlanID(planID), &runID)).To(BeFalse())
+		})
 	})
 
 	Describe("a run the call re-attached to", func() {
@@ -183,6 +238,193 @@ var _ = Describe("RunPipelineStep", func() {
 			Expect(execBuildLog(fixture, realBuild, event.OriginSourceStdout)).To(Equal(
 				"re-attached to run #7 of some-team/version-upgrade\n" +
 					"https://ci.example.com/teams/some-team/pipelines/version-upgrade/runs/7\n"))
+		})
+	})
+
+	Describe("a call that waits", func() {
+		BeforeEach(func() {
+			rpPlan.Wait = true
+			scriptedPort.statuses = []exec.ChildRunStatus{
+				childStatus(atc.RunStatusRunning),
+				childStatus(atc.RunStatusRunning),
+				childStatus(atc.RunStatusSucceeded),
+			}
+		})
+
+		Context("whose child succeeds", func() {
+			It("observes the child until it is terminal, then succeeds", func() {
+				Expect(stepErr).NotTo(HaveOccurred())
+				Expect(stepOk).To(BeTrue())
+
+				Expect(scriptedPort.observations).To(HaveLen(3))
+				for _, observation := range scriptedPort.observations {
+					Expect(observation.RunID).To(Equal(42))
+					Expect(observation.Principal.Build.BuildID).To(Equal(realBuild.ID()))
+				}
+
+				finishes := execBuildFinishEvents(fixture, realBuild)
+				Expect(finishes).To(HaveLen(1))
+				Expect(finishes[0].Succeeded).To(BeTrue())
+			})
+
+			It("names the run, then its outcome, on stdout", func() {
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStdout)).To(Equal(
+					"admitted run #7 of some-team/version-upgrade\n" +
+						"https://ci.example.com/teams/some-team/pipelines/version-upgrade/runs/7\n" +
+						"run #7 succeeded\n"))
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(BeEmpty())
+			})
+
+			// A later call's inputs read this back by the plan id the
+			// planner resolved their `from` to.
+			It("records the child's run id as its plan's result", func() {
+				var runID int
+				Expect(state.Result(atc.PlanID(planID), &runID)).To(BeTrue())
+				Expect(runID).To(Equal(42))
+			})
+		})
+
+		Context("whose child fails", func() {
+			BeforeEach(func() {
+				scriptedPort.statuses = []exec.ChildRunStatus{
+					childStatus(atc.RunStatusRunning),
+					childStatus(atc.RunStatusFailed),
+				}
+			})
+
+			// Failed, not errored: the child ran and said no, and its own log
+			// is where the reason is.
+			It("fails the step and names the run on stderr", func() {
+				Expect(stepErr).NotTo(HaveOccurred())
+				Expect(stepOk).To(BeFalse())
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(Equal(
+					"run #7 failed\n" +
+						"https://ci.example.com/teams/some-team/pipelines/version-upgrade/runs/7\n"))
+
+				finishes := execBuildFinishEvents(fixture, realBuild)
+				Expect(finishes).To(HaveLen(1))
+				Expect(finishes[0].Succeeded).To(BeFalse())
+			})
+		})
+
+		Context("that re-attaches to a run it admitted before", func() {
+			BeforeEach(func() {
+				scriptedPort.run = exec.ChildRun{RunID: 42, Number: 7, Replayed: true}
+			})
+
+			// A replayed build starts with empty state, so the run id must be
+			// stored again or a later call bound to this one has nothing.
+			It("records the run id again and waits for it", func() {
+				Expect(stepOk).To(BeTrue())
+				Expect(scriptedPort.observations).To(HaveLen(3))
+
+				var runID int
+				Expect(state.Result(atc.PlanID(planID), &runID)).To(BeTrue())
+				Expect(runID).To(Equal(42))
+
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStdout)).To(HavePrefix(
+					"re-attached to run #7 of some-team/version-upgrade\n"))
+			})
+		})
+
+		Context("when the build's context ends while it waits", func() {
+			BeforeEach(func() {
+				scriptedPort.statuses = []exec.ChildRunStatus{childStatus(atc.RunStatusRunning)}
+				scriptedPort.afterObserve = func(n int) {
+					if n == 2 {
+						cancel()
+					}
+				}
+			})
+
+			It("asks for the child to be cancelled, under a context that has not ended", func() {
+				Expect(scriptedPort.cancellations).To(Equal([]exec.ChildRunCancellation{{
+					RunID:     42,
+					Principal: scriptedPort.observations[0].Principal,
+					Reason:    "parent build aborted",
+				}}))
+				Expect(scriptedPort.cancelCtxErrs).To(Equal([]error{nil}))
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStdout)).To(HaveSuffix(
+					"cancelling run #7\n"))
+			})
+
+			It("returns the context's error, and does not finish the step", func() {
+				Expect(stepOk).To(BeFalse())
+				Expect(errors.Is(stepErr, context.Canceled)).To(BeTrue())
+				Expect(execBuildFinishEvents(fixture, realBuild)).To(BeEmpty())
+			})
+
+			Context("and the cancellation fails", func() {
+				BeforeEach(func() {
+					scriptedPort.cancelErr = errors.New("pool exhausted")
+				})
+
+				It("says so on stderr and still returns the context's error", func() {
+					Expect(errors.Is(stepErr, context.Canceled)).To(BeTrue())
+					Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(Equal(
+						"failed to cancel run #7: pool exhausted\n"))
+				})
+			})
+		})
+
+		Context("when an observation is refused", func() {
+			BeforeEach(func() {
+				scriptedPort.observeErr = runs.ErrUnauthorized
+			})
+
+			It("fails the step with the refusal on stderr", func() {
+				Expect(stepErr).NotTo(HaveOccurred())
+				Expect(stepOk).To(BeFalse())
+				Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(Equal(
+					runs.ErrUnauthorized.Error() + "\n"))
+
+				finishes := execBuildFinishEvents(fixture, realBuild)
+				Expect(finishes).To(HaveLen(1))
+				Expect(finishes[0].Succeeded).To(BeFalse())
+			})
+		})
+
+		Context("when an observation faults", func() {
+			BeforeEach(func() {
+				scriptedPort.observeErr = errors.New("pool exhausted")
+			})
+
+			It("errors the step", func() {
+				Expect(stepErr).To(MatchError("pool exhausted"))
+				Expect(stepOk).To(BeFalse())
+				Expect(execBuildFinishEvents(fixture, realBuild)).To(BeEmpty())
+			})
+		})
+	})
+
+	Describe("a call with inputs", func() {
+		BeforeEach(func() {
+			rpPlan.Inputs = map[string]atc.RunPipelineInputPlan{
+				"composition": {From: "40", Result: "composition"},
+			}
+		})
+
+		Context("whose from call recorded its run", func() {
+			BeforeEach(func() {
+				state.StoreResult("40", 41)
+			})
+
+			It("binds each input to that run's result", func() {
+				Expect(stepErr).NotTo(HaveOccurred())
+				Expect(admittedRequest().Inputs).To(Equal(map[string]atc.RunInputSource{
+					"composition": {RunID: 41, Result: "composition"},
+				}))
+			})
+		})
+
+		// Only possible if the planner's guarantee -- `from` names an earlier
+		// waited call -- is broken. Nothing is admitted with an input missing.
+		Context("whose from call recorded nothing", func() {
+			It("errors the step, naming the input, and admits nothing", func() {
+				Expect(stepErr).To(MatchError(ContainSubstring(`"composition"`)))
+				Expect(stepOk).To(BeFalse())
+				Expect(scriptedPort.requests).To(BeEmpty())
+			})
 		})
 	})
 
@@ -414,6 +656,50 @@ var _ = Describe("RunPipelineStep", func() {
 		It("changes when a param value changes", func() {
 			Expect(digestFor(atc.RunPipelinePlan{Name: "version-upgrade", Params: atc.RunParams{"ref": "deadbeef"}}, localVars)).
 				NotTo(Equal(digestFor(atc.RunPipelinePlan{Name: "version-upgrade", Params: atc.RunParams{"ref": "cafebabe"}}, localVars)))
+		})
+
+		// A call without inputs digests exactly as it did before inputs
+		// existed, so a call recorded then still re-attaches. The literal is
+		// the v1 digest of this fixture, taken before inputs were added.
+		It("is the v1 digest for a call without inputs", func() {
+			Expect(admittedRequest().InputDigest).To(Equal(
+				"3bdcb89975221ba5a6ed51defe216309bcc61d32ad20c5f747eb4181e82701c0"))
+		})
+
+		It("changes when inputs are bound", func() {
+			withInputs := atc.RunPipelinePlan{
+				Name:   "version-upgrade",
+				Params: atc.RunParams{"ref": "deadbeef"},
+				Inputs: map[string]atc.RunPipelineInputPlan{
+					"composition": {From: "40", Result: "composition"},
+				},
+			}
+			inputState := map[string]any{"source-ref": "deadbeef"}
+
+			bound := func(plan atc.RunPipelinePlan) string {
+				GinkgoHelper()
+				admitter := &scriptedAdmitter{run: exec.ChildRun{RunID: 42, Number: 7}}
+				digestState := exec.NewRunState(noopStepper, vars.StaticVariables{})
+				for name, value := range inputState {
+					digestState.AddLocalVar(name, value, false)
+				}
+				digestState.StoreResult("40", 41)
+				digestState.StoreResult("41", 41)
+
+				_, err := exec.NewRunPipelineStep(atc.PlanID(planID), plan, stepMetadata, delegateFactory, admitter).
+					Run(ctx, digestState)
+				Expect(err).NotTo(HaveOccurred())
+
+				return admitter.requests[0].InputDigest
+			}
+
+			Expect(bound(withInputs)).NotTo(Equal(admittedRequest().InputDigest))
+
+			fromElsewhere := withInputs
+			fromElsewhere.Inputs = map[string]atc.RunPipelineInputPlan{
+				"composition": {From: "41", Result: "composition"},
+			}
+			Expect(bound(fromElsewhere)).NotTo(Equal(bound(withInputs)))
 		})
 
 		It("changes when the template changes", func() {
