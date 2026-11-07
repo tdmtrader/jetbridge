@@ -802,8 +802,11 @@ func (p *pipeline) Destroy() error {
 // template with durable Run history is destroyed together with every one of
 // its Runs: their builds and logs, payloads, task caches, input uploads and
 // all their Run evidence, releasing the Runs' Hangar claims. It refuses while
-// any Run of the template is active (ErrPipelineTemplateHasActiveRun) and
-// reports how many Runs it purged; a pipeline with no Runs purges none.
+// any Run of the template is active (ErrPipelineTemplateHasActiveRun) or an
+// unsettled landing queue entry depends on one
+// (ErrPipelineTemplateHasPendingLanding), and reports how many Runs it
+// purged; a pipeline with no Runs purges none. A settled landing entry keeps
+// its outcome but loses its link to the purged Runs.
 func (p *pipeline) DestroyWithRunHistory() (int, error) {
 	return p.destroy(true)
 }

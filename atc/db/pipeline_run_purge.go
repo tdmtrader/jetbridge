@@ -185,6 +185,33 @@ const activeTemplateRun = `SELECT EXISTS (
 			WHERE op.run_id = run.id AND op.completed_at IS NULL
 			  AND op.claimed AND op.next_at > clock_timestamp())))`
 
+// pendingTemplateLanding reports whether a landing queue entry that has not
+// settled still depends on a Run of the template: the entry names the Run, or
+// owns an intent that does. Deleting the Run would null out or cascade away
+// the links the queue is still driving. A settled entry (landed or ejected,
+// both final) only loses its history link, which the purge accepts.
+//
+// It is a plain read, not a lock. The landing engine's compose locks an entry
+// before it admits a Run (team, template), and its land admission locks the
+// Run before the entry and intent, so no lock order on landing rows is safe
+// against both. None is needed: a link to a Run is written only in the
+// transaction that admits that Run, which needs the template lock this purge
+// already holds, and no entry goes from settled back to unsettled. Under that
+// lock the answer can only change from true to false (an entry settling),
+// which merely refuses a purge that might have gone ahead. The deletes that
+// follow touch only settled entries and done intents, rows the engine never
+// locks.
+const pendingTemplateLanding = `SELECT EXISTS (
+	SELECT 1 FROM landing_entries entry
+	WHERE entry.settled_at IS NULL AND (
+		entry.compose_run_id IN (SELECT id FROM pipeline_runs WHERE template_pipeline_id = $1)
+		OR entry.land_run_id IN (SELECT id FROM pipeline_runs WHERE template_pipeline_id = $1)
+		OR EXISTS (
+			SELECT 1 FROM landing_intents intent
+			WHERE intent.entry_id = entry.id AND (
+				intent.compose_run_id IN (SELECT id FROM pipeline_runs WHERE template_pipeline_id = $1)
+				OR intent.land_run_id IN (SELECT id FROM pipeline_runs WHERE template_pipeline_id = $1)))))`
+
 // purgeTemplateRuns deletes every Run of a template with its durable history
 // and reports how many Runs went. The caller holds the team FOR SHARE and the
 // template FOR UPDATE; the Runs are locked here, in id order, as every Run
@@ -214,6 +241,13 @@ func purgeTemplateRuns(ctx context.Context, tx Tx, templateID, teamID int) (int,
 	}
 	if active {
 		return 0, ErrPipelineTemplateHasActiveRun
+	}
+	var landing bool
+	if err = tx.QueryRowContext(ctx, pendingTemplateLanding, templateID).Scan(&landing); err != nil {
+		return 0, err
+	}
+	if landing {
+		return 0, ErrPipelineTemplateHasPendingLanding
 	}
 	if _, err = tx.ExecContext(ctx, runEvidencePurgeMarker); err != nil {
 		return 0, err

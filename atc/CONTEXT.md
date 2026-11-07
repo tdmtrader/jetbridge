@@ -254,8 +254,10 @@ template's runs. It deletes the run headers, their builds and logs, payloads,
 results and captured outputs, bound inputs and input uploads (releasing their
 Hangar claims), credential handoffs and cancellation records, in one
 transaction under the one purge marker the evidence triggers honour. A
-template's purge refuses while any of its runs is active. An ordinary destroy
-of a template with run history is refused.
+template's purge refuses while any of its runs is active or an unsettled
+landing queue entry still depends on one; a settled entry keeps its settle
+record but loses its link to the purged runs. An ordinary destroy of a
+template with run history is refused.
 _Avoid_: team purge (for the marker, or for a template's purge), hard delete
 
 **Reclaimed run**:

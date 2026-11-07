@@ -3,6 +3,7 @@ package db_test
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -492,6 +493,80 @@ var _ = Describe("Destroying a template with its Run history", func() {
 		_, found, err := purged.team.Pipeline(atc.PipelineRef{Name: "ordinary"})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeFalse())
+	})
+
+	Context("when a landing queue used the template's Runs", func() {
+		var queueID int
+
+		BeforeEach(func() {
+			settleRunAborted(purged.runID, 0)
+			Expect(dbConn.QueryRow(`INSERT INTO landing_queues(team_id,name,config) VALUES ($1,'trunk','{}') RETURNING id`, purged.team.ID()).Scan(&queueID)).To(Succeed())
+		})
+
+		entry := func(entryID string, settled bool, composeRunID, landRunID any) int {
+			GinkgoHelper()
+			state, settledAt := "in_flight", any(nil)
+			if settled {
+				state, settledAt = "landed", time.Now()
+			}
+			var id int
+			Expect(dbConn.QueryRow(`INSERT INTO landing_entries(queue_id,entry_id,commit,state,settled_at,compose_run_id,land_run_id)
+				VALUES ($1,$2,'abc123',$3,$4,$5,$6) RETURNING id`, queueID, entryID, state, settledAt, composeRunID, landRunID).Scan(&id)).To(Succeed())
+			return id
+		}
+		intent := func(entryRowID int, composeRunID, landRunID any) {
+			GinkgoHelper()
+			_, err := dbConn.Exec(`INSERT INTO landing_intents(queue_id,entry_id,compose_run_id,land_run_id) VALUES ($1,$2,$3,$4)`, queueID, entryRowID, composeRunID, landRunID)
+			Expect(err).NotTo(HaveOccurred())
+		}
+		refuses := func() {
+			GinkgoHelper()
+			count, err := purged.template.DestroyWithRunHistory()
+			Expect(err).To(MatchError(db.ErrPipelineTemplateHasPendingLanding))
+			Expect(count).To(BeZero())
+			retained(purged)
+			untouched()
+		}
+
+		It("refuses while an unsettled entry names one of its Runs", func() {
+			entry("in-flight", false, nil, purged.runID)
+			refuses()
+		})
+
+		It("refuses while an unsettled entry owns an intent naming one of its Runs", func() {
+			id := entry("in-flight", false, nil, nil)
+			intent(id, purged.runID, nil)
+			refuses()
+		})
+
+		It("purges once the entry has settled, which keeps its outcome but loses the link to the Runs", func() {
+			id := entry("landed", true, sibling.runID, purged.runID)
+			intent(id, purged.runID, nil)
+
+			count, err := purged.template.DestroyWithRunHistory()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(1))
+
+			var state string
+			var compose, land sql.NullInt64
+			Expect(dbConn.QueryRow(`SELECT state, compose_run_id, land_run_id FROM landing_entries WHERE id=$1`, id).Scan(&state, &compose, &land)).To(Succeed())
+			Expect(state).To(Equal("landed"))
+			Expect(compose.Int64).To(BeEquivalentTo(sibling.runID), "another template's Run stays linked")
+			Expect(land.Valid).To(BeFalse())
+			var intents int
+			Expect(dbConn.QueryRow(`SELECT count(*) FROM landing_intents WHERE entry_id=$1`, id).Scan(&intents)).To(Succeed())
+			Expect(intents).To(BeZero())
+			untouched()
+		})
+
+		It("ignores unsettled entries that name only another template's Runs", func() {
+			id := entry("in-flight", false, sibling.runID, nil)
+			intent(id, sibling.runID, nil)
+			count, err := purged.template.DestroyWithRunHistory()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(1))
+			untouched()
+		})
 	})
 
 	It("refuses a Run's payload as a plain destroy does", func() {
