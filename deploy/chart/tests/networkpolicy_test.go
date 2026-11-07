@@ -510,3 +510,55 @@ func TestTheWebPolicyAdmitsTheMetricsListener(t *testing.T) {
 		"every scrape is dropped, the target reads as down, and every alerting rule " +
 		"evaluates against no data")
 }
+
+// A step pod resolves names through kube-dns or, on a cluster running
+// NodeLocal DNSCache, through 169.254.20.10 on its own node. An egress policy
+// that admits only the first breaks every build on the second, so the task
+// egress policy admits port 53, UDP and TCP, to any destination and to
+// NodeLocal DNSCache's default address, 169.254.20.10, by IP.
+func TestTheTaskEgressPolicyAdmitsBothDNSPaths(t *testing.T) {
+	out := render(t, "networkPolicy.enabled=true", "networkPolicy.taskEgressTo[0].ipBlock.cidr=10.0.0.0/8")
+	var policy *networkingv1.NetworkPolicy
+	for _, document := range splitDocuments(out) {
+		var head renderedObject
+		if yaml.Unmarshal([]byte(document), &head) != nil || head.Kind != "NetworkPolicy" || !strings.HasSuffix(head.Metadata.Name, "-task-egress") {
+			continue
+		}
+		policy = &networkingv1.NetworkPolicy{}
+		if err := yaml.UnmarshalStrict([]byte(document), policy); err != nil {
+			t.Fatalf("the task egress policy does not decode: %v", err)
+		}
+	}
+	if policy == nil {
+		t.Fatal("the render has no task egress policy")
+	}
+	dns := func(rule networkingv1.NetworkPolicyEgressRule) bool {
+		protocols := map[string]bool{}
+		for _, port := range rule.Ports {
+			if port.Port != nil && port.Port.IntValue() == 53 && port.Protocol != nil {
+				protocols[string(*port.Protocol)] = true
+			}
+		}
+		return protocols["UDP"] && protocols["TCP"]
+	}
+	anywhere, nodeLocal := false, false
+	for _, rule := range policy.Spec.Egress {
+		if !dns(rule) {
+			continue
+		}
+		if len(rule.To) == 0 {
+			anywhere = true
+		}
+		for _, peer := range rule.To {
+			if peer.IPBlock != nil && peer.IPBlock.CIDR == "169.254.20.10/32" {
+				nodeLocal = true
+			}
+		}
+	}
+	if !anywhere {
+		t.Error("the task egress policy no longer admits DNS to any destination")
+	}
+	if !nodeLocal {
+		t.Error("the task egress policy does not admit NodeLocal DNSCache at 169.254.20.10")
+	}
+}
