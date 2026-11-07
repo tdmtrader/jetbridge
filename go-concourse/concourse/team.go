@@ -20,6 +20,11 @@ type Team interface {
 	Pipeline(pipelineRef atc.PipelineRef) (atc.Pipeline, bool, error)
 	PipelineBuilds(pipelineRef atc.PipelineRef, page Page) ([]atc.Build, Pagination, bool, error)
 	DeletePipeline(pipelineRef atc.PipelineRef) (bool, error)
+	// DeletePipelineAndRunHistory destroys a pipeline and, if it is a
+	// template, every one of its Runs with their durable history. It reports
+	// how many Runs went. A refusal the server phrases (a Run still active,
+	// say) is an APIRefusalError.
+	DeletePipelineAndRunHistory(pipelineRef atc.PipelineRef) (found bool, purgedRuns int, err error)
 	PausePipeline(pipelineRef atc.PipelineRef) (bool, error)
 	ArchivePipeline(pipelineRef atc.PipelineRef) (bool, error)
 	UnpausePipeline(pipelineRef atc.PipelineRef) (bool, error)
