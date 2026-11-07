@@ -82,6 +82,11 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build -ldflags "-s -w" -o /hangar-store ./cmd/hangar-store
 
+# Build the launcher, the entrypoint of every step pod's main container. Step
+# pods copy it out of this image into their launcher emptyDir, so it is static.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+    go build -ldflags "-s -w" -o /jb-launcher ./cmd/jb-launcher
+
 # Cross-compile the fly CLI for common platforms. The web server serves
 # these archives at /api/v1/cli so users can download fly directly.
 RUN mkdir -p /fly-assets && \
@@ -115,6 +120,8 @@ RUN apt-get update && \
 COPY --from=backend /concourse /usr/local/concourse/bin/concourse
 COPY --from=backend /artifact-daemon /usr/local/concourse/bin/artifact-daemon
 COPY --from=backend /hangar-store /usr/local/concourse/bin/hangar-store
+# Step pods copy this into their launcher emptyDir; it runs inside the step image.
+COPY --from=backend /jb-launcher /usr/local/concourse/bin/jb-launcher
 COPY --from=backend /fly-assets/ /usr/local/concourse/fly-assets/
 
 ENV PATH="/usr/local/concourse/bin:${PATH}"
