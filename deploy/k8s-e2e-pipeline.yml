@@ -39,7 +39,7 @@ jobs:
         - -exc
         - |
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
-          IMAGE_TAG="v35"
+          IMAGE_TAG="v36"
           IMAGE="${REGISTRY}/concourse-kind-runner:${IMAGE_TAG}"
           BUILDER_POD="kind-runner-builder-$$"
 
@@ -199,7 +199,7 @@ jobs:
       platform: linux
       inputs:
       - name: repo
-      rootfs_uri: &kind_runner_image docker:///registry.home/concourse-kind-runner:v35
+      rootfs_uri: &kind_runner_image docker:///registry.home/concourse-kind-runner:v36
       run:
         path: sh
         args:
