@@ -327,6 +327,10 @@ _Avoid_: merge queue, queue (alone)
 **Entry**:
 One submitted change in a landing queue: an id, the commit to land, and when
 it was submitted. Queued until settled as landed or ejected; both are final.
+Its commits are every commit reachable from that commit and not from the
+trunk, oldest first, and each lands as its own commit: the queue never
+squashes. An entry holding a merge commit, or no commit off the trunk, is
+refused; an author who wants one commit squashes before submitting.
 _Avoid_: admission, change (alone), request
 
 **Submit ref**:
@@ -337,9 +341,11 @@ _Avoid_: admit ref
 
 **Candidate**:
 The tree the compose Run publishes under `candidate/` of its one result,
-`composition`, built by rebuilding the entries on the trunk's head, beside a
-`manifest/` naming base, entries, identities and the rebuilt sha. Gates test the candidate; the land
-step rebuilds and pushes exactly that commit. It is never a branch.
+`composition`, built by replaying each entry's commits, in order, on the
+trunk's head, beside a `manifest/` naming base, entries, each commit's
+identity, date and message, and the rebuilt head sha. Gates test the
+candidate; the land step rebuilds and pushes exactly those commits. It is
+never a branch.
 _Avoid_: candidate branch, queue-next
 
 **Landing intent**:

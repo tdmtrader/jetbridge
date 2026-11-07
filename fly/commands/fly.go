@@ -62,7 +62,7 @@ type FlyCommand struct {
 	RunPipeline               RunPipelineCommand             `command:"run-pipeline" description:"Create a numbered run from a template pipeline"`
 	Runs                      RunsCommand                    `command:"runs" description:"List numbered runs for a template pipeline"`
 	SetLandingQueue           SetLandingQueueCommand         `command:"set-landing-queue" description:"Create or update a team's landing queue"`
-	Land                      LandCommand                    `command:"land" description:"Submit a commit to a landing queue"`
+	Land                      LandCommand                    `command:"land" description:"Submit a commit to a landing queue; every commit it holds off the trunk lands as its own commit, never squashed"`
 	LandingQueue              LandingQueueCommand            `command:"landing-queue" description:"Show a landing queue's entries and landings"`
 
 	Resources              ResourcesCommand              `command:"resources"                  alias:"rs"   description:"List the resources in the pipeline"`
