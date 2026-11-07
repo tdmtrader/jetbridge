@@ -380,9 +380,22 @@ func (step *SetPipelineStep) Visit(v StepVisitor) error {
 // RunPipelineStep starts one run of a template pipeline. There is deliberately
 // no `team:` field: a build may only call templates on its own team, which is
 // enforced by the run-admission port rather than here.
+//
+// With Wait, the step returns only once the child Run is terminal. Inputs
+// binds a result of an earlier waited run_pipeline step of the same job into
+// the child under the given name.
 type RunPipelineStep struct {
-	Name   string    `json:"run_pipeline"`
-	Params RunParams `json:"params,omitempty"`
+	Name   string                      `json:"run_pipeline"`
+	Params RunParams                   `json:"params,omitempty"`
+	Wait   bool                        `json:"wait,omitempty"`
+	Inputs map[string]RunPipelineInput `json:"inputs,omitempty"`
+}
+
+// RunPipelineInput names an earlier run_pipeline step of the same job, by its
+// step name, and the result of that step's child Run to bind.
+type RunPipelineInput struct {
+	From   string `json:"from"`
+	Result string `json:"result"`
 }
 
 func (step *RunPipelineStep) Visit(v StepVisitor) error {

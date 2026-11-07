@@ -281,6 +281,26 @@ var factoryTests = []StepTest{
 		},
 	},
 	{
+		Title: "run_pipeline step that waits and binds an earlier result",
+
+		ConfigYAML: `
+			run_pipeline: landing-land
+			wait: true
+			inputs:
+			  composition:
+			    from: landing-compose
+			    result: composition
+		`,
+
+		StepConfig: &atc.RunPipelineStep{
+			Name: "landing-land",
+			Wait: true,
+			Inputs: map[string]atc.RunPipelineInput{
+				"composition": {From: "landing-compose", Result: "composition"},
+			},
+		},
+	},
+	{
 		Title: "run_pipeline step under a modifier",
 
 		ConfigYAML: `
