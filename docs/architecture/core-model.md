@@ -167,7 +167,9 @@ deletes its executions.
 - A template with run history cannot be destroyed by an ordinary destroy.
   Destroying it with its run history refuses while any of its runs is
   running, or while the cancellation worker still holds one of its
-  cancellation operations within that operation's term.
+  cancellation operations within that operation's term, or while a landing
+  queue entry that has not settled names one of its runs or owns an intent
+  that does. A settled entry keeps its outcome and loses its run links.
 - The one narrower exception is check collection: under its own
   transaction-local allowance it may delete a closed check execution of a
   completed run check build (or a closed get an older check build left

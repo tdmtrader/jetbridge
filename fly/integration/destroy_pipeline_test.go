@@ -268,6 +268,7 @@ var _ = Describe("destroy-pipeline", func() {
 				Eventually(sess).Should(gbytes.Say(`its results and captured outputs`))
 				Eventually(sess).Should(gbytes.Say(`its bound inputs and input uploads \(their Hangar claims are released, so the stored trees become reclaimable\)`))
 				Eventually(sess).Should(gbytes.Say(`its credential handoffs and cancellation records`))
+				Eventually(sess).Should(gbytes.Say(`!!!   - landing queue entries that used these Runs keep their outcome but lose the link to them`))
 				Eventually(sess).Should(gbytes.Say("`some-template` has 3 Runs."))
 				Eventually(sess).Should(gbytes.Say(`this cannot be undone. it is not archive-pipeline, which keeps the pipeline and its history.`))
 			}

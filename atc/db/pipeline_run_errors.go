@@ -16,6 +16,7 @@ var (
 	ErrPipelineRunPayloadMutation          = errors.New("pipeline run payload cannot be mutated directly")
 	ErrPipelineTemplateHasRunHistory       = atc.ErrPipelineTemplateHasRunHistory
 	ErrPipelineTemplateHasActiveRun        = errors.New("template has a run that is still running or still being cancelled; wait for it to finish, or cancel it, before purging its run history")
+	ErrPipelineTemplateHasPendingLanding   = errors.New("a landing queue entry still depends on a run of this template; wait for the entry to settle or be ejected before purging its run history")
 	ErrPipelineTemplateBuild               = errors.New("pipeline templates cannot create builds directly")
 	ErrPipelineTemplateCheck               = errors.New("pipeline templates cannot be checked directly")
 	ErrPipelineTemplateHasOrdinaryJobState = errors.New("pipeline with ordinary job history or task caches cannot become a template")
