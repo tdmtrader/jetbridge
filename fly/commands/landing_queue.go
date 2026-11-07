@@ -14,13 +14,15 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/fly/commands/internal/flaghelpers"
 	"github.com/concourse/concourse/fly/rc"
+	"github.com/concourse/concourse/go-concourse/concourse"
 )
 
-// landingQueueClient is what the three landing queue commands need of a team.
+// landingQueueClient is what the landing queue commands need of a team.
 type landingQueueClient interface {
 	SetLandingQueue(queueName string, config []byte) (bool, error)
 	SubmitLanding(queueName string, submission atc.LandingSubmission) (bool, error)
 	LandingQueue(queueName string) (atc.LandingQueueStatus, bool, error)
+	ResumeLandingQueue(queueName string) (bool, error)
 }
 
 // SetLandingQueueCommand sets a team's landing queue from its YAML (ADR-0011).
@@ -179,6 +181,17 @@ func (command *LandingQueueCommand) run(client landingQueueClient, out io.Writer
 		return err
 	}
 	fmt.Fprintf(out, "landing queue %s: %s on %s\n", status.Name, status.Config.Trunk, status.Config.Repository)
+	if len(status.Config.Gates) > 0 {
+		gates := make([]string, 0, len(status.Config.Gates))
+		for _, gate := range status.Config.Gates {
+			gates = append(gates, gate.Template)
+		}
+		fmt.Fprintf(out, "gates: %s\n", strings.Join(gates, ", "))
+	}
+	if status.Paused {
+		fmt.Fprintf(out, "paused: %s\n", status.PauseReason)
+		fmt.Fprintf(out, "resume with: fly resume-landing-queue -q %s\n", status.Name)
+	}
 	if status.FailedLands > 0 {
 		fmt.Fprintf(out, "failed landings in a row: %d (last: %s)\n", status.FailedLands, status.LastError)
 	}
@@ -187,7 +200,62 @@ func (command *LandingQueueCommand) run(client landingQueueClient, out io.Writer
 	for _, entry := range status.Entries {
 		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n", entry.ID, entry.Commit[:12], entry.State, runNumber(entry.ComposeRun), runNumber(entry.LandRun), entry.SettleReason)
 	}
+	if err := table.Flush(); err != nil {
+		return err
+	}
+	// The gates of every entry in flight: each gate's latest Run and verdict.
+	gated := false
+	for _, entry := range status.Entries {
+		if entry.State == atc.LandingEntryInFlight && len(entry.Gates) > 0 {
+			gated = true
+		}
+	}
+	if !gated {
+		return nil
+	}
+	fmt.Fprintln(out)
+	table = tabwriter.NewWriter(out, 0, 8, 2, ' ', 0)
+	fmt.Fprintln(table, "entry\tgate\trun\tverdict\tattempts\tlast")
+	for _, entry := range status.Entries {
+		if entry.State != atc.LandingEntryInFlight {
+			continue
+		}
+		for _, gate := range entry.Gates {
+			fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%d\t%s\n", entry.ID, gate.Template, runNumber(gate.Run), gate.Verdict, gate.Attempts, gate.LastError)
+		}
+	}
 	return table.Flush()
+}
+
+// ResumeLandingQueueCommand clears a landing queue paused on a gate that gave
+// no verdict twice in a row; that gate gets a fresh Run.
+type ResumeLandingQueueCommand struct {
+	Queue string               `short:"q" long:"queue" required:"true" description:"Name of the landing queue"`
+	Team  flaghelpers.TeamFlag `long:"team" description:"Name of the team the queue belongs to, if different from the target default"`
+}
+
+func (command *ResumeLandingQueueCommand) Execute([]string) error {
+	team, err := loadTeam(command.Team)
+	if err != nil {
+		return err
+	}
+	return command.run(team, os.Stdout)
+}
+
+func (command *ResumeLandingQueueCommand) run(client landingQueueClient, out io.Writer) error {
+	resumed, err := client.ResumeLandingQueue(command.Queue)
+	if errors.Is(err, concourse.ErrLandingQueueNotFound) {
+		return fmt.Errorf("landing queue %q not found", command.Queue)
+	}
+	if err != nil {
+		return err
+	}
+	if resumed {
+		fmt.Fprintf(out, "resumed landing queue %q\n", command.Queue)
+	} else {
+		fmt.Fprintf(out, "landing queue %q is not paused\n", command.Queue)
+	}
+	return nil
 }
 
 func runNumber(n int) string {

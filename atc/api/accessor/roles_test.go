@@ -24,11 +24,12 @@ var _ = Describe("Pipeline run roles", func() {
 		Expect(matched).To(Equal(3))
 	})
 
-	It("A landing queue is set by owners, submitted to by members, and read by viewers", func() {
+	It("A landing queue is set by owners, submitted to by members, read by viewers, and resumed by operators", func() {
 		// This fails if a landing queue route falls back to the blank, admin-only role.
 		Expect(accessor.DefaultRoles[atc.SetLandingQueue]).To(Equal(accessor.OwnerRole))
 		Expect(accessor.DefaultRoles[atc.SubmitLanding]).To(Equal(accessor.MemberRole))
 		Expect(accessor.DefaultRoles[atc.GetLandingQueue]).To(Equal(accessor.ViewerRole))
+		Expect(accessor.DefaultRoles[atc.ResumeLandingQueue]).To(Equal(accessor.OperatorRole))
 	})
 
 	Describe("ValidateCustomRoles", func() {

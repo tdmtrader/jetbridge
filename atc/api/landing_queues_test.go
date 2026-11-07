@@ -80,9 +80,49 @@ var _ = Describe("Landing queues API", func() {
 		Expect(status.Entries[0].State).To(Equal(atc.LandingEntryQueued))
 	})
 
-	It("A queue that is not set answers 404 to a submit and a status read", func() {
+	It("A queue that is not set answers 404 to a submit, a status read and a resume", func() {
 		Expect(do(http.MethodGet, base, "").StatusCode).To(Equal(http.StatusNotFound))
 		Expect(do(http.MethodPost, base+"/entries", `{"id":"x","commit":"`+shaA+`"}`).StatusCode).To(Equal(http.StatusNotFound))
+		Expect(do(http.MethodPut, base+"/resume", "").StatusCode).To(Equal(http.StatusNotFound))
+	})
+
+	It("A queue's gates must each name a template of the team, and are refused naming the gate otherwise", func() {
+		aTeam, found, err := realdb.Deps.teamFactory.FindTeam("a-team")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		job := atc.JobConfigs{{Name: "gate", PlanSequence: []atc.Step{{Config: &atc.TaskStep{Name: "gate", Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "true"}}}}}}}
+		realdb.SavePipeline(aTeam, "landing-gate-tests", atc.Config{Template: true, Jobs: job})
+		realdb.SavePipeline(aTeam, "ordinary", atc.Config{Jobs: job})
+		gated := strings.Replace(config, "gates: []\n", "gates:\n- template: landing-gate-tests\n  wait: 50m\n", 1)
+
+		response := do(http.MethodPut, base, gated+"- template: missing\n")
+		Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
+		Expect(text(response)).To(ContainSubstring(`gates[1].template "missing" is not a pipeline of team a-team`))
+		response = do(http.MethodPut, base, gated+"- template: ordinary\n")
+		Expect(response.StatusCode).To(Equal(http.StatusBadRequest))
+		Expect(text(response)).To(ContainSubstring(`gates[1].template "ordinary" is a pipeline, not a template`))
+
+		Expect(do(http.MethodPut, base, gated).StatusCode).To(Equal(http.StatusCreated))
+		response = do(http.MethodGet, base, "")
+		var status atc.LandingQueueStatus
+		Expect(json.NewDecoder(response.Body).Decode(&status)).To(Succeed())
+		Expect(status.Config.Gates).To(Equal([]atc.LandingQueueGate{{Template: "landing-gate-tests", Wait: "50m"}}))
+		Expect(status.Paused).To(BeFalse())
+	})
+
+	It("A paused queue is resumed with 200 and shows it, and a resume of a queue that is not paused is a 409 naming it", func() {
+		Expect(do(http.MethodPut, base, config).StatusCode).To(Equal(http.StatusCreated))
+		_, err := realdb.Conn.Exec(`UPDATE landing_queues SET paused = true, pause_reason = 'gate t Run #2 errored'`)
+		Expect(err).NotTo(HaveOccurred())
+		var status atc.LandingQueueStatus
+		Expect(json.NewDecoder(do(http.MethodGet, base, "").Body).Decode(&status)).To(Succeed())
+		Expect(status.Paused).To(BeTrue())
+		Expect(status.PauseReason).To(Equal("gate t Run #2 errored"))
+
+		Expect(do(http.MethodPut, base+"/resume", "").StatusCode).To(Equal(http.StatusOK))
+		response := do(http.MethodPut, base+"/resume", "")
+		Expect(response.StatusCode).To(Equal(http.StatusConflict))
+		Expect(text(response)).To(ContainSubstring(`landing queue "trunk" is not paused`))
 	})
 
 	It("A member of another team is refused", func() {

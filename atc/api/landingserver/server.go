@@ -1,6 +1,6 @@
 // Package landingserver is the landing queue's API (ADR-0011): a team sets a
-// queue, submits an entry, and reads the queue's status. The engine is the
-// component; nothing here composes or lands.
+// queue, submits an entry, reads the queue's status, and resumes a paused
+// queue. The engine is the component; nothing here composes, gates or lands.
 package landingserver
 
 import (
@@ -45,6 +45,16 @@ func (s *Server) SetLandingQueue(team db.Team) http.Handler {
 		config, err := atc.ParseLandingQueueConfig(body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		refusal, err := gateTemplatesRefusal(team, config)
+		if err != nil {
+			logger.Error("failed-to-read-gate-template", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if refusal != "" {
+			http.Error(w, refusal, http.StatusBadRequest)
 			return
 		}
 		_, found, err := s.queues.Queue(r.Context(), team.ID(), name)
@@ -121,6 +131,48 @@ func (s *Server) GetLandingQueue(team db.Team) http.Handler {
 			logger.Error("failed-to-encode-status", err)
 		}
 	})
+}
+
+// ResumeLandingQueue clears a paused queue: the gate it paused on gets a
+// fresh Run with its retry restored. 200 resumed it; 409 says it was not
+// paused.
+func (s *Server) ResumeLandingQueue(team db.Team) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logger := s.logger.Session("resume-landing-queue")
+		queue, ok := s.queue(w, r, team)
+		if !ok {
+			return
+		}
+		resumed, err := s.queues.Resume(r.Context(), queue.ID)
+		if err != nil {
+			logger.Error("failed-to-resume", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if !resumed {
+			http.Error(w, fmt.Sprintf("landing queue %q is not paused", queue.Name), http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+}
+
+// gateTemplatesRefusal names the first gate whose template is not a template
+// pipeline of the team, or is empty when every gate's is.
+func gateTemplatesRefusal(team db.Team, config atc.LandingQueueConfig) (string, error) {
+	for i, gate := range config.Gates {
+		pipeline, found, err := team.Pipeline(atc.PipelineRef{Name: gate.Template})
+		if err != nil {
+			return "", err
+		}
+		if !found {
+			return fmt.Sprintf("landing queue config: gates[%d].template %q is not a pipeline of team %s; set the template first", i, gate.Template, team.Name()), nil
+		}
+		if !pipeline.Template() {
+			return fmt.Sprintf("landing queue config: gates[%d].template %q is a pipeline, not a template", i, gate.Template), nil
+		}
+	}
+	return "", nil
 }
 
 func (s *Server) queue(w http.ResponseWriter, r *http.Request, team db.Team) (db.LandingQueue, bool) {

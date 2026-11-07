@@ -86,6 +86,7 @@ func AuthorizationKindForAction(action string) (AuthorizationKind, bool) {
 		atc.SetLandingQueue,
 		atc.SubmitLanding,
 		atc.GetLandingQueue,
+		atc.ResumeLandingQueue,
 		atc.SetTeam,
 		atc.RenameTeam,
 		atc.ListTeamBuilds,

@@ -106,6 +106,7 @@ const (
 	SetLandingQueue      = "SetLandingQueue"
 	SubmitLanding        = "SubmitLanding"
 	GetLandingQueue      = "GetLandingQueue"
+	ResumeLandingQueue   = "ResumeLandingQueue"
 	ListActiveUsersSince = "ListActiveUsersSince"
 
 	SetWall   = "SetWall"
@@ -215,6 +216,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/teams/:team_name/landing-queues/:queue_name", Method: "PUT", Name: SetLandingQueue},
 	{Path: "/api/v1/teams/:team_name/landing-queues/:queue_name/entries", Method: "POST", Name: SubmitLanding},
 	{Path: "/api/v1/teams/:team_name/landing-queues/:queue_name", Method: "GET", Name: GetLandingQueue},
+	{Path: "/api/v1/teams/:team_name/landing-queues/:queue_name/resume", Method: "PUT", Name: ResumeLandingQueue},
 	{Path: "/api/v1/users", Method: "GET", Name: ListActiveUsersSince},
 
 	{Path: "/api/v1/teams/:team_name/containers", Method: "GET", Name: ListContainers},
