@@ -22,7 +22,14 @@ type recordingLandingClient struct {
 	created     bool
 	status      atc.LandingQueueStatus
 	found       bool
+	resumed     bool
+	resumes     []string
 	err         error
+}
+
+func (c *recordingLandingClient) ResumeLandingQueue(name string) (bool, error) {
+	c.resumes = append(c.resumes, name)
+	return c.resumed, c.err
 }
 
 func (c *recordingLandingClient) SetLandingQueue(_ string, config []byte) (bool, error) {
@@ -50,8 +57,8 @@ func git(dir string, args ...string) string {
 }
 
 var _ = Describe("The landing queue commands", func() {
-	It("register set-landing-queue, land and landing-queue", func() {
-		for _, name := range []string{"set-landing-queue", "land", "landing-queue"} {
+	It("register set-landing-queue, land, landing-queue and resume-landing-queue", func() {
+		for _, name := range []string{"set-landing-queue", "land", "landing-queue", "resume-landing-queue"} {
 			parser := flags.NewParser(&FlyCommand{}, flags.HelpFlag)
 			_, err := parser.ParseArgs([]string{name, "--help"})
 			Expect(err).To(MatchError(ContainSubstring("[" + name + " command options]")))
@@ -157,5 +164,20 @@ var _ = Describe("The landing queue commands", func() {
 
 		missing := &recordingLandingClient{}
 		Expect((&LandingQueueCommand{Queue: "trunk"}).run(missing, out)).To(MatchError(`landing queue "trunk" not found`))
+	})
+
+	It("resume-landing-queue reports a resumed queue, one that was not paused, and one that is not set", func() {
+		client := &recordingLandingClient{resumed: true}
+		out := &bytes.Buffer{}
+		Expect((&ResumeLandingQueueCommand{Queue: "trunk"}).run(client, out)).To(Succeed())
+		Expect(out.String()).To(Equal("resumed landing queue \"trunk\"\n"))
+		Expect(client.resumes).To(Equal([]string{"trunk"}))
+
+		out.Reset()
+		Expect((&ResumeLandingQueueCommand{Queue: "trunk"}).run(&recordingLandingClient{}, out)).To(Succeed())
+		Expect(out.String()).To(Equal("landing queue \"trunk\" is not paused\n"))
+
+		missing := &recordingLandingClient{err: concourse.ErrLandingQueueNotFound}
+		Expect((&ResumeLandingQueueCommand{Queue: "trunk"}).run(missing, out)).To(MatchError(`landing queue "trunk" not found`))
 	})
 })

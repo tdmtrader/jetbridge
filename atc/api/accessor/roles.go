@@ -97,10 +97,12 @@ var DefaultRoles = map[string]string{
 	atc.GetArtifact:                     MemberRole,
 	atc.ListBuildArtifacts:              ViewerRole,
 	atc.GetWall:                         ViewerRole,
-	// The landing queue (ADR-0011): owners set it, members submit, viewers read.
-	atc.SetLandingQueue: OwnerRole,
-	atc.SubmitLanding:   MemberRole,
-	atc.GetLandingQueue: ViewerRole,
+	// The landing queue (ADR-0011): owners set it, members submit, viewers
+	// read, and operators resume a paused one, as they unpause a pipeline.
+	atc.SetLandingQueue:    OwnerRole,
+	atc.SubmitLanding:      MemberRole,
+	atc.GetLandingQueue:    ViewerRole,
+	atc.ResumeLandingQueue: OperatorRole,
 	// Agent review/feedback routes. Every route wrapped in
 	// CheckAuthorizationHandler needs an entry here: a missing entry
 	// resolves to requiredRole "" and hasRequiredRole's default case,

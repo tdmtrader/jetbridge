@@ -90,6 +90,7 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.SetLandingQueue,
 			atc.SubmitLanding,
 			atc.GetLandingQueue,
+			atc.ResumeLandingQueue,
 			atc.GetInfo,
 			atc.GetHealth,
 			atc.DownloadCLI,

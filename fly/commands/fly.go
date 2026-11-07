@@ -63,7 +63,8 @@ type FlyCommand struct {
 	Runs                      RunsCommand                    `command:"runs" description:"List numbered runs for a template pipeline"`
 	SetLandingQueue           SetLandingQueueCommand         `command:"set-landing-queue" description:"Create or update a team's landing queue"`
 	Land                      LandCommand                    `command:"land" description:"Submit a commit to a landing queue; every commit it holds off the trunk lands as its own commit, never squashed"`
-	LandingQueue              LandingQueueCommand            `command:"landing-queue" description:"Show a landing queue's entries and landings"`
+	LandingQueue              LandingQueueCommand            `command:"landing-queue" description:"Show a landing queue's entries, gates and landings"`
+	ResumeLandingQueue        ResumeLandingQueueCommand      `command:"resume-landing-queue" description:"Resume a landing queue paused on a gate that gave no verdict"`
 
 	Resources              ResourcesCommand              `command:"resources"                  alias:"rs"   description:"List the resources in the pipeline"`
 	ResourceVersions       ResourceVersionsCommand       `command:"resource-versions"          alias:"rvs"  description:"List the versions of a resource"`

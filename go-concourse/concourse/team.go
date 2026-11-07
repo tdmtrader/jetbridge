@@ -41,6 +41,7 @@ type Team interface {
 	SetLandingQueue(queueName string, config []byte) (bool, error)
 	SubmitLanding(queueName string, submission atc.LandingSubmission) (bool, error)
 	LandingQueue(queueName string) (atc.LandingQueueStatus, bool, error)
+	ResumeLandingQueue(queueName string) (bool, error)
 	PipelineRun(pipelineName string, number int) (atc.PipelineRun, bool, error)
 
 	CreatePipelineBuild(pipelineRef atc.PipelineRef, plan atc.Plan) (atc.Build, error)

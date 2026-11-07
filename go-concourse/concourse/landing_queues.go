@@ -68,3 +68,24 @@ func (team *team) LandingQueue(queueName string) (atc.LandingQueueStatus, bool, 
 		return status, false, err
 	}
 }
+
+// ErrLandingQueueNotFound is the server's 404 for a queue that is not set.
+var ErrLandingQueueNotFound = errors.New("landing queue not found")
+
+// ResumeLandingQueue clears a paused queue. False means it was not paused.
+func (team *team) ResumeLandingQueue(queueName string) (bool, error) {
+	params := rata.Params{"team_name": team.Name(), "queue_name": queueName}
+	err := team.connection.Send(internal.Request{RequestName: atc.ResumeLandingQueue, Params: params}, nil)
+	var unexpected internal.UnexpectedResponseError
+	var notFound internal.ResourceNotFoundError
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.As(err, &unexpected) && unexpected.StatusCode == http.StatusConflict:
+		return false, nil
+	case errors.As(err, &notFound):
+		return false, ErrLandingQueueNotFound
+	default:
+		return false, err
+	}
+}

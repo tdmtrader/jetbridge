@@ -139,6 +139,7 @@ var templateRouteEffects = map[string][]string{
 		atc.SetLandingQueue,
 		atc.SubmitLanding,
 		atc.GetLandingQueue,
+		atc.ResumeLandingQueue,
 	},
 }
 
