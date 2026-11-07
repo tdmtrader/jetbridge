@@ -446,6 +446,12 @@ verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
 The Helm chart creates these automatically when `rbac.create=true`.
 
+With `kubernetes.stepRuntime: job` the web also needs `batch/jobs` (the same
+verbs) in its namespace and `authentication.k8s.io/tokenreviews` `create`
+cluster-wide: each step is a suspended Job whose pod runs its command from the
+pod spec, and the pod fetches a resource command's request from the web with a
+projected ServiceAccount token the web verifies.
+
 ## Troubleshooting
 
 ### Pod not starting
