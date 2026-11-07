@@ -1,0 +1,20 @@
+0 MiXeD-Case.TXT         format=USTAR mode=0644 mtime=1767324005 size=6 uid=0 gid=0 link="" sha=218706d3ed39fb141bea781ee0345f519a622ddb23a5e231a386c181c9fddaa5
+5 Zeta                   format=USTAR mode=0755 mtime=1767324065 size=0 uid=0 gid=0 link="" sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+0 Zeta/Inner.md          format=USTAR mode=0644 mtime=1767324125 size=18 uid=0 gid=0 link="" sha=24cac6b208946970a5562165e5683cd8c26c6a21b4b4983eeeb8169e6a11f750
+0 a.txt                  format=USTAR mode=0644 mtime=1767323105 size=6 uid=0 gid=0 link="" sha=b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060
+0 café-ñ.txt             format=PAX mode=0644 mtime=1767324185 size=10 uid=0 gid=0 link="" sha=3453f509dbcd87acec0724fdcabbd313cab882b8a96a3a3feee0122ca632bc54
+5 dir                    format=USTAR mode=0755 mtime=1767323345 size=0 uid=0 gid=0 link="" sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+2 dir/link-dir           format=USTAR mode=0777 mtime=1767323585 size=0 uid=0 gid=0 link="nested" sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+2 dir/link-up            format=USTAR mode=0777 mtime=1767323525 size=0 uid=0 gid=0 link="../a.txt" sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+0 dir/long-name-long-name-long-name-long-name-long-name-long-name-long-name-long-name-long-name-long-name-long-name-long-name-long-name-long-name-long-name-.txt format=PAX mode=0644 mtime=1767324245 size=5 uid=0 gid=0 link="" sha=bbdbb75b415ee9a40f0b3796a8b41a0b7723afe5726b870474ad220a4886d06d
+5 dir/nested             format=USTAR mode=0700 mtime=1767323405 size=0 uid=0 gid=0 link="" sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+0 dir/nested/deep.txt    format=USTAR mode=0640 mtime=1767323465 size=5 uid=0 gid=0 link="" sha=64896f89fd11190013b70103e603a1c5826e56b7fb7d2197ab279b0690043599
+0 empty.txt              format=USTAR mode=0644 mtime=1767323285 size=0 uid=0 gid=0 link="" sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+5 emptydir               format=USTAR mode=0755 mtime=1767323645 size=0 uid=0 gid=0 link="" sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+5 emptydir-tight         format=USTAR mode=0700 mtime=1767323705 size=0 uid=0 gid=0 link="" sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+0 exec.sh                format=USTAR mode=0755 mtime=1767323165 size=18 uid=0 gid=0 link="" sha=299001868fb8c02fd431c336c6d058f5558c5dff5b5af5e6fe04b870a6a9cbba
+0 hard.txt               format=USTAR mode=0644 mtime=1767323105 size=6 uid=0 gid=0 link="" sha=b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060
+0 private                format=USTAR mode=0600 mtime=1767323225 size=11 uid=0 gid=0 link="" sha=978de8977233c2143ed9a3425ca70b9988db5ae925d39872016d2431cb7a5980
+2 self                   format=USTAR mode=0777 mtime=1767323885 size=0 uid=0 gid=0 link="." sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+2 z-link                 format=USTAR mode=0777 mtime=1767323945 size=0 uid=0 gid=0 link="dir/nested/deep.txt" sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+stream sha=19a82ec28c40bdb69f6a4d0baff70ee4e2d29e78556d7bd0ee680465a77af971 len=17408
