@@ -23,10 +23,10 @@ import (
 //
 // So what lives here is deliberately the smallest thing that can: a
 // constructor that assembles the port and the service over core's factories,
-// and a translation between two structs that happen to hold the same values in
-// the same order. If this file ever grows a decision -- a retry, a fallback, a
-// second admitter chosen by config -- that decision belongs on one side of the
-// boundary or the other, not in the seam.
+// and translations between structs that hold the same values on either side,
+// one each for admitting, observing and cancelling. If this file ever grows a
+// decision -- a retry, a fallback, a second admitter chosen by config -- that
+// decision belongs on one side of the boundary or the other, not in the seam.
 //
 // The design is docs/superpowers/specs/2026-09-08-run-pipeline-step-design.md.
 
@@ -97,4 +97,22 @@ func (a childRunAdmitter) AdmitChildRun(ctx context.Context, req exec.ChildRunRe
 		Number:   result.Number,
 		Replayed: result.Replayed,
 	}, nil
+}
+
+func (a childRunAdmitter) ObserveChildRun(ctx context.Context, req exec.ChildRunObservation) (exec.ChildRunStatus, error) {
+	status, err := a.service.Observe(ctx, req.RunID, req.Principal)
+	if err != nil {
+		return exec.ChildRunStatus{}, err
+	}
+
+	return exec.ChildRunStatus{
+		RunID:                 status.Run.ID,
+		Number:                status.Run.Number,
+		Status:                status.Status,
+		CancellationRequested: status.CancellationRequested,
+	}, nil
+}
+
+func (a childRunAdmitter) CancelChildRun(ctx context.Context, req exec.ChildRunCancellation) error {
+	return a.service.Cancel(ctx, req.RunID, req.Principal, req.Reason)
 }

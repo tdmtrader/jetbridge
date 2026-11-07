@@ -35,6 +35,18 @@ func TestUnwiredChildRunAdmitterErrorIsAFault(t *testing.T) {
 			"a missing port is a deployment defect, not a fact about the pipeline's config; "+
 			"it must travel the engine's error path", err)
 	}
+
+	// A step that waits observes and may cancel through the same port, and an
+	// unwired one is the same deployment defect on every method.
+	_, observeErr := unwiredChildRunAdmitter{}.ObserveChildRun(context.Background(), exec.ChildRunObservation{})
+	cancelErr := unwiredChildRunAdmitter{}.CancelChildRun(context.Background(), exec.ChildRunCancellation{})
+	for method, err := range map[string]error{"ObserveChildRun": observeErr, "CancelChildRun": cancelErr} {
+		if err == nil {
+			t.Errorf("expected the unwired %s to fail, got no error", method)
+		} else if runs.IsRefusal(err) {
+			t.Errorf("runs.IsRefusal classified the unwired %s error as a refusal: %v", method, err)
+		}
+	}
 }
 
 // A factory built without an admitter hands the step the fallback rather than

@@ -261,7 +261,8 @@ func (factory *coreStepFactory) admitterOrFallback() exec.ChildRunAdmitter {
 	return factory.childRunAdmitter
 }
 
-// unwiredChildRunAdmitter refuses every admission on a web node where the
+// unwiredChildRunAdmitter refuses every admission, observation and
+// cancellation on a web node where the
 // run_pipeline port was never supplied.
 //
 // Its error is deliberately a plain one, which runs.IsRefusal classifies as a
@@ -279,8 +280,18 @@ func (factory *coreStepFactory) admitterOrFallback() exec.ChildRunAdmitter {
 // this comment cannot drift apart again.
 type unwiredChildRunAdmitter struct{}
 
+var errChildRunAdmitterUnwired = errors.New("run_pipeline is not wired on this web node")
+
 func (unwiredChildRunAdmitter) AdmitChildRun(context.Context, exec.ChildRunRequest) (exec.ChildRun, error) {
-	return exec.ChildRun{}, errors.New("run_pipeline is not wired on this web node")
+	return exec.ChildRun{}, errChildRunAdmitterUnwired
+}
+
+func (unwiredChildRunAdmitter) ObserveChildRun(context.Context, exec.ChildRunObservation) (exec.ChildRunStatus, error) {
+	return exec.ChildRunStatus{}, errChildRunAdmitterUnwired
+}
+
+func (unwiredChildRunAdmitter) CancelChildRun(context.Context, exec.ChildRunCancellation) error {
+	return errChildRunAdmitterUnwired
 }
 
 func (factory *coreStepFactory) LoadVarStep(

@@ -52,6 +52,14 @@ func (a *scriptedAdmitter) AdmitChildRun(_ context.Context, request exec.ChildRu
 	return a.run, a.err
 }
 
+func (a *scriptedAdmitter) ObserveChildRun(context.Context, exec.ChildRunObservation) (exec.ChildRunStatus, error) {
+	return exec.ChildRunStatus{}, errors.New("the step does not observe yet")
+}
+
+func (a *scriptedAdmitter) CancelChildRun(context.Context, exec.ChildRunCancellation) error {
+	return errors.New("the step does not cancel yet")
+}
+
 var _ = Describe("RunPipelineStep", func() {
 	var (
 		ctx        context.Context
