@@ -10,7 +10,9 @@
 # and start a Run of it with the same three params the queue passes:
 #   repository=<git url>  trunk=<branch>  entries=<id=sha,...>
 # This template needs no vars of its own: the image and the push token are
-# the child templates' vars, set when they were installed.
+# the child templates' vars, set when they were installed. Setting it needs a
+# fly from the release that introduced `wait` and `inputs` on run_pipeline:
+# an older fly refuses the file client-side as unknown fields.
 #
 # `wait: true` holds no pod, volume or worker: the step runs on the web node
 # and polls the child Run's status, holding nothing between polls. Aborting

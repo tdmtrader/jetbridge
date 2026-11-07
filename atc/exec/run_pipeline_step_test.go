@@ -359,10 +359,10 @@ var _ = Describe("RunPipelineStep", func() {
 					scriptedPort.cancelErr = errors.New("pool exhausted")
 				})
 
-				It("says so on stderr and still returns the context's error", func() {
+				It("says so on stderr without the fault, and still returns the context's error", func() {
 					Expect(errors.Is(stepErr, context.Canceled)).To(BeTrue())
 					Expect(execBuildLog(fixture, realBuild, event.OriginSourceStderr)).To(Equal(
-						"failed to cancel run #7: pool exhausted\n"))
+						"failed to cancel run #7\n"))
 				})
 			})
 		})
