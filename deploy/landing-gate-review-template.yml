@@ -46,12 +46,27 @@
 #
 # verdict. After the worker publishes review.json and review.md, the full
 # review.md is printed to the build log and `jb-review-worker verdict
-# --block-at high` decides: any finding of severity high or blocker fails the
-# task, listing each one's id, severity and title; medium and low pass, and so
-# does an incomplete review with no such finding (it says so). On a pass the
-# Run publishes the report as its `review` result. A failed Run publishes no
-# result, so a red review's report is in its Run's build log, which the
-# entry's eject reason names.
+# --block-at high` decides, and the Run's status carries its answer to the
+# queue:
+#
+#   passed      no finding at or above high in a complete review. The task
+#               writes gate/passed, the verdict step loads it and the Run
+#               succeeds, publishing the report as its `review` result.
+#   failed      a finding of severity high or blocker, complete review or
+#               not, each listed by id, severity and title. The review task
+#               fails, so the Run fails and the queue ejects the entry. This
+#               is the only way the review gate rejects a candidate.
+#   no verdict  the review could not run (an empty or stale ((codex-auth)),
+#               a worker or model error, a bundle change could not build) or
+#               did not complete (an incomplete review with nothing at or
+#               above high). Each task says why and exits 0 without
+#               gate/passed, so the verdict step errors the Run. The queue
+#               counts an errored Run as no verdict: it retries the gate once,
+#               then pauses until `fly resume-landing-queue`.
+#
+# A failed or errored Run publishes no result, so the report of a review that
+# was not passed is in its Run's build log, which the entry's eject or pause
+# reason names.
 #
 # Budgets: change 20m, review 35m (the worker's own session cap is 30m). Give
 # the gate a wait above their sum, for example `wait: 60m`.
@@ -93,6 +108,12 @@ jobs:
               - |
                 # change: the review bundle of base..candidate.
                 # $1 repository, $2 trunk; input composition/: manifest/ and candidate/
+                # A bundle that cannot be built is no verdict, not a failed review:
+                # the task says why and exits 0 with no change/bundle, so the review
+                # task has nothing to review and the Run errors at its verdict step.
+                set +e
+                (
+                set -e
                 repo=$1 trunk=$2
                 top=$PWD candidate=$PWD/composition/candidate
                 val() { grep "^$1=" composition/manifest/manifest.env 2>/dev/null | head -1 | cut -d= -f2-; }
@@ -116,6 +137,10 @@ jobs:
                 (cd "$top/tools" && go build -o "$top/jb" ./cmd/jb)
                 "$top/jb" review capture --repo "$top/work" --base "$base" --head "$change" --output "$top/change/bundle"
                 echo "change: bundle of $base..$change, the candidate $head"
+                )
+                status=$?
+                set -e
+                [ "$status" -eq 0 ] || echo "change: no verdict: the review bundle was not built (exit $status)" >&2
               - change
               - ((repository))
               - ((trunk))
@@ -138,6 +163,7 @@ jobs:
             - name: change
           outputs:
             - name: result
+            - name: gate
           run:
             path: /bin/sh
             args:
@@ -146,10 +172,18 @@ jobs:
               - |
                 # review: the worker on the bundle, then the verdict on its report.
                 # $1 model, $2 --run-id=<Run ID>; CODEX_AUTH the owner's Codex auth.json
+                # Only a finding at or above high fails this task, which rejects the
+                # candidate. A review that cannot run or does not complete is no
+                # verdict: the task says why and exits 0 without gate/passed, and the
+                # verdict step errors the Run.
                 umask 077
                 auth=/dev/shm/jb-review-auth.json
                 trap 'rm -f "$auth"' EXIT
-                [ -n "${CODEX_AUTH:-}" ] || { echo "review: ((codex-auth)) is empty; set the codex-auth secret for this team" >&2; exit 1; }
+                set +e
+                (
+                set -e
+                [ -n "${CODEX_AUTH:-}" ] || { echo "review: no verdict: ((codex-auth)) is empty; set the codex-auth secret for this team" >&2; exit 0; }
+                [ -d change/bundle ] || { echo "review: no verdict: change built no review bundle" >&2; exit 0; }
                 printf '%s' "$CODEX_AUTH" > "$auth"
                 unset CODEX_AUTH
                 mkdir -p /dev/shm/jb-review
@@ -161,7 +195,25 @@ jobs:
                 mv result/report/review.json result/report/review.md result/
                 rmdir result/report
                 cat result/review.md
-                /usr/local/bin/jb-review-worker verdict --report result/review.json --block-at high
+                status=0
+                /usr/local/bin/jb-review-worker verdict --report result/review.json --block-at high || status=$?
+                case $status in
+                  0) : > gate/passed ;;
+                  1) : > gate/failed ;;
+                  *) echo "review: no verdict: verdict exited $status" >&2 ;;
+                esac
+                )
+                status=$?
+                set -e
+                if [ -e gate/failed ]; then
+                  rm -f gate/failed
+                  exit 1
+                fi
+                [ -e gate/passed ] || echo "review: no verdict: the review did not complete (exit $status); the Run errors at its verdict step" >&2
               - review
               - ((review_model))
               - --run-id=((run_id))
+      # The review's verdict: present only when the review passed. Its absence
+      # (no verdict) errors the Run here, which the queue counts as no verdict.
+      - load_var: review-passed
+        file: gate/passed
