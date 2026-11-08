@@ -6,8 +6,8 @@
 #
 # It takes no install vars: the runner image, resources and scripts are the
 # pipeline's (deploy/concourse-pipeline.yml), copied verbatim, and
-# deploy/landing/gates_test.go fails if either task's config, timeout or
-# attempts drift from the job's. Change them there, then here.
+# deploy/landing/gates_test.go fails if either task's config or timeout
+# drifts from the job's. Change them there, then here.
 #
 # The queue admits a Run of it per candidate with the queue's repository,
 # trunk and entries as params (unused here) and the compose Run's composition
@@ -26,8 +26,11 @@
 # the path its script expects, in a pod of its own.
 #
 # The two tasks run in parallel, as two pods of 6 CPU each. Their budgets
-# (20m and 45m, each attempted twice) are the pipeline's; give the gate a
-# wait above the slower one's worst case, for example `wait: 100m`.
+# (20m and 45m) are the pipeline's, but not the job's `attempts: 2`: a task
+# that takes a run input cannot sit in a repeated step. A pod lost mid-run
+# errors the Run, which the queue counts as no verdict and retries once; a
+# test that fails, flaky or not, fails the gate. Give the gate a wait above
+# stage and the slower task together, for example `wait: 60m`.
 template: true
 params:
   - name: repository
@@ -86,9 +89,6 @@ jobs:
                 input: repo
                 result: repo
             timeout: 20m
-            # Retry transient k8s-runtime pod disruptions (single-node contention);
-            # this task errors (not fails) when its pod is lost mid-run.
-            attempts: 2
             config:
               platform: linux
               container_requests: {cpu: 6000}  # millicores; see deploy/concourse-pipeline.yml's header
@@ -133,7 +133,6 @@ jobs:
                 input: repo
                 result: repo
             timeout: 45m
-            attempts: 2
             config:
               platform: linux
               container_requests: {cpu: 6000}  # millicores; see deploy/concourse-pipeline.yml's header
