@@ -308,6 +308,12 @@ On an existing cluster, in this order:
    rm artifact-daemon.key
    ```
 
+   Anything outside the chart that reads the old Secret by name must be
+   given the new one before step 4: an RBAC Role's `resourceNames` for a
+   test or tooling ServiceAccount, for example (JetBridge's live tier reads
+   the key from the Secret the daemon mounts, and is refused until its Role
+   names the new Secret).
+
 2. If the output plane is on (`hangarOutput.executionControl.enabled`), drain
    it: set `hangarOutput.webEnabled: false`, remove `web.runInputSigningKeySecret`
    and `web.runCredentialWorkerImages` (the chart refuses the first while the
@@ -334,7 +340,9 @@ On an existing cluster, in this order:
    warrant the web signed with the old Hangar key stops verifying in step 4.
    Drain on the OLD chart: a GitOps tool that renders the chart from a moving
    revision cannot render these values once that revision carries this chart,
-   so drain before it does, or pin the revision while you drain.
+   so drain before it does, or pin the revision while you drain. No Run is
+   admitted while the plane is drained, so a landing queue on the cluster
+   lands nothing until step 5: land what must reach the trunk first.
 3. Switch values: set `secrets.artifactDaemonKeySecret: <new name>` and remove
    `artifactDaemon.resolveCapability` and the whole `artifactDaemon.hangar`
    mapping (`keySecret`, `allowGeneratedKey` and the `hangar:` key itself);
