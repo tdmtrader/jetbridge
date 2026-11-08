@@ -126,6 +126,27 @@ are owned by that process or test. `-count=1` disables reuse of test results,
 while the Go compiler may reuse build artifacts verified against the source.
 The five-minute timeout is enforced per Go test package.
 
+CI retains Go compiler artifacts between builds of the Brine job in
+`/tmp/brine-go-build-cache`, selected with `GOCACHE`. Go checks source,
+dependencies, toolchain and build flags before reusing a compiled package;
+the task still links executables and runs the real native tests and complete
+coverage suite. Go also reuses source-keyed vet analysis from this cache.
+This cache holds no database, Kubernetes fixture or scenario
+verdict. `-count=1` continues to prevent reuse of native test results.
+Because Go does not detect external C-library changes, the wrapper clears the
+cache when the runner image declaration changes. The pipeline uses one YAML
+anchor for both the image and cache identity. Rebuilt runners must use new
+tags, as already required by the runtime's `PullIfNotPresent` behavior.
+
+`scripts/with-go-cache` checks the cache's allocated size before and after the
+complete task and calls `go clean -cache` above 8 GiB. This is a retention
+threshold, not a runtime disk quota; a cleared cache makes the next build cold.
+An interrupted pod can leave a larger cache until the next entry check.
+The job stays serial, so cleanup runs outside its Go commands. Task caches
+are node-local: another node starts with its own contents, and retired job
+cache directories still need operator reclamation. For the measured benefit
+and verification, see the [compiler-cache profile](../../../../docs/performance/brine-compiler-cache-2026-11-07.md).
+
 See [features/README.md](features/README.md) for feature tags.
 
 ## Full coverage gate

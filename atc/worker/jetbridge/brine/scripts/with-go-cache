@@ -1,0 +1,52 @@
+#!/bin/sh
+# Keep compiler artifacts between CI builds, never test results. The caller
+# still uses go test -count=1 and rebuilds each executable from its source.
+set -eu
+
+: "${GOCACHE:?Set GOCACHE to the mounted compiler-cache directory}"
+: "${BRINE_GO_CACHE_IMAGE:?Set BRINE_GO_CACHE_IMAGE to the task runner image}"
+case "$GOCACHE" in
+    /*) ;;
+    *) echo "GOCACHE must be absolute: $GOCACHE" >&2; exit 2 ;;
+esac
+cache_limit_kib=${BRINE_GO_CACHE_LIMIT_KIB:-8388608}
+case "$cache_limit_kib" in
+    ''|*[!0-9]*|0) echo "Compiler-cache limit must be positive KiB." >&2; exit 2 ;;
+esac
+
+trim_cache() {
+    mkdir -p "$GOCACHE" || return
+    cache_usage=$(du -sk "$GOCACHE") || return
+    cache_kib=${cache_usage%%[[:space:]]*}
+    echo "Go compiler cache: ${cache_kib} KiB (retention limit ${cache_limit_kib} KiB)"
+    if [ "$cache_kib" -gt "$cache_limit_kib" ]; then
+        # Only before/after the complete task, while no Go command uses it.
+        # Go's normal age-based pruning has no size bound. Use its own clean
+        # operation to release compiler artifacts; the mount itself survives.
+        go clean -cache || return
+        echo "Cleared oversized Go compiler cache; next compilation will be cold."
+    fi
+}
+
+finish() {
+    task_status=$?
+    trap - 0
+    if ! trim_cache; then
+        echo "Could not enforce compiler-cache retention limit." >&2
+        if [ "$task_status" -eq 0 ]; then task_status=1; fi
+    fi
+    exit "$task_status"
+}
+trap finish 0
+# Go does not invalidate cached cgo packages when external C libraries change.
+# The pipeline derives this identity from the same image declaration as the
+# task rootfs. Runner rebuilds must use new tags, as with PullIfNotPresent.
+mkdir -p "$GOCACHE"
+previous_image=$(cat "$GOCACHE/runner-image" 2>/dev/null || true)
+if [ "$previous_image" != "$BRINE_GO_CACHE_IMAGE" ]; then
+    go clean -cache
+    printf '%s\n' "$BRINE_GO_CACHE_IMAGE" > "$GOCACHE/runner-image"
+    echo "Runner image changed; cleared Go compiler cache."
+fi
+trim_cache
+"$@"

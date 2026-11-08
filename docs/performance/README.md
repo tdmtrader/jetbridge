@@ -40,6 +40,13 @@ tests. Every trial passes the same 96 top-level tests and 251 test/subtest
 results. The report separates this result from current full-Brine failures
 and identifies compiler-cache reuse as the larger remaining target.
 
+The [2026-11-07 compiler-cache profile](brine-compiler-cache-2026-11-07.md)
+measures real cache reuse across separate CI builds: preparation averages
+326s cold versus 147s warm, saving 179s (54.9%) across two alternating pairs.
+The same native tests execute every time. The report distinguishes this
+preparation result from full integration validation and documents retention,
+source invalidation and node-local cache limitations.
+
 Supporting evidence:
 
 - [Pipeline structure and test inventory](ci-suite-structure.md)

@@ -203,7 +203,7 @@ jobs:
     privileged: true
     config:
       platform: linux
-      rootfs_uri: docker:///registry.home/concourse-test-runner:v12
+      rootfs_uri: &brine-runner-image docker:///registry.home/concourse-test-runner:v12
       inputs:
       - name: repo
       # HANGAR_FAKE_GCS_ENDPOINT is deliberately NOT set here, unlike the
@@ -216,7 +216,13 @@ jobs:
       # not here either -- that variable turns a missing endpoint into a
       # FAILURE, which is the Go tier-2 suite's rule because Req 41 makes it
       # the conformance bar; the fixture has no fail-not-skip rule.
+      # Keep compiler artifacts at an explicit stable path, separate from
+      # source. JetBridge scopes this mount to the job and task step.
+      caches:
+      - path: &brine-go-build-cache /tmp/brine-go-build-cache
       params:
+        GOCACHE: *brine-go-build-cache
+        BRINE_GO_CACHE_IMAGE: *brine-runner-image
         GITHUB_TOKEN: ((github-token))
         GOPRIVATE: github.com/MarkDucommun/*
         # Explicitly authorize the bounded live tier on the task cluster.
@@ -232,6 +238,8 @@ jobs:
       run:
         path: sh
         args:
+        - repo/atc/worker/jetbridge/brine/scripts/with-go-cache
+        - sh
         - -exc
         - |
           # GOPRIVATE (above, and baked into v9) keeps the fetch off
