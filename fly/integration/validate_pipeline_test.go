@@ -88,6 +88,7 @@ var _ = Describe("validate-pipeline", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		Eventually(sess.Err).Should(gbytes.Say("WARNING:"))
+		Eventually(sess.Err).Should(gbytes.Say("Invalid pipeline config:"))
 		Eventually(sess.Err).Should(gbytes.Say("  - invalid resources:"))
 
 		<-sess.Exited
