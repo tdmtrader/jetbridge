@@ -19,6 +19,7 @@ func TestMaterializerPublishesExactReadOnlyTreeAtDerivedDestination(t *testing.T
 	raw := testTreeArchive(t, []testTreeEntry{
 		{name: "dir", mode: 0750, kind: tar.TypeDir},
 		{name: "dir/file", mode: 0766, kind: tar.TypeReg, body: "hello"},
+		{name: "dir/plain", mode: 0640, kind: tar.TypeReg, body: "data"},
 		{name: "link", mode: 0777, kind: tar.TypeSymlink, link: "dir/file"},
 	})
 	ref, canonical := canonicalTreeFixture(t, raw)
@@ -31,7 +32,10 @@ func TestMaterializerPublishesExactReadOnlyTreeAtDerivedDestination(t *testing.T
 	destination := filepath.Join(storage, "steps", "handle", "volume")
 	assertMaterializedMode(t, destination, 0555)
 	assertMaterializedMode(t, filepath.Join(destination, "dir"), 0555)
-	assertMaterializedMode(t, filepath.Join(destination, "dir", "file"), 0444)
+	// Sealed read-only, but an executable stays executable: the canonical
+	// tree records it, and a consumer that hashes or runs its input needs it.
+	assertMaterializedMode(t, filepath.Join(destination, "dir", "file"), 0555)
+	assertMaterializedMode(t, filepath.Join(destination, "dir", "plain"), 0444)
 	content, err := os.ReadFile(filepath.Join(destination, "dir", "file"))
 	if err != nil || string(content) != "hello" {
 		t.Fatalf("published content = %q, %v", content, err)
