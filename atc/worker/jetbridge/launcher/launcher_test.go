@@ -37,11 +37,35 @@ func TestMain(m *testing.M) {
 // termination message in a temp dir, returning the code, outputs and message path.
 func runLauncher(t *testing.T, args ...string) (code int, stdout, stderr string, termPath string) {
 	t.Helper()
-	termPath = filepath.Join(t.TempDir(), "term")
-	var out, errb bytes.Buffer
+	dir := t.TempDir()
+	termPath = filepath.Join(dir, "term")
+	// Files, as cmd/jb-launcher passes: the command writes to them directly.
+	// A bytes.Buffer would be copied by a goroutine only exec.Cmd.Wait
+	// collects, and the launcher reaps with wait4 instead, so the output
+	// could still be in flight when Run returns.
+	out, errb := tempFile(t, dir, "stdout"), tempFile(t, dir, "stderr")
 	full := append([]string{"--termination-message", termPath}, args...)
-	code = Run(full, nil, &out, &errb)
-	return code, out.String(), errb.String(), termPath
+	code = Run(full, nil, out, errb)
+	return code, readOutput(t, out), readOutput(t, errb), termPath
+}
+
+func tempFile(t *testing.T, dir, name string) *os.File {
+	t.Helper()
+	f, err := os.Create(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
+func readOutput(t *testing.T, f *os.File) string {
+	t.Helper()
+	raw, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 func readTermination(t *testing.T, path string) terminationMessage {
