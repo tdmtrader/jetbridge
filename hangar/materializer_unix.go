@@ -895,7 +895,7 @@ func sealOpenedTreeContents(directory *os.File) error {
 				return err
 			}
 			file := os.NewFile(uintptr(fd), name)
-			chmodErr := unix.Fchmod(fd, 0444)
+			chmodErr := unix.Fchmod(fd, sealedFileMode(uint32(stat.Mode)))
 			syncErr := error(nil)
 			if chmodErr == nil {
 				syncErr = unix.Fsync(fd)
@@ -914,6 +914,16 @@ func sealOpenedTreeContents(directory *os.File) error {
 		}
 	}
 	return nil
+}
+
+// sealedFileMode is the mode a materialized regular file is sealed with:
+// read-only, keeping the executable bit the canonical tree records (it holds
+// regular files at 0644 or 0755 only).
+func sealedFileMode(mode uint32) uint32 {
+	if mode&0111 != 0 {
+		return 0555
+	}
+	return 0444
 }
 
 func makeOpenedTreeWritable(directory *os.File) error {
@@ -1380,7 +1390,7 @@ func validateOwnedMaterializationEntry(parent *os.File, owned ownedMaterializati
 	if owned.identity != identityFromStat(&stat) {
 		return false, nil
 	}
-	if owned.identity.kind == unix.S_IFDIR && stat.Mode&07777 != 0555 || owned.identity.kind == unix.S_IFREG && stat.Mode&07777 != 0444 {
+	if owned.identity.kind == unix.S_IFDIR && stat.Mode&07777 != 0555 || owned.identity.kind == unix.S_IFREG && uint32(stat.Mode)&07777 != sealedFileMode(uint32(stat.Mode)) {
 		return false, nil
 	}
 	if owned.identity.kind != unix.S_IFDIR {
