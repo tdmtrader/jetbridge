@@ -84,7 +84,7 @@ func (atcConfig ATCConfig) Set(yamlTemplateWithParams templatehelpers.YamlTempla
 	// printing a diff -- or a clean --dry-run -- for a file SaveConfig will
 	// answer with a 400.
 	if err := configvalidate.ValidateTemplateDeclaration(atcConfig.PipelineRef, newConfig); err != nil {
-		displayhelpers.ShowErrors("Error loading existing config", []string{err.Error()})
+		displayhelpers.ShowErrors("Invalid pipeline config", []string{err.Error()})
 		return errors.New("configuration invalid")
 	}
 
