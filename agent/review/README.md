@@ -255,10 +255,13 @@ the session and cannot write them back, so a stored copy goes stale as the
 refresh token rotates: refresh it from a logged-in `~/.codex/auth.json`.
 
 `jb-review-worker verdict --report review.json --block-at high` applies a
-severity floor to a published report: it exits non-zero, listing each finding
-at or above the floor (id, severity, title, location), and passes otherwise.
-An incomplete review passes when none of its findings reaches the floor, and
-says it is incomplete.
+severity floor to a published report and answers in its exit status: 1 when a
+finding is at or above the floor (complete review or not), listing each one
+(id, severity, title, location); 0 when the review is complete and none is;
+and 3, no verdict, when the review is incomplete with nothing at the floor or
+the report or a flag cannot be used. Only 1 is a failed review: the landing
+queue's review gate rejects a candidate on it alone, and turns no verdict into
+an errored Run, which the queue retries once and then pauses on.
 
 The private-fixture subscription smoke passes with Codex 0.153.1 and `gpt-6-astra`.
 The owner accepted this deployment's account-auth risks on 2026-09-16, resolving

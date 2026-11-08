@@ -32,6 +32,10 @@ func main() {
 	close(done)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		var exit exitCode
+		if errors.As(err, &exit) {
+			os.Exit(exit.code)
+		}
 		os.Exit(1)
 	}
 }

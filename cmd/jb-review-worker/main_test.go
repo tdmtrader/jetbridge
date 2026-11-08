@@ -48,7 +48,7 @@ func TestVerdictRefusesHighAndBlockerAndPassesMediumAndLow(t *testing.T) {
 		"review-high.json":        {1, []string{"f-001 [high] Overdue Run is never cancelled", "review gate failed: 1 finding(s) at or above high"}, []string{"Long function"}},
 		"review-medium-low.json":  {0, []string{"review gate passed: verdict findings, 2 finding(s), none at or above high"}, nil},
 		"review-no-findings.json": {0, []string{"review gate passed: verdict no_findings, 0 finding(s)"}, nil},
-		"review-incomplete.json":  {0, []string{"the review is incomplete", "Changed files not listed as reviewed", "review gate passed: verdict incomplete"}, nil},
+		"review-incomplete.json":  {3, []string{"the review is incomplete", "Changed files not listed as reviewed", "review gate: no verdict"}, []string{"review gate passed", "review gate failed"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, exit := worker(t, nil, "verdict", "--report", filepath.Join("testdata", name), "--block-at", "high")
@@ -69,9 +69,31 @@ func TestVerdictRefusesHighAndBlockerAndPassesMediumAndLow(t *testing.T) {
 	}
 }
 
-// A report the worker could not have published is no verdict to trust: the
-// gate fails rather than passing it.
-func TestVerdictRefusesAReportItCannotTrust(t *testing.T) {
+// An incomplete review rejects on what it did find: a finding at or above the
+// floor fails it like a complete one.
+func TestVerdictFailsAnIncompleteReviewOnABlockingFinding(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("testdata", "review-incomplete.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Replace(string(body), `"severity": "low"`, `"severity": "high"`, 1)
+	if text == string(body) {
+		t.Fatal("the incomplete fixture has no low finding to raise")
+	}
+	path := filepath.Join(t.TempDir(), "review.json")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, exit := worker(t, nil, "verdict", "--report", path, "--block-at", "high")
+	if exit != 1 || !strings.Contains(out, "review gate failed: 1 finding(s) at or above high") {
+		t.Fatalf("exit %d, want 1:\n%s", exit, out)
+	}
+}
+
+// A report the worker could not have published, or a floor verdict cannot
+// apply, is no verdict: neither a pass nor the failed answer (exit 1) that
+// rejects a candidate.
+func TestVerdictGivesNoVerdictOnAReportItCannotTrust(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("testdata", "review-high.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -87,12 +109,12 @@ func TestVerdictRefusesAReportItCannotTrust(t *testing.T) {
 				t.Fatal(err)
 			}
 			out, exit := worker(t, nil, "verdict", "--report", path)
-			if exit == 0 || !strings.Contains(out, "review report") {
+			if exit != 3 || !strings.Contains(out, "review report") || !strings.Contains(out, "review gate: no verdict") {
 				t.Fatalf("exit %d:\n%s", exit, out)
 			}
 		})
 	}
-	if out, exit := worker(t, nil, "verdict", "--report", filepath.Join("testdata", "review-high.json"), "--block-at", "critical"); exit == 0 || !strings.Contains(out, "unknown severity floor") {
+	if out, exit := worker(t, nil, "verdict", "--report", filepath.Join("testdata", "review-high.json"), "--block-at", "critical"); exit != 3 || !strings.Contains(out, "unknown severity floor") {
 		t.Fatalf("an unknown floor: exit %d:\n%s", exit, out)
 	}
 }

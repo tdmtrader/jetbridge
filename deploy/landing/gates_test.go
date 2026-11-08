@@ -276,17 +276,21 @@ var _ = Describe("The landing gate templates", func() {
 			Expect(diff).To(ContainSubstring("new file mode 100755"))
 			Expect(git(filepath.Join(wd, "work"), "rev-parse", manifest.HeadCommit+"^{tree}")).To(Equal(readManifest(wd)["tree"]), "the reviewed head is compose's tree")
 
+			published := readFile(filepath.Join(wd, "change", "bundle", "manifest.json"))
 			code, out = runIn(wd, changeScript(), nil, remote, "core")
-			Expect(code).NotTo(BeZero(), "a published bundle is never replaced: %s", out)
+			Expect(code).To(Equal(0), "a bundle that cannot be built is no verdict, not a failed review: %s", out)
+			Expect(out).To(ContainSubstring("change: no verdict"))
+			Expect(readFile(filepath.Join(wd, "change", "bundle", "manifest.json"))).To(Equal(published), "a published bundle is never replaced")
 		})
 
-		It("change refuses a candidate that is not compose's tree", func() {
+		It("change refuses a candidate that is not compose's tree, as no verdict", func() {
 			wd := composed()
 			Expect(os.MkdirAll(filepath.Join(wd, "change"), 0o755)).To(Succeed())
 			Expect(os.WriteFile(filepath.Join(wd, "composition", "candidate", "parser.go"), []byte("tampered\n"), 0o644)).To(Succeed())
 			code, out := runIn(wd, changeScript(), nil, remote, "core")
-			Expect(code).NotTo(BeZero())
+			Expect(code).To(Equal(0), out)
 			Expect(out).To(ContainSubstring("not reviewing it"))
+			Expect(out).To(ContainSubstring("change: no verdict"))
 			Expect(filepath.Join(wd, "change", "bundle")).NotTo(BeADirectory())
 		})
 
@@ -326,7 +330,11 @@ printf '# Code review\n' > "$out/review.md"
 				wd = GinkgoT().TempDir()
 				shm = GinkgoT().TempDir()
 				Expect(os.MkdirAll(filepath.Join(wd, "result"), 0o755)).To(Succeed())
+				Expect(os.MkdirAll(filepath.Join(wd, "gate"), 0o755)).To(Succeed())
+				Expect(os.MkdirAll(filepath.Join(wd, "change", "bundle"), 0o755)).To(Succeed())
 			})
+
+			passed := func() string { return filepath.Join(wd, "gate", "passed") }
 
 			review := func(fixture string, auth string) (int, string, string) {
 				GinkgoHelper()
@@ -337,19 +345,34 @@ printf '# Code review\n' > "$out/review.md"
 				return code, out, record
 			}
 
-			DescribeTable("fails on any finding of severity high or blocker, naming each, and passes medium and low",
-				func(fixture string, exit int, says ...string) {
+			DescribeTable("fails only on a finding of severity high or blocker, naming each; passes medium and low; an incomplete review is no verdict",
+				func(fixture string, exit int, pass bool, says ...string) {
 					code, out, _ := review(fixture, secret)
 					Expect(code).To(Equal(exit), out)
 					for _, s := range says {
 						Expect(out).To(ContainSubstring(s))
 					}
+					if pass {
+						Expect(passed()).To(BeAnExistingFile(), "the verdict step loads gate/passed")
+					} else {
+						Expect(passed()).NotTo(BeAnExistingFile(), "without gate/passed the verdict step errors the Run")
+					}
+					Expect(filepath.Join(wd, "gate", "failed")).NotTo(BeAnExistingFile(), "gate publishes only the pass")
 				},
-				Entry("a blocker", "review-blocker.json", 1, "f-002 [blocker] Gate verdicts replay after a restart", "review gate failed"),
-				Entry("a high", "review-high.json", 1, "f-001 [high] Overdue Run is never cancelled", "review gate failed"),
-				Entry("medium and low", "review-medium-low.json", 0, "review gate passed"),
-				Entry("no findings", "review-no-findings.json", 0, "review gate passed: verdict no_findings"),
+				Entry("a blocker", "review-blocker.json", 1, false, "f-002 [blocker] Gate verdicts replay after a restart", "review gate failed"),
+				Entry("a high", "review-high.json", 1, false, "f-001 [high] Overdue Run is never cancelled", "review gate failed"),
+				Entry("medium and low", "review-medium-low.json", 0, true, "review gate passed"),
+				Entry("no findings", "review-no-findings.json", 0, true, "review gate passed: verdict no_findings"),
+				Entry("incomplete", "review-incomplete.json", 0, false, "the review is incomplete", "review: no verdict"),
 			)
+
+			It("is no verdict when change built no bundle", func() {
+				Expect(os.Remove(filepath.Join(wd, "change", "bundle"))).To(Succeed())
+				code, out, _ := review("review-medium-low.json", secret)
+				Expect(code).To(Equal(0), out)
+				Expect(out).To(ContainSubstring("change built no review bundle"))
+				Expect(passed()).NotTo(BeAnExistingFile())
+			})
 
 			It("hands the worker the credential in an owner-only file under /dev/shm that is gone afterwards, and never prints it", func() {
 				code, out, record := review("review-medium-low.json", secret)
@@ -368,15 +391,31 @@ printf '# Code review\n' > "$out/review.md"
 				Expect(out).To(ContainSubstring("# Code review"), "the full report is in the build log")
 			})
 
-			It("removes the credential file even when the worker never ran, and refuses an empty credential", func() {
+			It("removes the credential file even when the worker never ran, and an empty credential or a review that cannot run is no verdict", func() {
 				code, out, _ := review("review-medium-low.json", "")
-				Expect(code).NotTo(BeZero())
+				Expect(code).To(Equal(0), out)
 				Expect(out).To(ContainSubstring("((codex-auth)) is empty"))
+				Expect(passed()).NotTo(BeAnExistingFile())
 				failing := replaced(reviewScript(), "mkdir -p "+shm+"/jb-review\n", "mkdir -p "+shm+"/jb-review\nfalse\n")
 				code, out = runIn(wd, failing, []string{"CODEX_AUTH=" + secret}, "gpt-5.5", "--run-id=7")
-				Expect(code).NotTo(BeZero())
+				Expect(code).To(Equal(0), out)
+				Expect(out).To(ContainSubstring("review: no verdict"))
+				Expect(passed()).NotTo(BeAnExistingFile())
 				Expect(out).NotTo(ContainSubstring("synthetic-secret-token"))
 				Expect(filepath.Join(shm, "jb-review-auth.json")).NotTo(BeAnExistingFile())
+			})
+
+			It("ends with the verdict step, which errors the Run unless the review passed", func() {
+				body, err := os.ReadFile(reviewGate)
+				Expect(err).NotTo(HaveOccurred())
+				var config atc.Config
+				Expect(yaml.UnmarshalStrict(body, &config)).To(Succeed())
+				plan := config.Jobs[0].PlanSequence
+				last, ok := plan[len(plan)-1].Config.(*atc.LoadVarStep)
+				Expect(ok).To(BeTrue(), "the last step is a load_var")
+				Expect(last.File).To(Equal("gate/passed"))
+				outputs := stepNamed(reviewGate, "review")["config"].(map[string]any)["outputs"]
+				Expect(outputs).To(ContainElement(map[string]any{"name": "gate"}))
 			})
 
 			It("never traces its commands, which would print the credential", func() {
