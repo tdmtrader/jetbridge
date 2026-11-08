@@ -166,6 +166,7 @@ var _ = Describe("The landing gate templates", func() {
 			Expect(config.Template).To(BeTrue())
 			_, errs := configvalidate.Validate(config)
 			Expect(errs).To(BeEmpty(), path)
+			Expect(configvalidate.ValidateTemplateDeclaration(atc.PipelineRef{Name: filepath.Base(path)}, config)).To(Succeed(), "set-pipeline refuses %s", path)
 			var params []string
 			for _, p := range config.Params {
 				params = append(params, p.Name)
@@ -184,15 +185,21 @@ var _ = Describe("The landing gate templates", func() {
 		}
 	})
 
-	It("The test gate runs exactly the pipeline's build-and-vet and unit-tests tasks: config, image, resources, params, timeout and attempts", func() {
+	It("The test gate runs exactly the pipeline's build-and-vet and unit-tests tasks: config, image, resources, params and timeout", func() {
 		for _, name := range []string{"build-and-vet", "unit-tests"} {
 			job := stepNamed(pipeline, name)
 			gate := stepNamed(testsGate, name)
 			Expect(gate["config"]).To(Equal(job["config"]), "%s's config, script included, drifted from deploy/concourse-pipeline.yml", name)
 			Expect(gate["timeout"]).To(Equal(job["timeout"]), name)
-			Expect(gate["attempts"]).To(Equal(job["attempts"]), name)
+			Expect(gate).NotTo(HaveKey("attempts"), "%s takes a run input, which cannot sit in a repeated step; the queue retries a no-verdict gate instead", name)
 			Expect(gate["privileged"] == job["privileged"]).To(BeTrue(), "%s runs privileged exactly when the job does", name)
-			want := append(keys(job), "run_inputs", "task_id")
+			var want []string
+			for _, key := range keys(job) {
+				if key != "attempts" {
+					want = append(want, key)
+				}
+			}
+			want = append(want, "run_inputs", "task_id")
 			sort.Strings(want)
 			Expect(keys(gate)).To(Equal(want), "%s adds only its task id and the repo route", name)
 			Expect(gate["run_inputs"]).To(Equal([]any{map[string]any{"name": "repo", "input": "repo", "result": "repo"}}))

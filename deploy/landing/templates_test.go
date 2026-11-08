@@ -145,11 +145,11 @@ var _ = Describe("The landing templates", func() {
 	})
 
 	It("The templates are valid Run templates with canonical task ids and one result per task", func() {
-		for _, config := range []atc.Config{composeConfig, landConfig} {
+		for name, config := range map[string]atc.Config{"landing-compose": composeConfig, "landing-land": landConfig} {
 			Expect(config.Template).To(BeTrue())
-			warnings, errs := configvalidate.Validate(config)
-			Expect(errs).To(BeEmpty())
-			_ = warnings
+			_, errs := configvalidate.Validate(config)
+			Expect(errs).To(BeEmpty(), name)
+			Expect(configvalidate.ValidateTemplateDeclaration(atc.PipelineRef{Name: name}, config)).To(Succeed(), "set-pipeline refuses %s", name)
 			for _, job := range config.Jobs {
 				for _, step := range job.PlanSequence {
 					task := step.Config.(*atc.TaskStep)
