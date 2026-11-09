@@ -77,6 +77,28 @@ func stepScript(path, name string) script {
 	return script{}
 }
 
+// writableRepoPrelude is what the test gate puts before each pipeline
+// script: a Run input is mounted read-only, and the scripts build into repo.
+const writableRepoPrelude = "# A gate receives repo as a Run input, which Hangar mounts read-only,\n" +
+	"# and the pipeline's script below builds into it: run it on a copy.\n" +
+	`gate=$(mktemp -d) && cp -R repo "$gate/" && chmod -R u+w "$gate/repo" && cd "$gate"` + "\n"
+
+// withoutRunArgs is a task config with its run.args left out.
+func withoutRunArgs(config map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range config {
+		out[key] = value
+	}
+	run := map[string]any{}
+	for key, value := range config["run"].(map[string]any) {
+		if key != "args" {
+			run[key] = value
+		}
+	}
+	out["run"] = run
+	return out
+}
+
 func keys(m map[string]any) []string {
 	var out []string
 	for k := range m {
@@ -185,11 +207,36 @@ var _ = Describe("The landing gate templates", func() {
 		}
 	})
 
+	It("The test gate's prelude gives the pipeline's script a writable repo when the input is sealed read-only, executables intact", func() {
+		wd := GinkgoT().TempDir()
+		repo := filepath.Join(wd, "repo")
+		Expect(os.MkdirAll(filepath.Join(repo, "hack"), 0755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "hack", "run.sh"), []byte("#!/bin/sh\necho ran\n"), 0555)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module x\n"), 0444)).To(Succeed())
+		// Sealed the way a managed read seals it: directories 0555.
+		Expect(os.Chmod(filepath.Join(repo, "hack"), 0555)).To(Succeed())
+		Expect(os.Chmod(repo, 0555)).To(Succeed())
+		DeferCleanup(func() { _ = os.Chmod(repo, 0755); _ = os.Chmod(filepath.Join(repo, "hack"), 0755) })
+		cmd := exec.Command("sh", "-euc", writableRepoPrelude+"cd repo\ntouch built hack/built\nhack/run.sh\n")
+		cmd.Dir = wd
+		out, err := cmd.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), string(out))
+		Expect(string(out)).To(ContainSubstring("ran"))
+		_, err = os.Stat(filepath.Join(repo, "built"))
+		Expect(os.IsNotExist(err)).To(BeTrue(), "the sealed input itself is untouched")
+	})
+
 	It("The test gate runs exactly the pipeline's build-and-vet and unit-tests tasks: config, image, resources, params and timeout", func() {
 		for _, name := range []string{"build-and-vet", "unit-tests"} {
 			job := stepNamed(pipeline, name)
 			gate := stepNamed(testsGate, name)
-			Expect(gate["config"]).To(Equal(job["config"]), "%s's config, script included, drifted from deploy/concourse-pipeline.yml", name)
+			gateConfig, jobConfig := gate["config"].(map[string]any), job["config"].(map[string]any)
+			gateArgs, jobArgs := gateConfig["run"].(map[string]any)["args"].([]any), jobConfig["run"].(map[string]any)["args"].([]any)
+			Expect(gateArgs).To(HaveLen(len(jobArgs)), name)
+			last := len(gateArgs) - 1
+			Expect(gateArgs[:last]).To(Equal(jobArgs[:last]), name)
+			Expect(gateArgs[last]).To(Equal(writableRepoPrelude+jobArgs[last].(string)), "%s's script is the pipeline's behind the writable-copy prelude, and nothing else", name)
+			Expect(withoutRunArgs(gateConfig)).To(Equal(withoutRunArgs(jobConfig)), "%s's config drifted from deploy/concourse-pipeline.yml", name)
 			Expect(gate["timeout"]).To(Equal(job["timeout"]), name)
 			Expect(gate).NotTo(HaveKey("attempts"), "%s takes a run input, which cannot sit in a repeated step; the queue retries a no-verdict gate instead", name)
 			Expect(gate["privileged"] == job["privileged"]).To(BeTrue(), "%s runs privileged exactly when the job does", name)
