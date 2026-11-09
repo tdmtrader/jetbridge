@@ -20,6 +20,10 @@
 # Kubernetes credential manager it is the secret concourse-main/codex-auth,
 # key `value`, holding a Codex auth.json. The ATC fills ((run_id)) per Run.
 #
+# Destroying this pipeline (destroy-pipeline --purge-run-history) never frees
+# its task ids: a destroyed template keeps them, so reinstalling it needs new
+# ones (any canonical UUIDs, distinct from every other template's).
+#
 # The queue admits a Run of it per candidate, binding the compose Run's
 # composition as the `composition` run input and the queue's repository,
 # trunk and entries as params.
@@ -89,7 +93,7 @@ jobs:
     plan:
       - task: change
         timeout: 20m
-        task_id: a696bd8f-e049-45b1-bf54-40b24f68782a
+        task_id: ff7c9f67-69a5-48b6-a697-46dc4390b59a
         run_inputs:
           - name: composition
             input: composition
@@ -149,7 +153,7 @@ jobs:
               - ((trunk))
       - task: review
         timeout: 35m
-        task_id: 802a73a2-7c07-4b06-bf70-8191dc2dd48f
+        task_id: c46482ec-61fd-4641-9017-7577d8ee39fe
         run_inputs:
           - name: change
             input: change
@@ -204,7 +208,7 @@ jobs:
               - --run-id=((run_id))
       - task: verdict
         timeout: 5m
-        task_id: 95d46536-e5b1-433a-8143-c358153d5a5c
+        task_id: 01f80e99-7605-40e0-8f84-9feb26d10c32
         run_inputs:
           - name: review
             input: review
