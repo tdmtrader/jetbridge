@@ -1,9 +1,11 @@
 package landing_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -204,6 +206,47 @@ var _ = Describe("The landing gate templates", func() {
 			Expect(uuid.Validate(id)).To(Succeed(), step.name)
 			Expect(ids).NotTo(HaveKey(id), step.name)
 			ids[id] = true
+		}
+	})
+
+	It("No landing template interpolates a var into a task's command line, where the build log prints it", func() {
+		// A var in path, args or dir is resolved into the "running ..." line of
+		// every Run's build log. The template's Run params and install vars
+		// may be; a credential manager's var belongs in a task's params only.
+		interpolated := regexp.MustCompile(`(?:^|[^$])\(\(([A-Za-z0-9_.:/-]+)\)\)`)
+		for _, path := range []string{"../landing-compose-template.yml", "../landing-land-template.yml", testsGate, reviewGate} {
+			body, err := os.ReadFile(path)
+			Expect(err).NotTo(HaveOccurred())
+			var doc any
+			Expect(yaml.Unmarshal(body, &doc)).To(Succeed())
+			// The review gate's install vars, which set-pipeline resolves, and
+			// the Run number the ATC fills.
+			runParams := map[string]bool{"change_image": true, "review_worker_image": true, "review_model": true, "run_id": true}
+			for _, p := range doc.(map[string]any)["params"].([]any) {
+				runParams[p.(map[string]any)["name"].(string)] = true
+			}
+			var walk func(node any)
+			walk = func(node any) {
+				switch n := node.(type) {
+				case map[string]any:
+					if config, ok := n["config"].(map[string]any); ok {
+						if run, ok := config["run"].(map[string]any); ok {
+							line := fmt.Sprint(run["path"], run["args"], run["dir"])
+							for _, match := range interpolated.FindAllStringSubmatch(line, -1) {
+								Expect(runParams).To(HaveKey(match[1]), "%s task %v interpolates ((%s)) into its command line", path, n["task"], match[1])
+							}
+						}
+					}
+					for _, child := range n {
+						walk(child)
+					}
+				case []any:
+					for _, child := range n {
+						walk(child)
+					}
+				}
+			}
+			walk(doc)
 		}
 	})
 
@@ -448,7 +491,7 @@ printf '# Code review\n' > "$out/review.md"
 			It("removes the credential file even when the worker never ran, and an empty credential or a review that cannot run is no verdict", func() {
 				code, out, _ := review("review-medium-low.json", "")
 				Expect(code).To(Equal(0), out)
-				Expect(out).To(ContainSubstring("((codex-auth)) is empty"))
+				Expect(out).To(ContainSubstring("the codex-auth credential is empty"))
 				Expect(passed()).NotTo(BeAnExistingFile())
 				failing := replaced(reviewScript(), "mkdir -p "+shm+"/jb-review\n", "mkdir -p "+shm+"/jb-review\nfalse\n")
 				code, out = runIn(wd, failing, []string{"CODEX_AUTH=" + secret}, "gpt-5.5", "--run-id=7")
