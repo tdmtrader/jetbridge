@@ -182,7 +182,7 @@ jobs:
                 set +e
                 (
                 set -e
-                [ -n "${CODEX_AUTH:-}" ] || { echo "review: no verdict: ((codex-auth)) is empty; set the codex-auth secret for this team" >&2; exit 0; }
+                [ -n "${CODEX_AUTH:-}" ] || { echo "review: no verdict: the codex-auth credential is empty; set the codex-auth secret for this team" >&2; exit 0; }
                 [ -d change/bundle ] || { echo "review: no verdict: change built no review bundle" >&2; exit 0; }
                 printf '%s' "$CODEX_AUTH" > "$auth"
                 unset CODEX_AUTH
