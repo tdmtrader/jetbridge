@@ -25,6 +25,11 @@
 # publishes a copy as `repo`, so each task gets the candidate as `repo`, at
 # the path its script expects, in a pod of its own.
 #
+# A Run input is mounted read-only, and both scripts build into `repo`
+# (`go build` writes its binary there, ginkgo its test binaries), so each
+# task's script is the pipeline's behind a prelude that copies `repo` to a
+# writable directory first; gates_test.go holds the script to exactly that.
+#
 # The two tasks run in parallel, as two pods of 6 CPU each. Their budgets
 # (20m and 45m) are the pipeline's, but not the job's `attempts: 2`: a task
 # that takes a run input cannot sit in a repeated step. A pod lost mid-run
@@ -100,6 +105,9 @@ jobs:
                 args:
                 - -exc
                 - |
+                  # A gate receives repo as a Run input, which Hangar mounts read-only,
+                  # and the pipeline's script below builds into it: run it on a copy.
+                  gate=$(mktemp -d) && cp -R repo "$gate/" && chmod -R u+w "$gate/repo" && cd "$gate"
                   cd repo
                   echo "=== Verifying full build ==="
                   go build ./cmd/concourse
@@ -160,6 +168,9 @@ jobs:
                 args:
                 - -exc
                 - |
+                  # A gate receives repo as a Run input, which Hangar mounts read-only,
+                  # and the pipeline's script below builds into it: run it on a copy.
+                  gate=$(mktemp -d) && cp -R repo "$gate/" && chmod -R u+w "$gate/repo" && cd "$gate"
                   cd repo
                   # The unit tier lives in hack/unit-tests.sh, which `make test-unit`
                   # runs too: one package list, one exclusion list. --ci adds the
