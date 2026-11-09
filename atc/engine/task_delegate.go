@@ -86,7 +86,7 @@ func (d *taskDelegate) Initializing(logger lager.Logger) {
 	err := d.build.SaveEvent(event.InitializeTask{
 		Origin:     d.eventOrigin,
 		Time:       d.clock.Now().Unix(),
-		TaskConfig: event.ShadowTaskConfig(d.config),
+		TaskConfig: d.shadowConfig(),
 	})
 	if err != nil {
 		logger.Error("failed-to-save-initialize-task-event", err)
@@ -96,11 +96,33 @@ func (d *taskDelegate) Initializing(logger lager.Logger) {
 	logger.Info("initializing")
 }
 
+// shadowConfig is the task config the initialize-task and start-task events
+// carry. It holds the task's command line, which the web UI and fly print as
+// "running ...", so a credential interpolated into the path, args, dir or
+// image is redacted on the same terms as the task's output.
+func (d *taskDelegate) shadowConfig() event.TaskConfig {
+	config := event.ShadowTaskConfig(d.config)
+	if d.disableRedactSecrets {
+		return config
+	}
+	config.Image = d.buildOutputFilter(config.Image)
+	config.Run.Path = d.buildOutputFilter(config.Run.Path)
+	config.Run.Dir = d.buildOutputFilter(config.Run.Dir)
+	if config.Run.Args != nil {
+		args := make([]string, len(config.Run.Args))
+		for i, arg := range config.Run.Args {
+			args[i] = d.buildOutputFilter(arg)
+		}
+		config.Run.Args = args
+	}
+	return config
+}
+
 func (d *taskDelegate) Starting(logger lager.Logger) {
 	err := d.build.SaveEvent(event.StartTask{
 		Origin:     d.eventOrigin,
 		Time:       d.clock.Now().Unix(),
-		TaskConfig: event.ShadowTaskConfig(d.config),
+		TaskConfig: d.shadowConfig(),
 	})
 	if err != nil {
 		logger.Error("failed-to-save-initialize-task-event", err)
