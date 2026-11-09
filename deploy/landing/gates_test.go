@@ -250,6 +250,31 @@ var _ = Describe("The landing gate templates", func() {
 		}
 	})
 
+	It("Every load_var reads an output of a task that publishes no Run result, the only outputs a later step can read", func() {
+		for _, path := range []string{"../landing-compose-template.yml", "../landing-land-template.yml", testsGate, reviewGate} {
+			body, err := os.ReadFile(path)
+			Expect(err).NotTo(HaveOccurred())
+			var config atc.Config
+			Expect(yaml.UnmarshalStrict(body, &config)).To(Succeed())
+			for _, job := range config.Jobs {
+				plain := map[string]bool{}
+				for _, step := range job.PlanSequence {
+					switch typed := step.Config.(type) {
+					case *atc.TaskStep:
+						if typed.RunResult == nil && typed.Config != nil {
+							for _, output := range typed.Config.Outputs {
+								plain[output.Name] = true
+							}
+						}
+					case *atc.LoadVarStep:
+						source, _, _ := strings.Cut(typed.File, "/")
+						Expect(plain).To(HaveKey(source), "%s: load_var %s reads %s, which no earlier non-producing task outputs", path, typed.Name, typed.File)
+					}
+				}
+			}
+		}
+	})
+
 	It("The test gate's prelude gives the pipeline's script a writable repo when the input is sealed read-only, executables intact", func() {
 		wd := GinkgoT().TempDir()
 		repo := filepath.Join(wd, "repo")
@@ -433,12 +458,28 @@ printf '# Code review\n' > "$out/review.md"
 
 			passed := func() string { return filepath.Join(wd, "gate", "passed") }
 
+			// reviewThenVerdict runs the review task, delivers its result to
+			// verdict as `review` the way an in-Run result input does, and runs
+			// verdict, as the Run does when review exits 0.
+			reviewThenVerdict := func(s script, env []string) (int, string) {
+				GinkgoHelper()
+				code, out := runIn(wd, s, env, "gpt-5.5", "--run-id=7")
+				if code != 0 {
+					return code, out
+				}
+				Expect(os.RemoveAll(filepath.Join(wd, "review"))).To(Succeed())
+				Expect(exec.Command("cp", "-R", filepath.Join(wd, "result"), filepath.Join(wd, "review")).Run()).To(Succeed())
+				verdict := replaced(stepScript(reviewGate, "verdict"), "/usr/local/bin/jb-review-worker", reviewWorker)
+				code, verdictOut := runIn(wd, verdict, nil)
+				return code, out + verdictOut
+			}
+
 			review := func(fixture string, auth string) (int, string, string) {
 				GinkgoHelper()
 				record := GinkgoT().TempDir()
 				fixturePath, err := filepath.Abs(filepath.Join("../../cmd/jb-review-worker/testdata", fixture))
 				Expect(err).NotTo(HaveOccurred())
-				code, out := runIn(wd, reviewScript(), []string{"CODEX_AUTH=" + auth, "RECORD=" + record, "FIXTURE=" + fixturePath}, "gpt-5.5", "--run-id=7")
+				code, out := reviewThenVerdict(reviewScript(), []string{"CODEX_AUTH=" + auth, "RECORD=" + record, "FIXTURE=" + fixturePath})
 				return code, out, record
 			}
 
@@ -494,7 +535,7 @@ printf '# Code review\n' > "$out/review.md"
 				Expect(out).To(ContainSubstring("the codex-auth credential is empty"))
 				Expect(passed()).NotTo(BeAnExistingFile())
 				failing := replaced(reviewScript(), "mkdir -p "+shm+"/jb-review\n", "mkdir -p "+shm+"/jb-review\nfalse\n")
-				code, out = runIn(wd, failing, []string{"CODEX_AUTH=" + secret}, "gpt-5.5", "--run-id=7")
+				code, out = reviewThenVerdict(failing, []string{"CODEX_AUTH=" + secret})
 				Expect(code).To(Equal(0), out)
 				Expect(out).To(ContainSubstring("review: no verdict"))
 				Expect(passed()).NotTo(BeAnExistingFile())
@@ -502,17 +543,25 @@ printf '# Code review\n' > "$out/review.md"
 				Expect(filepath.Join(shm, "jb-review-auth.json")).NotTo(BeAnExistingFile())
 			})
 
-			It("ends with the verdict step, which errors the Run unless the review passed", func() {
+			It("decides in a verdict task of its own, then a last step that errors the Run unless the review passed", func() {
 				body, err := os.ReadFile(reviewGate)
 				Expect(err).NotTo(HaveOccurred())
 				var config atc.Config
 				Expect(yaml.UnmarshalStrict(body, &config)).To(Succeed())
 				plan := config.Jobs[0].PlanSequence
-				last, ok := plan[len(plan)-1].Config.(*atc.LoadVarStep)
+				Expect(plan).To(HaveLen(4))
+				var names []string
+				for _, step := range plan[:3] {
+					names = append(names, step.Config.(*atc.TaskStep).Name)
+				}
+				Expect(names).To(Equal([]string{"change", "review", "verdict"}))
+				last, ok := plan[3].Config.(*atc.LoadVarStep)
 				Expect(ok).To(BeTrue(), "the last step is a load_var")
 				Expect(last.File).To(Equal("gate/passed"))
-				outputs := stepNamed(reviewGate, "review")["config"].(map[string]any)["outputs"]
-				Expect(outputs).To(ContainElement(map[string]any{"name": "gate"}))
+				verdict := plan[2].Config.(*atc.TaskStep)
+				Expect(verdict.RunResult).To(BeNil(), "a result producer's outputs are never build artifacts, so the step that writes gate/ publishes no result")
+				Expect(verdict.RunInputs).To(Equal([]atc.RunInput{{Name: "review", Input: "review", Result: "review"}}))
+				Expect(verdict.Params).To(BeEmpty(), "the credential reaches only the review task")
 			})
 
 			It("never traces its commands, which would print the credential", func() {
