@@ -44,32 +44,35 @@
 # reviews start failing to authenticate, refresh the secret from a machine
 # that is logged in, from its ~/.codex/auth.json.
 #
-# verdict. After the worker publishes review.json and review.md, the full
-# review.md is printed to the build log and `jb-review-worker verdict
-# --block-at high` decides, and the Run's status carries its answer to the
-# queue:
+# verdict. The review task publishes the worker's review.json and review.md
+# as its `review` result and prints review.md to the build log; it decides
+# nothing. A Run result producer's outputs are never build artifacts, so the
+# decision is a task of its own: verdict takes `review` as an in-Run result
+# input, runs `jb-review-worker verdict --block-at high`, and writes
+# gate/passed to its own output, which the last step loads. The Run's status
+# carries the answer to the queue:
 #
-#   passed      no finding at or above high in a complete review. The task
-#               writes gate/passed, the verdict step loads it and the Run
+#   passed      no finding at or above high in a complete review. verdict
+#               writes gate/passed, the last step loads it and the Run
 #               succeeds, publishing the report as its `review` result.
 #   failed      a finding of severity high or blocker, complete review or
-#               not, each listed by id, severity and title. The review task
-#               fails, so the Run fails and the queue ejects the entry. This
-#               is the only way the review gate rejects a candidate.
-#   no verdict  the review could not run (an empty or stale ((codex-auth)),
-#               a worker or model error, a bundle change could not build) or
-#               did not complete (an incomplete review with nothing at or
-#               above high). Each task says why and exits 0 without
-#               gate/passed, so the verdict step errors the Run. The queue
-#               counts an errored Run as no verdict: it retries the gate once,
-#               then pauses until `fly resume-landing-queue`.
+#               not, each listed by id, severity and title. verdict fails,
+#               so the Run fails and the queue ejects the entry. This is the
+#               only way the review gate rejects a candidate.
+#   no verdict  the review could not run (an empty or stale codex-auth
+#               secret, a worker or model error, a bundle change could not
+#               build) or did not complete (an incomplete review with nothing
+#               at or above high). Each task says why and exits 0, verdict
+#               writes no gate/passed, and the last step errors the Run. The
+#               queue counts an errored Run as no verdict: it retries the gate
+#               once, then pauses until `fly resume-landing-queue`.
 #
 # A failed or errored Run publishes no result, so the report of a review that
 # was not passed is in its Run's build log, which the entry's eject or pause
 # reason names.
 #
-# Budgets: change 20m, review 35m (the worker's own session cap is 30m). Give
-# the gate a wait above their sum, for example `wait: 60m`.
+# Budgets: change 20m, review 35m (the worker's own session cap is 30m),
+# verdict 5m. Give the gate a wait above their sum, for example `wait: 65m`.
 template: true
 params:
   - name: repository
@@ -163,19 +166,16 @@ jobs:
             - name: change
           outputs:
             - name: result
-            - name: gate
           run:
             path: /bin/sh
             args:
               - -eu
               - -c
               - |
-                # review: the worker on the bundle, then the verdict on its report.
+                # review: the worker on the bundle; the report is the result.
                 # $1 model, $2 --run-id=<Run ID>; CODEX_AUTH the owner's Codex auth.json
-                # Only a finding at or above high fails this task, which rejects the
-                # candidate. A review that cannot run or does not complete is no
-                # verdict: the task says why and exits 0 without gate/passed, and the
-                # verdict step errors the Run.
+                # It decides nothing: a review that cannot run says why and exits 0
+                # with no report, which verdict counts as no verdict.
                 umask 077
                 auth=/dev/shm/jb-review-auth.json
                 trap 'rm -f "$auth"' EXIT
@@ -195,24 +195,45 @@ jobs:
                 mv result/report/review.json result/report/review.md result/
                 rmdir result/report
                 cat result/review.md
-                status=0
-                /usr/local/bin/jb-review-worker verdict --report result/review.json --block-at high || status=$?
-                case $status in
-                  0) : > gate/passed ;;
-                  1) : > gate/failed ;;
-                  *) echo "review: no verdict: verdict exited $status" >&2 ;;
-                esac
                 )
                 status=$?
                 set -e
-                if [ -e gate/failed ]; then
-                  rm -f gate/failed
-                  exit 1
-                fi
-                [ -e gate/passed ] || echo "review: no verdict: the review did not complete (exit $status); the Run errors at its verdict step" >&2
+                [ "$status" -eq 0 ] || echo "review: no verdict: the review did not run to its report (exit $status)" >&2
               - review
               - ((review_model))
               - --run-id=((run_id))
+      - task: verdict
+        timeout: 5m
+        task_id: 95d46536-e5b1-433a-8143-c358153d5a5c
+        run_inputs:
+          - name: review
+            input: review
+            result: review
+        config:
+          platform: linux
+          rootfs_uri: docker:///((review_worker_image))
+          inputs:
+            - name: review
+          outputs:
+            - name: gate
+          run:
+            path: /bin/sh
+            args:
+              - -eu
+              - -c
+              - |
+                # verdict: only a finding at or above high fails this task, which
+                # rejects the candidate. A passed review writes gate/passed; anything
+                # else is no verdict, and without gate/passed the last step errors.
+                [ -f review/review.json ] || { echo "review: no verdict: the review published no report" >&2; exit 0; }
+                status=0
+                /usr/local/bin/jb-review-worker verdict --report review/review.json --block-at high || status=$?
+                case $status in
+                  0) : > gate/passed ;;
+                  1) exit 1 ;;
+                  *) echo "review: no verdict: verdict exited $status; the Run errors at its last step" >&2 ;;
+                esac
+              - verdict
       # The review's verdict: present only when the review passed. Its absence
       # (no verdict) errors the Run here, which the queue counts as no verdict.
       - load_var: review-passed
