@@ -244,6 +244,44 @@ var _ = Describe("TaskDelegate", func() {
 		})
 	})
 
+	// The start-task event carries the task's command line, which the web UI
+	// and fly print as "running ...". A credential interpolated into it is
+	// redacted on the same terms as the task's output.
+	Describe("a credential in the command line", func() {
+		BeforeEach(func() {
+			_, _, err := state.Get(vars.Reference{Path: "source-param"})
+			Expect(err).ToNot(HaveOccurred())
+			delegate.SetTaskConfig(atc.TaskConfig{
+				Platform:  "linux",
+				RootfsURI: "docker:///img",
+				Run: atc.TaskRunConfig{
+					Path: "/bin/sh",
+					Args: []string{"-c", "echo login super-secret-source\nnext line"},
+					Dir:  "work",
+				},
+			})
+		})
+
+		It("saves the command line with the credential redacted in the start-task event", func() {
+			delegate.Starting(logger)
+			persisted := consumeTaskDelegateBuildEvent(fixture, realBuild, 1, 0)
+			start, ok := persisted.(event.StartTask)
+			Expect(ok).To(BeTrue())
+			Expect(start.TaskConfig.Run.Args).To(Equal([]string{"-c", "echo login ((redacted))\nnext line"}))
+			body, err := json.Marshal(persisted)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(body)).NotTo(ContainSubstring("super-secret-source"))
+		})
+
+		It("saves the command line with the credential redacted in the initialize-task event", func() {
+			delegate.Initializing(logger)
+			persisted := consumeTaskDelegateBuildEvent(fixture, realBuild, 1, 0)
+			initialize, ok := persisted.(event.InitializeTask)
+			Expect(ok).To(BeTrue())
+			Expect(initialize.TaskConfig.Run.Args).To(Equal([]string{"-c", "echo login ((redacted))\nnext line"}))
+		})
+	})
+
 	Describe("Finished", func() {
 		JustBeforeEach(func() {
 			delegate.Finished(logger, exitStatus)
