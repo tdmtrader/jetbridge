@@ -18,6 +18,7 @@ import (
 	"github.com/concourse/concourse/tracing"
 	"go.opentelemetry.io/otel/attribute"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -28,8 +29,11 @@ var _ runtime.Process = (*jobProcess)(nil)
 // exit, and a resource command's answer is read back from the step's answer
 // directory through the artifact daemon.
 type jobProcess struct {
-	id             string
-	jobName        string
+	id      string
+	jobName string
+	// jobUID is the UID of the step Job this process follows: the one
+	// createStepJob created, or the running one it found and followed.
+	jobUID         types.UID
 	clientset      kubernetes.Interface
 	config         Config
 	container      *Container
@@ -44,9 +48,13 @@ type jobProcess struct {
 }
 
 func newJobProcess(id string, container *Container, pio runtime.ProcessIO) *jobProcess {
+	container.mu.RLock()
+	uid := container.jobUID
+	container.mu.RUnlock()
 	return &jobProcess{
 		id:             id,
 		jobName:        container.podName,
+		jobUID:         uid,
 		clientset:      container.clientset,
 		config:         container.config,
 		container:      container,
@@ -100,12 +108,10 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		// This step's Job, by UID once known: a Job of the same name made
-		// since by another invocation is not this step's to delete.
-		p.container.mu.RLock()
-		uid := p.container.jobUID
-		p.container.mu.RUnlock()
-		if err := deleteStepJob(cleanupCtx, p.clientset, p.config.Namespace, p.jobName, uid); err != nil {
+		// This step's Job, by the UID it had when this process was made: a
+		// Job of the same name made since by another invocation is not this
+		// step's to delete.
+		if err := deleteStepJob(cleanupCtx, p.clientset, p.config.Namespace, p.jobName, p.jobUID); err != nil {
 			logger.Error("failed-to-delete-unfinished-step-job", err)
 		}
 	}()
