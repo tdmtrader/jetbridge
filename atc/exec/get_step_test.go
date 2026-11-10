@@ -409,12 +409,13 @@ var _ = Describe("GetStep", func() {
 				ImageSpec: runtime.ImageSpec{
 					ResourceType: "some-base-type",
 				},
-				TeamID:         stepMetadata.TeamID,
-				TeamName:       stepMetadata.TeamName,
-				Type:           containerMetadata.Type,
-				Env:            stepMetadata.Env(),
-				Dir:            resource.ResourcesDir("get"),
-				CertsBindMount: true,
+				TeamID:           stepMetadata.TeamID,
+				TeamName:         stepMetadata.TeamName,
+				Type:             containerMetadata.Type,
+				StepResourceType: "some-base-type",
+				Env:              stepMetadata.Env(),
+				Dir:              resource.ResourcesDir("get"),
+				CertsBindMount:   true,
 			},
 		))
 	})

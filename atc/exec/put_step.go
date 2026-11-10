@@ -167,8 +167,9 @@ func (step *PutStep) run(ctx context.Context, state RunState, delegate PutDelega
 		TeamName:  step.metadata.TeamName,
 		ImageSpec: imageSpec,
 
-		Env:  step.metadata.Env(),
-		Type: db.ContainerTypePut,
+		Env:              step.metadata.Env(),
+		Type:             db.ContainerTypePut,
+		StepResourceType: step.plan.Type,
 
 		Dir: step.containerMetadata.WorkingDirectory,
 

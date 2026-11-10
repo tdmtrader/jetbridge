@@ -202,6 +202,11 @@ type ContainerSpec struct {
 	SecretEnv map[string]vars.SecretRef
 	// Type is the type of step the Container is for (e.g. task, get, etc.).
 	Type db.ContainerType
+	// StepResourceType is, for a check, get or put, the resource type the
+	// step's plan runs: the type whose image the container runs. The engine
+	// sets it from the plan; JetBridge's check eligibility owns a check pod
+	// by it.
+	StepResourceType string
 
 	// Dir is the working directory for processes run in the container. Must be
 	// an absolute path.
