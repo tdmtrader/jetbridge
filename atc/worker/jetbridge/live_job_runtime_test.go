@@ -468,6 +468,29 @@ func TestLiveJobRuntimeExactTaskStop(t *testing.T) {
 	if finished.result.ExitStatus != 143 {
 		t.Errorf("exit = %d, want 143 from the command SIGTERM ended", finished.result.ExitStatus)
 	}
+	// The Job controller settles the stopped pod (backoffLimit 0: the Job
+	// fails). Only then does "the pod is kept, and no other replaced it"
+	// mean anything.
+	failedBy := time.Now().Add(2 * time.Minute)
+	for {
+		job, err := clientset.BatchV1().Jobs(namespace).Get(ctx, jobName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("reading the stopped step's Job: %v", err)
+		}
+		failed := false
+		for _, condition := range job.Status.Conditions {
+			if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
+				failed = true
+			}
+		}
+		if failed {
+			break
+		}
+		if time.Now().After(failedBy) {
+			t.Fatalf("the stopped step's Job never failed: %+v", job.Status)
+		}
+		time.Sleep(time.Second)
+	}
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "batch.kubernetes.io/job-name=" + jobName})
 	if err != nil || len(pods.Items) != 1 {
 		t.Fatalf("the Job owns %d pods (%v), want the stopped one kept", len(pods.Items), err)
