@@ -100,9 +100,12 @@ func (c *Container) jobRuntime() bool {
 }
 
 // exactTaskOnJobRuntime reports whether this container is an exact task a
-// test routed to the job runtime (Config.ExactTasksOnJobRuntimeForTesting).
+// test routed to the job runtime. Only a test binary can route one: nothing
+// in this package sets exactTasksOnJobRuntime, and the setters live in _test
+// files (exact_job_routing_test.go, live_exact_controls_test.go). Only a task:
+// an exact check, get or put stays on the pause pod either way.
 func (c *Container) exactTaskOnJobRuntime() bool {
-	return c.config.ExactTasksOnJobRuntimeForTesting && c.exactExecution() && c.metadata.Type == db.ContainerTypeTask
+	return c.exactTasksOnJobRuntime && c.exactExecution() && c.metadata.Type == db.ContainerTypeTask
 }
 
 // stepAnswerKey is the artifact key the daemon serves a step's answer

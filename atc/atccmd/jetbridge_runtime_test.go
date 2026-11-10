@@ -144,8 +144,6 @@ func TestTheReaperSharesTheWorkersArtifactLocator(t *testing.T) {
 var jetbridgeConfigFieldsWithoutAFlag = map[string]string{
 	"StepTolerations": "web derives step tolerations from --kubernetes-preferred-step-node and " +
 		"--kubernetes-required-step-node; only the brine live fixture adds its own, to follow the taints of the node it pins",
-	"ExactTasksOnJobRuntimeForTesting": "a test-only gate routing an exact task to the job runtime; no flag may ever " +
-		"map to it, and the slice that switches exact executions over replaces it",
 }
 
 // Every flag the runtime reads reaches the one assembled Config, and every

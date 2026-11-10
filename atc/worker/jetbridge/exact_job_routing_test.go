@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -28,7 +29,7 @@ func exactRoutingContainer(t *testing.T, clientset *fake.Clientset, kind db.Cont
 			Capability: "base-capability",
 		},
 	})
-	container.config.ExactTasksOnJobRuntimeForTesting = gate
+	container.exactTasksOnJobRuntime = gate
 	container.outputControls = staticOutputControls{}
 	container.executor = &controlExecutor{run: func(int) error { return nil }}
 	return container
@@ -81,58 +82,34 @@ func TestAnExactExecutionStaysOnThePausePodUnlessATestRoutesIt(t *testing.T) {
 	}
 }
 
-// The gate is a test's, never production's: nothing outside this package's
-// own definition of it names it, so no flag, chart value or environment
-// variable can reach it.
+// The gate is a test's, never production's. It is an unexported field, so
+// only this package can set it, and no file of the package outside its tests
+// does: the one assignment copies a worker's value into the container it
+// makes. A test sets it on a container (here) or on a worker
+// (RouteExactTasksToJobRuntimeForTesting, a _test file), which no production
+// binary contains.
 func TestNothingInProductionSetsTheExactJobRuntimeGate(t *testing.T) {
-	root := repositoryRoot()
-	const field = "ExactTasksOnJobRuntimeForTesting"
-	allowed := map[string]bool{
-		filepath.Join("atc", "worker", "jetbridge", "config.go"):   true,
-		filepath.Join("atc", "worker", "jetbridge", "step_job.go"): true,
-		// The flag-assembly test lists it as a field no flag sets.
-		filepath.Join("atc", "atccmd", "jetbridge_runtime_test.go"): true,
-	}
-	// This package's own tests set it; no other test does.
-	packageDir := filepath.Join("atc", "worker", "jetbridge")
-	// The whole repository: a chart template, a pipeline, a script or a
-	// command's wiring could each set it. Only tests may.
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			switch {
-			case entry.Name() == ".git", entry.Name() == "node_modules":
-				return filepath.SkipDir
-			case entry.Name() == ".claude" && filepath.Dir(path) == root:
-				// Other worktrees of this repository live under it.
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !entry.Type().IsRegular() {
-			return nil
-		}
-		relative, _ := filepath.Rel(root, path)
-		if strings.HasSuffix(path, "_test.go") && filepath.Dir(relative) == packageDir {
-			return nil
-		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		// A binary is no configuration; a test binary (ginkgo leaves its
-		// compiled suite in the package directory) names every field.
-		if bytes.IndexByte(body, 0) >= 0 {
-			return nil
-		}
-		if bytes.Contains(body, []byte(field)) && !allowed[relative] {
-			t.Errorf("%s names %s: only tests may route an exact execution to the job runtime", relative, field)
-		}
-		return nil
-	})
+	files, err := filepath.Glob("*.go")
 	if err != nil {
-		t.Fatalf("walking %s: %v", root, err)
+		t.Fatal(err)
+	}
+	assignment := regexp.MustCompile(`\bexactTasksOnJobRuntime\s*(=[^=]|:[^=])`)
+	const copied = "container.exactTasksOnJobRuntime = w.exactTasksOnJobRuntime"
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for n, line := range strings.Split(string(body), "\n") {
+			if assignment.MatchString(line) && strings.TrimSpace(line) != copied {
+				t.Errorf("%s:%d sets the exact job-runtime gate: only a test may (%s)", file, n+1, strings.TrimSpace(line))
+			}
+		}
 	}
 }
+
+// routeExactTasksToJobRuntime is the gate on one container.
+func (c *Container) routeExactTasksToJobRuntime() { c.exactTasksOnJobRuntime = true }

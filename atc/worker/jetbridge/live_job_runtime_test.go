@@ -294,11 +294,11 @@ func TestLiveJobRuntimeExactTask(t *testing.T) {
 		cfg.StepRuntime = jetbridge.StepRuntimeJob
 		cfg.LauncherImage = deployed.webContainer.Image
 		cfg.StepEnvelopeURL = envelopeURL
-		cfg.ExactTasksOnJobRuntimeForTesting = true
 		deps.StepEnvelopes = envelopes
 		deps.OutputControls = controls
 		deps.ExecutionPreparer = preparer
 	})
+	worker.RouteExactTasksToJobRuntimeForTesting()
 	namespace := liveTestNamespace()
 
 	handle := "live-job-exact-" + time.Now().Format("150405")

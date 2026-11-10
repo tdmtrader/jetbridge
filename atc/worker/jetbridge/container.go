@@ -104,6 +104,9 @@ type Container struct {
 	// envelopes is where the job step runtime registers a step's envelope
 	// for its pod to fetch. Nil on the exec runtime.
 	envelopes *StepEnvelopes
+	// exactTasksOnJobRuntime routes an exact task to the job step runtime
+	// (step_job.go: exactTaskOnJobRuntime). Only a test sets it.
+	exactTasksOnJobRuntime bool
 }
 
 // ContainerWiring is what a Container was built with: the collaborators its
