@@ -112,6 +112,16 @@ func TestStepPodAdmissionPrivilege(t *testing.T) {
 		}
 	}
 
+	// Dropping capabilities takes power away: admitted in every mode.
+	for name, allowance := range every {
+		pod := unprivileged()
+		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}}
+		pod.Spec.InitContainers[0].SecurityContext = &corev1.SecurityContext{Capabilities: &corev1.Capabilities{Add: []corev1.Capability{}, Drop: []corev1.Capability{"NET_RAW"}}}
+		if err := admitStepPod(pod, roots, allowance); err != nil {
+			t.Errorf("a drop-only capabilities context was refused %s: %v", name, err)
+		}
+	}
+
 	// Under granted, a privileged container or init container is admitted
 	// only inside a grant that declares privileged=true; under any, always.
 	t.Run("privileged", func(t *testing.T) {
