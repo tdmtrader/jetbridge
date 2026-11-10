@@ -7,11 +7,8 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,59 +23,38 @@ import (
 // Managed reads queue for the one scratch slot they share with input
 // publication and seals. The read's timeout is the read's: time spent waiting
 // for the slot is the request's, bounded by its own context. These tests run
-// a real daemon against a fake-gcs bucket behind a proxy that makes each
-// object download slow, so a read takes most of its timeout.
-
-// slowBucket is the object store's network, slowed for media downloads.
-type slowBucket struct {
-	delay     atomic.Int64
-	downloads atomic.Int64
-}
-
-func (bucket *slowBucket) front(t *testing.T, target string) string {
-	t.Helper()
-	upstream, err := url.Parse(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxy := httputil.NewSingleHostReverseProxy(upstream)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if request.Method == http.MethodGet && isMediaDownload(request) {
-			bucket.downloads.Add(1)
-			select {
-			case <-time.After(time.Duration(bucket.delay.Load())):
-			case <-request.Context().Done():
-				return
-			}
-		}
-		proxy.ServeHTTP(w, request)
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
-}
-
-func isMediaDownload(request *http.Request) bool {
-	return request.URL.Query().Get("alt") == "media" ||
-		strings.HasPrefix(request.URL.Path, "/download/") ||
-		!strings.HasPrefix(request.URL.Path, "/storage/")
-}
+// a real daemon over HTTP against a fake-gcs bucket. The test itself holds the
+// slot, standing in for the read or publication ahead in the queue, for as
+// long as it likes; the reads' own work is a tiny tree with the whole read
+// timeout to do it in.
 
 type readQueueFixture struct {
 	*ledgerFixture
-	bucket  *slowBucket
-	server  *Server
-	http    *httptest.Server
-	signer  output.ReadWarrantMinter
-	ref     hangar.TreeRef
-	stepDir string
+	server   *Server
+	http     *httptest.Server
+	inFlight atomic.Int64
+	signer   output.ReadWarrantMinter
+	ref      hangar.TreeRef
+	stepDir  string
+}
+
+// holdSlot takes the server's one scratch slot and returns its release.
+func (fixture *readQueueFixture) holdSlot(t *testing.T) func() {
+	t.Helper()
+	release, err := fixture.server.spooling(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	t.Cleanup(func() { once.Do(release) })
+	return func() { once.Do(release) }
 }
 
 func newReadQueue(t *testing.T, timeout time.Duration) *readQueueFixture {
 	t.Helper()
 
 	objects, bucketName := emulator(t)
-	bucket := &slowBucket{}
-	config := validConfig(t, bucket.front(t, objects.URL()), bucketName)
+	config := validConfig(t, objects.URL(), bucketName)
 	daemon, err := Build(t.Context(), config)
 	if err != nil {
 		t.Fatalf("building the daemon: %v", err)
@@ -138,17 +114,23 @@ func newReadQueue(t *testing.T, timeout time.Duration) *readQueueFixture {
 		t.Fatal(err)
 	}
 	server.reads.timeout = timeout
-	front := httptest.NewServer(server.Handler())
-	t.Cleanup(front.Close)
 
 	signer, err := hangar.NewSigner(hangarKey(), time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &readQueueFixture{
-		ledgerFixture: ledger, bucket: bucket, server: server, http: front,
+	fixture := &readQueueFixture{
+		ledgerFixture: ledger, server: server,
 		signer: output.ReadWarrantMinter{Signer: signer}, ref: published.Attributes.Ref, stepDir: stepsDir,
 	}
+	handler := server.Handler()
+	fixture.http = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		fixture.inFlight.Add(1)
+		defer fixture.inFlight.Add(-1)
+		handler.ServeHTTP(w, request)
+	}))
+	t.Cleanup(fixture.http.Close)
+	return fixture
 }
 
 // materialize asks the daemon to materialize the tree into handle's input-0,
@@ -159,7 +141,7 @@ func (fixture *readQueueFixture) materialize(t *testing.T, ctx context.Context, 
 	now := time.Now().UTC()
 	expires := output.NewTimestamp(now.Add(10 * time.Minute))
 	claim := output.ClaimRecord{
-		ClaimID:           output.ClaimID(uuid.NewString()),
+		ClaimID:           output.ClaimID(fixture.claimFor(handle)),
 		Ref:               fixture.ref,
 		ConsumerBindingID: output.OpaqueID("result-read:" + handle),
 		AcquiredAt:        output.NewTimestamp(now.Add(-time.Second)),
@@ -187,17 +169,24 @@ func (fixture *readQueueFixture) materialize(t *testing.T, ctx context.Context, 
 	return response.StatusCode, nil
 }
 
+// claimFor is the reader's claim id for one handle, stable within a test.
+func (fixture *readQueueFixture) claimFor(handle string) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(fixture.dir+"/"+handle)).String()
+}
+
 func (fixture *readQueueFixture) materialized(handle string) bool {
 	_, err := os.Stat(filepath.Join(fixture.stepDir, handle, "input-0", ".hangar-materialized"))
 	return err == nil
 }
 
-// Each read takes 600ms of a one-second read timeout. The second waits for
-// the first to give the slot back; if its wait counted against its timeout it
-// would run out 400ms into its own read.
+// Two reads queue behind whatever holds the slot for longer than a read's
+// whole timeout. If their wait counted against it, both would answer 503 from
+// the queue; they each get the full two seconds for a tiny tree once they
+// hold the slot.
 func TestAQueuedMaterializeHasItsWholeReadTimeoutOnceItHoldsTheSlot(t *testing.T) {
-	fixture := newReadQueue(t, time.Second)
-	fixture.bucket.delay.Store(int64(600 * time.Millisecond))
+	const timeout = 2 * time.Second
+	fixture := newReadQueue(t, timeout)
+	release := fixture.holdSlot(t)
 
 	handles := []string{"consumer-a", "consumer-b"}
 	statuses := make([]int, len(handles))
@@ -210,6 +199,9 @@ func TestAQueuedMaterializeHasItsWholeReadTimeoutOnceItHoldsTheSlot(t *testing.T
 			statuses[i], errs[i] = fixture.materialize(t, t.Context(), handle)
 		}()
 	}
+	waitForQueue(t, func() bool { return fixture.inFlight.Load() == int64(len(handles)) })
+	time.Sleep(timeout + timeout/4)
+	release()
 	wg.Wait()
 
 	for i, handle := range handles {
@@ -222,44 +214,53 @@ func TestAQueuedMaterializeHasItsWholeReadTimeoutOnceItHoldsTheSlot(t *testing.T
 	}
 }
 
-// A reader that goes away while it waits for the slot takes nothing with it:
-// it never held the slot, never spent its warrant, and the next read runs.
-func TestAMaterializeAbandonedInTheQueueDoesNotKeepTheSlot(t *testing.T) {
+// A reader that goes away while it waits for the slot gives up its place at
+// once -- its handler returns while the slot is still held by another -- and
+// takes nothing with it: no slot, no spent warrant, no materialization. A
+// waiter that kept its place past its client would show here as a request
+// still in flight, and later as a read nobody asked for.
+func TestAMaterializeAbandonedInTheQueueGivesUpItsPlace(t *testing.T) {
 	fixture := newReadQueue(t, 5*time.Second)
-	fixture.bucket.delay.Store(int64(500 * time.Millisecond))
+	release := fixture.holdSlot(t)
 
-	first := make(chan int, 1)
+	queued, abandon := context.WithCancel(t.Context())
+	abandoned := make(chan error, 1)
 	go func() {
-		status, _ := fixture.materialize(t, t.Context(), "consumer-a")
-		first <- status
+		_, err := fixture.materialize(t, queued, "consumer-b")
+		abandoned <- err
 	}()
-	// Wait until the first read holds the slot and is downloading.
-	deadline := time.Now().Add(5 * time.Second)
-	for fixture.bucket.downloads.Load() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the first read never reached the bucket")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	queued, abandon := context.WithTimeout(t.Context(), 100*time.Millisecond)
-	defer abandon()
-	if _, err := fixture.materialize(t, queued, "consumer-b"); err == nil {
+	waitForQueue(t, func() bool { return fixture.inFlight.Load() == 1 })
+	abandon()
+	if err := <-abandoned; err == nil {
 		t.Fatal("the abandoned request completed; it should have been waiting for the slot")
 	}
+	// The slot is still held: only the waiter's own giving up ends its handler.
+	waitForQueue(t, func() bool { return fixture.inFlight.Load() == 0 })
 
-	if status := <-first; status != http.StatusNoContent {
-		t.Fatalf("the first read answered %d", status)
-	}
-	fixture.bucket.delay.Store(0)
+	release()
 	status, err := fixture.materialize(t, t.Context(), "consumer-c")
 	if err != nil || status != http.StatusNoContent {
-		t.Fatalf("a read after the abandoned one answered %d, %v; the slot leaked", status, err)
+		t.Fatalf("a read after the abandoned one answered %d, %v", status, err)
 	}
 	if fixture.materialized("consumer-b") {
 		t.Error("the abandoned read materialized")
+	}
+	if _, spent := fixture.server.reads.spent.used[fixture.claimFor("consumer-b")]; spent {
+		t.Error("the abandoned read spent its warrant")
 	}
 	if held := len(fixture.server.spool); held != 0 {
 		t.Errorf("%d scratch slots held after every read ended", held)
 	}
 }
+
+func waitForQueue(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the read queue")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
