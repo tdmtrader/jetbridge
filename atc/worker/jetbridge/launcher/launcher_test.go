@@ -196,6 +196,35 @@ func TestTerminationMessageForAStartFailure(t *testing.T) {
 	}
 }
 
+// Once the envelope is served the web has recorded the command's start, so
+// a launcher that then cannot set the command up -- its stdin staged, its
+// stdout file opened -- says so in its record: the command did not run, and
+// an exact execution can be closed on that rather than left unresolved.
+func TestTerminationMessageForASetupFailureAfterTheEnvelope(t *testing.T) {
+	t.Run("stdin cannot be staged", func(t *testing.T) {
+		srv, _ := envelopeServer(t, "tok", "request\n")
+		t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "absent"))
+		code, _, stderr, termPath := runLauncher(t,
+			"--envelope-url", srv.URL, "--token-file", writeToken(t, "tok"), "--", "cat")
+		if code != 125 || !strings.Contains(stderr, "staging stdin") {
+			t.Fatalf("exit = %d, stderr %q; want 125 staging stdin", code, stderr)
+		}
+		if msg := readTermination(t, termPath); msg.Exit != 125 {
+			t.Fatalf("message = %+v, want exit 125", msg)
+		}
+	})
+	t.Run("the stdout file cannot be opened", func(t *testing.T) {
+		code, _, stderr, termPath := runLauncher(t,
+			"--stdout-file", filepath.Join(t.TempDir(), "absent", "stdout"), "--", "true")
+		if code != 125 || !strings.Contains(stderr, "opening stdout file") {
+			t.Fatalf("exit = %d, stderr %q; want 125 opening stdout file", code, stderr)
+		}
+		if msg := readTermination(t, termPath); msg.Exit != 125 {
+			t.Fatalf("message = %+v, want exit 125", msg)
+		}
+	})
+}
+
 func TestStdoutFile(t *testing.T) {
 	outPath := filepath.Join(t.TempDir(), "stdout")
 	if err := os.WriteFile(outPath, []byte("stale content that must be truncated"), 0o600); err != nil {

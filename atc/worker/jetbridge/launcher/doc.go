@@ -28,9 +28,10 @@
 // in the convention of docker run and the POSIX shells: 127 when the command
 // was not found, 126 when it could not be executed, 125 for everything else
 // (bad usage, envelope fetch failure, exec failure). A command that could
-// not be started still leaves the termination record, with that code (it
-// did not run); a failure before that point, such as bad usage or the
-// envelope fetch, leaves none. Any other code is the
+// not be started, or not set up once its envelope was served (stdin staged,
+// stdout file opened), still leaves the termination record, with that code
+// (it did not run); a failure before the envelope, such as bad usage, the
+// token or the fetch, leaves none. Any other code is the
 // step's.
 //
 // The binary is stdlib-only and built static (CGO_ENABLED=0) because it runs
