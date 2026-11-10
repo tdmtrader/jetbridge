@@ -39,7 +39,7 @@ const capturePredicate = "HasDurableOutputCapture"
 // would let a new capture path pass by being written next to an existing one,
 // which is exactly the edit this inventory exists to catch.
 var captureSites = map[string]string{
-	"container.go:buildPod": "the ADMISSION refusal. A worker whose output plane is not " +
+	"container.go:composePod": "the ADMISSION refusal. A worker whose output plane is not " +
 		"enabled builds no capture pod at all, and says so: durable output capture never " +
 		"degrades into an ordinary step, because a pod that ran and captured nothing would " +
 		"leave its pending capture row unresolved until its deadline",

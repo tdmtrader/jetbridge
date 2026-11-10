@@ -65,7 +65,12 @@ resource type's `privileged:`, and whether that is admitted is the privilege
 mode's. Under the `granted` privilege mode the step pod admission refuses, at
 creation, a pod with a privileged container or init container unless its step
 pod identity's grant declares `privileged=true`; the refusal names the owner
-and the grant it lacks, and no Pod or Job is made. A check holds no step pod grant,
+and the grant it lacks, and no Pod or Job is made. A build that can hold no
+grant (an instanced pipeline's job, another team's one-off, a Run, a build
+not found) is refused the same way, and a failed build lookup refuses any
+step. The pod's identity is resolved once, and each step runtime admits the
+pod it submits exactly once: the exec runtime's pod, or the finished step
+Job template. A check holds no step pod grant,
 so a privileged check is refused in that mode. Sidecars are never privileged.
 Reusing a live pod and resuming a step Job after a web restart do not
 re-admit privilege yet: a pod created before the mode changed keeps running.
@@ -77,7 +82,9 @@ default, admits privilege as the task or resource type asks, whatever step pod
 grants declare, so a deployment that already set `privileged=true` on a grant
 sees no change on upgrade; `granted` admits it only under a step pod grant
 that declares `privileged=true`. The mode is set explicitly, never inferred
-from a grant. `granted` with no privileged grant is legal: nothing runs
+from a grant; unset is `any`, as an unset step runtime is `exec`, and an
+unknown mode stops the web at startup (a worker handed one enforces it as
+`granted`). `granted` with no privileged grant is legal: nothing runs
 privileged.
 _Avoid_: privilege flag, strict mode
 

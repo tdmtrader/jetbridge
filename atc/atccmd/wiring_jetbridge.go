@@ -194,6 +194,9 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 	k8sCfg.CacheHostPath = cmd.Kubernetes.CacheHostPath
 	k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
 	k8sCfg.StepRuntime = cmd.Kubernetes.StepRuntime
+	if err := jetbridge.ValidateStepPrivilege(cmd.Kubernetes.StepPrivilege); err != nil {
+		return jetbridge.Config{}, fmt.Errorf("--kubernetes-step-privilege: %w", err)
+	}
 	k8sCfg.StepPrivilege = cmd.Kubernetes.StepPrivilege
 	k8sCfg.LauncherImage = cmd.Kubernetes.LauncherImage
 	k8sCfg.StepEnvelopeURL = cmd.Kubernetes.StepEnvelopeURL

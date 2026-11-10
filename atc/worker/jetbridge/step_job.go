@@ -105,10 +105,12 @@ func stepAnswerKey(handle string) string {
 }
 
 // buildStepJob composes the suspended Job for one step. The pod template is
-// buildPod's pod with the launcher in front of the command, the launcher init
+// composePod's pod with the launcher in front of the command, the launcher init
 // and its emptyDir, the projected token (when the step has an envelope), the
 // answer directory (for a resource command) and the declared sidecars as
-// native sidecars, which end when main does.
+// native sidecars, which end when main does. The finished template passes the
+// step pod admission once, under the allowance composePod resolved: it is the
+// job runtime's only admission.
 func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*batchv1.Job, error) {
 	if c.config.LauncherImage == "" {
 		return nil, errors.New("job step runtime: no launcher image configured")
@@ -130,7 +132,7 @@ func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*b
 	launcherArgs = append(launcherArgs, spec.Path)
 	launcherArgs = append(launcherArgs, spec.Args...)
 
-	pod, err := c.buildPod(spec, []string{filepath.Join(launcherMountPath, "jb-launcher")}, launcherArgs)
+	pod, allowance, err := c.composePod(spec, []string{filepath.Join(launcherMountPath, "jb-launcher")}, launcherArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -224,14 +226,10 @@ func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*b
 	if err := validatePodVolumeMounts(pod); err != nil {
 		return nil, err
 	}
-	// The answer directory is a host path under the step's own directory;
-	// the same admission every step pod passes checks it, privilege gate
-	// included.
-	allowance, err := c.privilegeAllowance()
-	if err != nil {
-		return nil, err
-	}
-	if err := admitStepPod(pod, stepPodRootsFor(c.config, c.handle, captureStepDirectory(c.containerSpec)), allowance); err != nil {
+	// The finished template is the job runtime's one admission: the answer
+	// directory's host path and the privilege gate, under the allowance
+	// composePod resolved with the identity, so the build is looked up once.
+	if err := admitStepPod(pod, c.stepPodRoots(), allowance); err != nil {
 		return nil, err
 	}
 

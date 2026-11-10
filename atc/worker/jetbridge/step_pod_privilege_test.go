@@ -2,6 +2,8 @@ package jetbridge_test
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -34,6 +36,7 @@ var _ = Describe("The privilege gate", func() {
 		clientset *fake.Clientset
 		config    jetbridge.Config
 		pipeline  db.Pipeline
+		mainTeam  db.Team
 	)
 
 	pipelineConfig := atc.Config{Jobs: atc.JobConfigs{
@@ -50,7 +53,7 @@ var _ = Describe("The privilege gate", func() {
 		Expect(err).NotTo(HaveOccurred())
 		clientset = fake.NewSimpleClientset()
 
-		mainTeam, err := database.TeamFactory.CreateTeam(atc.Team{Name: "main"})
+		mainTeam, err = database.TeamFactory.CreateTeam(atc.Team{Name: "main"})
 		Expect(err).NotTo(HaveOccurred())
 		pipeline, _, err = mainTeam.SavePipeline(atc.PipelineRef{Name: "jetbridge"}, pipelineConfig, db.ConfigVersion(0), false)
 		Expect(err).NotTo(HaveOccurred())
@@ -100,7 +103,7 @@ var _ = Describe("The privilege gate", func() {
 		stepRuntime := stepRuntime
 
 		Context("on a worker of the "+stepRuntime+" step runtime", func() {
-			newWorker := func(mode string) *jetbridge.Worker {
+			newWorkerWith := func(mode string, builds jetbridge.StepPodBuilds) *jetbridge.Worker {
 				config.StepPrivilege = mode
 				if stepRuntime == jetbridge.StepRuntimeJob {
 					config.StepRuntime = jetbridge.StepRuntimeJob
@@ -109,9 +112,12 @@ var _ = Describe("The privilege gate", func() {
 					config.ArtifactDaemonHostPath = "/var/concourse/artifacts"
 				}
 				return jetbridge.NewWorker(dbWorker, clientset, config, jetbridge.WorkerDeps{
-					StepPodBuilds: database.BuildFactory,
+					StepPodBuilds: builds,
 					StepEnvelopes: jetbridge.NewStepEnvelopes(),
 				})
+			}
+			newWorker := func(mode string) *jetbridge.Worker {
+				return newWorkerWith(mode, database.BuildFactory)
 			}
 
 			// run creates and starts one step's container and returns the pod
@@ -238,7 +244,75 @@ var _ = Describe("The privilege gate", func() {
 					Expect(sidecar.SecurityContext.AllowPrivilegeEscalation).NotTo(BeNil())
 					Expect(*sidecar.SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
 				})
+
+				// Every build that can hold no grant fails closed, and says why.
+				It("refuses an instanced pipeline's job, another team's one-off and a Run's build, though their names match a privileged grant", func() {
+					instanced, _, err := mainTeam.SavePipeline(atc.PipelineRef{Name: "jetbridge", InstanceVars: atc.InstanceVars{"branch": "feature"}}, pipelineConfig, db.ConfigVersion(0), false)
+					Expect(err).NotTo(HaveOccurred())
+					job, found, err := instanced.Job("dind")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					instancedBuild, err := job.CreateBuild("some-user")
+					Expect(err).NotTo(HaveOccurred())
+
+					other, err := database.TeamFactory.CreateTeam(atc.Team{Name: "other"})
+					Expect(err).NotTo(HaveOccurred())
+					otherOneOff, err := other.CreateOneOffBuild()
+					Expect(err).NotTo(HaveOccurred())
+
+					// A Run's build is the dind job's build as a Run pipeline's row
+					// reports it: the one field the owner rule reads differs.
+					runBuild := jobBuild("dind")
+					builds := runBuilds{StepPodBuilds: database.BuildFactory, runBuildID: runBuild.ID()}
+
+					worker := newWorkerWith(jetbridge.StepPrivilegeGranted, builds)
+					for handle, build := range map[string]db.Build{"instanced": instancedBuild, "other-one-off": otherOneOff, "run": runBuild} {
+						metadata := metadataFor(build, db.ContainerTypeTask)
+						metadata.PipelineName, metadata.JobName = "jetbridge", "dind"
+						_, err := run(worker, "ownerless-"+handle, metadata, privilegedSpec())
+						Expect(err).To(MatchError(ContainSubstring(fmt.Sprintf("Build %d has no step pod owner", build.ID()))), handle)
+						Expect(err).To(MatchError(ContainSubstring("must run unprivileged")), handle)
+					}
+				})
+
+				It("refuses a privileged step whose build is not found", func() {
+					worker := newWorker(jetbridge.StepPrivilegeGranted)
+					metadata := metadataFor(jobBuild("dind"), db.ContainerTypeTask)
+					metadata.BuildID = 987654321
+					_, err := run(worker, "missing-build", metadata, privilegedSpec())
+					Expect(err).To(MatchError(ContainSubstring("Build 987654321 was not found, so it holds no step pod grant")))
+				})
+
+				It("refuses any step, privileged or not, whose build lookup fails, creating nothing", func() {
+					worker := newWorkerWith(jetbridge.StepPrivilegeGranted, db.NewBuildFactory(closedJetbridgeCloneConn(), database.LockFactory, 0, time.Hour))
+					_, err := run(worker, "lookup-fails", metadataFor(jobBuild("dind"), db.ContainerTypeTask), privilegedSpec())
+					Expect(err).To(MatchError(ContainSubstring("resolve step pod identity")))
+					_, err = run(worker, "lookup-fails-plain", metadataFor(jobBuild("unit"), db.ContainerTypeTask), runtime.ContainerSpec{})
+					Expect(err).To(MatchError(ContainSubstring("resolve step pod identity")))
+				})
 			})
+
+			// An unknown mode reaching a worker (the web refuses one at startup)
+			// enforces, never opens.
+			It("enforces grants under an unknown privilege mode", func() {
+				worker := newWorker("strict")
+				_, err := run(worker, "unknown-mode", metadataFor(jobBuild("unit"), db.ContainerTypeTask), privilegedSpec())
+				Expect(err).To(MatchError(ContainSubstring("Owner main/jetbridge/unit has no step pod grant")))
+			})
+
+			// The identity is resolved once per pod, on both runtimes and in both
+			// modes: the job runtime's single admission reuses it.
+			DescribeTable("looks a step's build up exactly once",
+				func(mode string) {
+					builds := &countingBuilds{StepPodBuilds: database.BuildFactory}
+					worker := newWorkerWith(mode, builds)
+					_, err := run(worker, "counted-"+mode, metadataFor(jobBuild("dind"), db.ContainerTypeTask), privilegedSpec())
+					Expect(err).NotTo(HaveOccurred())
+					Expect(builds.calls).To(Equal(1))
+				},
+				Entry("under any", jetbridge.StepPrivilegeAny),
+				Entry("under granted", jetbridge.StepPrivilegeGranted),
+			)
 
 			// The upgrade-safety spec: a deployment that set privileged: true on
 			// a grant, and never chose granted, sees exactly what it saw before
@@ -266,3 +340,32 @@ var _ = Describe("The privilege gate", func() {
 		})
 	}
 })
+
+// countingBuilds counts the build lookups a worker makes.
+type countingBuilds struct {
+	jetbridge.StepPodBuilds
+	calls int
+}
+
+func (b *countingBuilds) Build(id int) (db.Build, bool, error) {
+	b.calls++
+	return b.StepPodBuilds.Build(id)
+}
+
+// runBuilds reports one build as a Run pipeline's.
+type runBuilds struct {
+	jetbridge.StepPodBuilds
+	runBuildID int
+}
+
+func (b runBuilds) Build(id int) (db.Build, bool, error) {
+	build, found, err := b.StepPodBuilds.Build(id)
+	if err != nil || !found || id != b.runBuildID {
+		return build, found, err
+	}
+	return runPipelineBuild{build}, true, nil
+}
+
+type runPipelineBuild struct{ db.Build }
+
+func (runPipelineBuild) PipelineRunID() (int, bool) { return 7, true }

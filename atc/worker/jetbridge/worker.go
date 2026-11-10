@@ -111,7 +111,7 @@ func NewWorker(dbWorker db.Worker, clientset kubernetes.Interface, config Config
 			grants:         config.StepPodGrants,
 			builds:         deps.StepPodBuilds,
 			defaultAccount: config.ServiceAccount,
-			gated:          config.StepPrivilege == StepPrivilegeGranted,
+			gated:          stepPrivilegeEnforced(config.StepPrivilege),
 		},
 	}
 }
