@@ -6,10 +6,13 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	"github.com/concourse/concourse/hangar/executioncontrol"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -202,6 +206,166 @@ func TestLiveJobRuntimeResourceCommand(t *testing.T) {
 	}
 	if want := `[{"request":` + second + `}]`; stdout.String() != want {
 		t.Errorf("second answer = %q, want %q: the old Job's pod was followed", stdout.String(), want)
+	}
+}
+
+// exactTaskPreparer admits every container as one exact execution, the way a
+// Run's ExecutionStarter does, and keeps the Run witnesses it is handed.
+type exactTaskPreparer struct {
+	control   *runtime.ExecutionControl
+	mu        sync.Mutex
+	witnesses []executioncontrol.Acknowledgement
+}
+
+func (p *exactTaskPreparer) PrepareInputs(_ context.Context, _ db.ContainerOwner, _ string, _ []string, spec runtime.ContainerSpec) (runtime.ContainerSpec, error) {
+	return spec, nil
+}
+
+func (p *exactTaskPreparer) PrepareContainer(_ context.Context, _ db.ContainerOwner, _ db.ContainerMetadata, spec runtime.ContainerSpec) (runtime.ContainerSpec, error) {
+	spec.ExecutionControl = p.control
+	return spec, p.control.Validate(spec)
+}
+
+func (p *exactTaskPreparer) CheckStart(context.Context, db.ContainerOwner, runtime.ContainerSpec) error {
+	return nil
+}
+
+func (p *exactTaskPreparer) CheckIntercept(context.Context, string) error { return nil }
+
+func (p *exactTaskPreparer) RecordWitness(_ context.Context, _ db.ContainerOwner, witness executioncontrol.Acknowledgement) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.witnesses = append(p.witnesses, witness)
+	return nil
+}
+
+func (p *exactTaskPreparer) RelocateContainer(context.Context, db.ContainerOwner, runtime.ContainerSpec, []string) (runtime.ContainerSpec, error) {
+	return runtime.ContainerSpec{}, errors.New("not relocated in this test")
+}
+
+func (p *exactTaskPreparer) recorded() []executioncontrol.Acknowledgement {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]executioncontrol.Acknowledgement(nil), p.witnesses...)
+}
+
+// TestLiveJobRuntimeExactTask runs a Run-owned exact task as a step Job on a
+// real kubelet, routed there by the test gate: the start is recorded when the
+// launcher fetches its envelope, before the command runs, and main's
+// terminated status closes the execution at the node and in the Run. The
+// ledgers are this process's own daemons, one per node (the deployed
+// daemons' control plane takes only the web's certificate).
+func TestLiveJobRuntimeExactTask(t *testing.T) {
+	ip := ownPodIP(t)
+	envelopes := jetbridge.NewStepEnvelopes()
+	clientset, _ := kubeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	controls, err := jetbridge.StartLiveNodeOutputControls(ctx, clientset)
+	if err != nil {
+		t.Fatalf("starting the node ledgers: %v", err)
+	}
+	t.Cleanup(controls.Stop)
+
+	listener, err := net.Listen("tcp", net.JoinHostPort(ip, "0"))
+	if err != nil {
+		t.Fatalf("listening for envelope requests: %v", err)
+	}
+	server := &http.Server{Handler: &jetbridge.StepEnvelopeHandler{
+		Logger: lagertest.NewTestLogger("envelope"), Clientset: clientset, Namespace: liveTestNamespace(), Envelopes: envelopes,
+	}}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+	envelopeURL := "http://" + listener.Addr().String() + jetbridge.StepEnvelopePath
+
+	identity := executioncontrol.Identity{
+		ExecutionID: executioncontrol.ExecutionID(fmt.Sprintf("%08x-cccc-4ccc-8ccc-%012x", os.Getpid(), time.Now().UnixNano()&0xffffffffffff)),
+		Fence:       1,
+	}
+	preparer := &exactTaskPreparer{control: &runtime.ExecutionControl{
+		Version:    runtime.ExecutionControlVersion,
+		Phase:      runtime.ControlPhaseAdmitted,
+		Identity:   identity,
+		Endpoint:   controls.Endpoint(),
+		Capability: "base-capability",
+	}}
+	worker, _, _, _ := newLiveWorker(t, nil, nil, func(cfg *jetbridge.Config, deps *jetbridge.WorkerDeps) {
+		cfg.StepRuntime = jetbridge.StepRuntimeJob
+		cfg.LauncherImage = deployed.webContainer.Image
+		cfg.StepEnvelopeURL = envelopeURL
+		cfg.ExactTasksOnJobRuntimeForTesting = true
+		deps.StepEnvelopes = envelopes
+		deps.OutputControls = controls
+		deps.ExecutionPreparer = preparer
+	})
+	namespace := liveTestNamespace()
+
+	handle := "live-job-exact-" + time.Now().Format("150405")
+	metadata := db.ContainerMetadata{Type: db.ContainerTypeTask, StepName: "job-exact"}
+	container, _, err := worker.FindOrCreateContainer(ctx, db.NewFixedHandleContainerOwner(handle), metadata,
+		runtime.ContainerSpec{TeamID: 1, Type: db.ContainerTypeTask, ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"}}, nil)
+	if err != nil {
+		t.Fatalf("FindOrCreateContainer: %v", err)
+	}
+	jobName := jetbridge.GeneratePodName(metadata, handle)
+	t.Cleanup(func() { cleanupStepJob(t, clientset, namespace, jobName) })
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	process, err := container.Run(ctx, runtime.ProcessSpec{
+		Path: "/bin/sh", Args: []string{"-c", "echo exact-from-the-launcher; exit 7"},
+	}, runtime.ProcessIO{Stdout: stdout, Stderr: stderr})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	result, err := process.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v (stderr: %s)", err, stderr.String())
+	}
+	if result.ExitStatus != 7 {
+		t.Errorf("exit = %d, want 7 from the main container's terminated status", result.ExitStatus)
+	}
+	if !strings.Contains(stdout.String(), "exact-from-the-launcher") {
+		t.Errorf("stdout = %q: the pod's log did not reach the step", stdout.String())
+	}
+
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "batch.kubernetes.io/job-name=" + jobName})
+	if err != nil || len(pods.Items) != 1 {
+		t.Fatalf("the Job owns %d pods (%v), want 1", len(pods.Items), err)
+	}
+	pod := pods.Items[0]
+	job, err := clientset.BatchV1().Jobs(namespace).Get(ctx, jobName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("the step's Job is not there: %v", err)
+	}
+
+	witnesses := preparer.recorded()
+	if len(witnesses) != 2 || witnesses[0].Kind != executioncontrol.AcknowledgementStart || witnesses[1].Kind != executioncontrol.AcknowledgementFinish {
+		t.Fatalf("Run witnesses = %+v, want a start and a finish", witnesses)
+	}
+	start := witnesses[0]
+	if start.PodUID != executioncontrol.PodUID(pod.UID) {
+		t.Errorf("the start names pod %s, not the Job's pod %s", start.PodUID, pod.UID)
+	}
+	if want := executioncontrol.ProcessIdentity("job-v1:" + string(job.UID)); start.ProcessIdentity != want {
+		t.Errorf("the start's process identity = %q, want %q", start.ProcessIdentity, want)
+	}
+	if witnesses[1].Outcome == nil || witnesses[1].Outcome.ExitCode != 7 {
+		t.Errorf("the finish witness = %+v, want exit 7", witnesses[1])
+	}
+	ledger, err := controls.ForNode(ctx, pod.Spec.NodeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := ledger.Classify(ctx, identity)
+	if err != nil {
+		t.Fatalf("classifying at the node: %v", err)
+	}
+	if !closed.Classification.Authoritative() || closed.Acknowledgement == nil || closed.Acknowledgement.Outcome == nil || closed.Acknowledgement.Outcome.ExitCode != 7 {
+		t.Errorf("the node classifies the execution %s (%+v), want it closed with exit 7", closed.Classification, closed.Acknowledgement)
+	}
+	if pod.Annotations["concourse.ci/exit-status"] != "7" {
+		t.Errorf("pod annotations %v lack the exit status", pod.Annotations)
 	}
 }
 
