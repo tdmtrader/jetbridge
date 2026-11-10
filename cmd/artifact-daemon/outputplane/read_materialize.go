@@ -34,9 +34,7 @@ func (server *Server) readMaterialize(w http.ResponseWriter, request *http.Reque
 		readRefusal(w, output.ErrUnauthorized)
 		return
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), server.reads.timeout)
-	defer cancel()
-	release, err := server.spooling(ctx)
+	ctx, release, err := server.readSlot(request.Context(), warrant)
 	if err != nil {
 		readRefusal(w, err)
 		return
