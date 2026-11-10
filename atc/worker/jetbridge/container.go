@@ -514,19 +514,23 @@ func (c *Container) createPausePod(ctx context.Context, processSpec runtime.Proc
 	return c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 }
 
-// buildPod constructs a Pod spec with the given command and args. All other
+// composePod constructs a Pod spec with the given command and args. All other
 // fields (image, env, volumes, security, etc.) are derived from the
-// Container's spec and config.
-func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, args []string) (*corev1.Pod, error) {
+// Container's spec and config. It resolves the pod's step pod identity once
+// and hands back the privilege allowance derived from it, for the one
+// admission the pod passes once it is complete: buildPod's for the exec
+// runtime, buildStepJob's for the job runtime. Nothing composePod returns
+// has been admitted.
+func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string, args []string) (*corev1.Pod, privilegeAllowance, error) {
 	if err := c.validateInputs(); err != nil {
-		return nil, err
+		return nil, privilegeAllowance{}, err
 	}
 	// The envelope is validated against the SPEC, before any container is
 	// composed: an undeclared output, an output overlapping a Run input or
 	// a capture riding the base capability must be a refusal rather than a pod
 	// that comes back and then cannot be held.
 	if err := c.containerSpec.ExecutionControl.Validate(c.containerSpec); err != nil {
-		return nil, err
+		return nil, privilegeAllowance{}, err
 	}
 	// And the worker's own switch, which the envelope cannot carry: a spec may
 	// be admitted with a capture by a control plane that believes the plane is
@@ -539,7 +543,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	// deadline. The honest answer is that no capture pod is built.
 	if c.containerSpec.ExecutionControl.HasDurableOutputCapture() {
 		if !c.config.OutputPlaneEnabled {
-			return nil, fmt.Errorf("%w: this step selected durable output capture and this "+
+			return nil, privilegeAllowance{}, fmt.Errorf("%w: this step selected durable output capture and this "+
 				"worker's output plane is not enabled, so no capture pod is built. Durable "+
 				"output capture never degrades into an ordinary step: a pod that ran and "+
 				"captured nothing would leave its capture row pending until its "+
@@ -553,7 +557,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		if typeName == "" {
 			typeName = "(unknown)"
 		}
-		return nil, fmt.Errorf(
+		return nil, privilegeAllowance{}, fmt.Errorf(
 			"empty image for resource type %q: configure --resource-type-image %s=<image>",
 			typeName, typeName,
 		)
@@ -611,7 +615,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	// init container to remove stale hostPath data before anything else runs.
 	cleanup, err := c.buildCleanupInitContainer()
 	if err != nil {
-		return nil, err
+		return nil, privilegeAllowance{}, err
 	}
 	if cleanup != nil {
 		initContainers = append(initContainers, *cleanup)
@@ -619,7 +623,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	artifactInits, err := c.buildArtifactInitContainers(volumes, volumeMounts)
 	if err != nil {
-		return nil, fmt.Errorf("build artifact init containers: %w", err)
+		return nil, privilegeAllowance{}, fmt.Errorf("build artifact init containers: %w", err)
 	}
 	initContainers = append(initContainers, artifactInits...)
 
@@ -650,7 +654,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	// no path to a pod can skip it.
 	identity, err := c.identities.resolve(c.metadata)
 	if err != nil {
-		return nil, err
+		return nil, privilegeAllowance{}, err
 	}
 
 	pod := &corev1.Pod{
@@ -679,12 +683,25 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		},
 	}
 	if err := validatePodVolumeMounts(pod); err != nil {
+		return nil, privilegeAllowance{}, err
+	}
+	return pod, c.privilegeAllowanceFor(identity), nil
+}
+
+// buildPod is composePod admitted: the exec runtime's pod, as it is created.
+func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, args []string) (*corev1.Pod, error) {
+	pod, allowance, err := c.composePod(processSpec, command, args)
+	if err != nil {
 		return nil, err
 	}
-	if err := admitStepPod(pod, stepPodRootsFor(c.config, c.handle, captureStepDirectory(c.containerSpec)), c.privilegeAllowanceFor(identity)); err != nil {
+	if err := admitStepPod(pod, c.stepPodRoots(), allowance); err != nil {
 		return nil, err
 	}
 	return pod, nil
+}
+
+func (c *Container) stepPodRoots() stepPodRoots {
+	return stepPodRootsFor(c.config, c.handle, captureStepDirectory(c.containerSpec))
 }
 
 func strictlyWithin(parent, child string) bool {

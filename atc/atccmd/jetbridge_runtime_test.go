@@ -393,6 +393,14 @@ func TestTheStepPrivilegeModeIsAnyUnlessGrantedIsChosen(t *testing.T) {
 		t.Fatalf("an unknown privilege mode was not refused as an invalid choice: %v", err)
 	}
 
+	// A mode set past the parser (a config built in code, an env value the
+	// choice list did not see) is refused when the runtime is assembled.
+	unknown := jetbridgeCommand(t)
+	unknown.Kubernetes.StepPrivilege = "strict"
+	if _, err := unknown.jetbridgeConfig(); err == nil || !strings.Contains(err.Error(), `--kubernetes-step-privilege: unknown step privilege mode "strict"`) {
+		t.Fatalf("an unknown privilege mode was assembled: %v", err)
+	}
+
 	for _, mode := range []string{jetbridge.StepPrivilegeAny, jetbridge.StepPrivilegeGranted} {
 		cmd := jetbridgeCommand(t)
 		cmd.Kubernetes.StepPrivilege = mode
