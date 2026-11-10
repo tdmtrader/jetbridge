@@ -396,8 +396,11 @@ fails the same way, and a failed build lookup fails any step. A check is
 owned by the resource type whose image it runs: a privileged check is admitted
 only under a grant whose owner is `<team>/<pipeline>/resource-type/<type>`,
 with `privileged: true` and no `serviceAccount` (a type built on a privileged
-type needs the privileged type's grant). A check of a base type, of an
-instanced or Run pipeline, or in a one-off build is refused. An unknown mode
+type needs the privileged type's grant; the type must be a lowercase
+identifier). A check of a base type, of an instanced or Run pipeline, or in a
+one-off build is refused. A grant binds a team and a pipeline *name*, as a job
+grant does: whoever may set the pipeline of that name, including re-creating
+it after it is destroyed while the grant remains, gets the grant. An unknown mode
 stops the web at startup. To opt in:
 
 1. Run `hack/step-pod-audit pods` against the cluster (it is read-only). Each
