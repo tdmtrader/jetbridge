@@ -583,7 +583,13 @@ func (c *Container) runAsJob(ctx context.Context, spec runtime.ProcessSpec, pio 
 		}
 		stdin = read
 	}
-	hasEnvelope := pio.Stdin != nil
+	// An exact task fetches an envelope even with no stdin: the fetch is its
+	// start gate (exact_job_process.go).
+	exact, err := c.newExactJobExecution(ctx, processID, spec, pio)
+	if err != nil {
+		return nil, err
+	}
+	hasEnvelope := pio.Stdin != nil || exact != nil
 	if hasEnvelope && c.envelopes == nil {
 		return nil, errors.New("job step runtime: no step envelope store; this worker cannot run a command that reads stdin")
 	}
@@ -592,7 +598,7 @@ func (c *Container) runAsJob(ctx context.Context, spec runtime.ProcessSpec, pio 
 		return nil, err
 	}
 	if hasEnvelope {
-		c.envelopes.Register(c.podName, StepEnvelope{Stdin: stdin})
+		c.envelopes.RegisterWithStartGate(c.podName, StepEnvelope{Stdin: stdin}, exact.startGate())
 	}
 	created, err := c.createStepJob(ctx, job)
 	if err != nil {
@@ -607,13 +613,15 @@ func (c *Container) runAsJob(ctx context.Context, spec runtime.ProcessSpec, pio 
 		// that command's. A later web resuming the step registers the same
 		// envelope again, which is what a pod that has not fetched yet needs.
 		c.envelopes.Forget(c.podName)
-		c.envelopes.Register(c.podName, StepEnvelope{Stdin: stdin})
+		c.envelopes.RegisterWithStartGate(c.podName, StepEnvelope{Stdin: stdin}, exact.startGate())
 	}
 	metric.Metrics.ContainersCreated.Inc()
 	// The deferred volumes' exec destination is vestigial here: nothing
 	// streams through exec under the job runtime.
 	c.bindVolumesToPod(c.podName)
-	return newJobProcess(processID, c, pio), nil
+	process := newJobProcess(processID, c, pio)
+	process.exact = exact
+	return process, nil
 }
 
 // attachJob resumes a step Job after a web restart. A finished step is
@@ -635,6 +643,12 @@ func (c *Container) attachJob(ctx context.Context, processID string) (runtime.Pr
 			c.forgetEnvelope()
 			return &exitedProcess{id: processID, result: runtime.ProcessResult{ExitStatus: status}}, nil
 		}
+	}
+	// An exact task's exit is its result only once the ledger holds it, and
+	// the annotation above is written only then. Recovering it from the pod
+	// is not done yet (exact_job_process.go).
+	if c.exactTaskOnJobRuntime() {
+		return nil, fmt.Errorf("attach: exact step job %q has no acknowledged outcome to report", c.podName)
 	}
 	if exit, done := podExitCode(pod); done {
 		c.SetProperty(exitStatusPropertyName, strconv.Itoa(exit))

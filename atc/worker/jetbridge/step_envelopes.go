@@ -38,6 +38,10 @@ type StepEnvelopes struct {
 type registeredEnvelope struct {
 	envelope StepEnvelope
 	takenBy  string
+	// startGate, when set, runs before the envelope is served and must
+	// succeed first: an exact execution records its start there
+	// (exact_job_process.go).
+	startGate func(context.Context, *corev1.Pod) error
 }
 
 func NewStepEnvelopes() *StepEnvelopes {
@@ -46,9 +50,15 @@ func NewStepEnvelopes() *StepEnvelopes {
 
 // Register records a step Job's envelope, replacing any earlier one.
 func (s *StepEnvelopes) Register(jobName string, envelope StepEnvelope) {
+	s.RegisterWithStartGate(jobName, envelope, nil)
+}
+
+// RegisterWithStartGate is Register with a gate Serve runs before it hands
+// the envelope over; a nil gate is Register.
+func (s *StepEnvelopes) RegisterWithStartGate(jobName string, envelope StepEnvelope, gate func(context.Context, *corev1.Pod) error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.envelopes[jobName] = &registeredEnvelope{envelope: envelope}
+	s.envelopes[jobName] = &registeredEnvelope{envelope: envelope, startGate: gate}
 }
 
 // Forget drops a step Job's envelope once the step is over.
@@ -78,6 +88,32 @@ func (s *StepEnvelopes) Take(jobName, podUID string) (StepEnvelope, error) {
 	}
 	registered.takenBy = podUID
 	return registered.envelope, nil
+}
+
+// Serve is Take for the pod the launcher's token is bound to, with the
+// envelope's start gate run first. A pod another pod's take shuts out is
+// refused before the gate; the gate's refusal leaves the envelope untaken.
+func (s *StepEnvelopes) Serve(ctx context.Context, jobName string, pod *corev1.Pod) (StepEnvelope, error) {
+	s.mu.Lock()
+	registered, ok := s.envelopes[jobName]
+	var gate func(context.Context, *corev1.Pod) error
+	if ok {
+		if registered.takenBy != "" && registered.takenBy != string(pod.UID) {
+			s.mu.Unlock()
+			return StepEnvelope{}, errEnvelopeTaken
+		}
+		gate = registered.startGate
+	}
+	s.mu.Unlock()
+	if !ok {
+		return StepEnvelope{}, errEnvelopeUnknown
+	}
+	if gate != nil {
+		if err := gate(ctx, pod); err != nil {
+			return StepEnvelope{}, err
+		}
+	}
+	return s.Take(jobName, string(pod.UID))
 }
 
 // StepEnvelopeHandler serves POST <StepEnvelopeURL>. The caller is a step
@@ -132,13 +168,17 @@ func (h *StepEnvelopeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
-	envelope, err := h.Envelopes.Take(job, string(pod.UID))
+	envelope, err := h.Envelopes.Serve(ctx, job, pod)
 	switch {
 	case errors.Is(err, errEnvelopeUnknown):
 		// The web that registered it is gone, or the step has not been
 		// resumed yet. The launcher retries until its own deadline.
 		h.Logger.Info("step-envelope-not-registered", lager.Data{"job": job, "pod": pod.Name})
 		http.Error(w, "step envelope not registered yet", http.StatusServiceUnavailable)
+		return
+	case errors.Is(err, ErrStepEnvelopeNotReady):
+		h.Logger.Info("step-envelope-not-ready", lager.Data{"job": job, "pod": pod.Name, "reason": err.Error()})
+		http.Error(w, "step envelope not ready yet", http.StatusServiceUnavailable)
 		return
 	case err != nil:
 		h.Logger.Error("step-envelope-refused", err, lager.Data{"job": job, "pod": pod.Name})

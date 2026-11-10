@@ -38,6 +38,9 @@ type jobProcess struct {
 	// answer is set for a resource command, whose stdout the launcher wrote
 	// to the step's answer directory rather than to the container log.
 	answer bool
+	// exact is an exact task's control state (exact_job_process.go); nil
+	// for every other step.
+	exact *exactJobExecution
 }
 
 func newJobProcess(id string, container *Container, pio runtime.ProcessIO) *jobProcess {
@@ -87,6 +90,13 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		if finished {
 			return
 		}
+		// An exact task whose start the ledger holds and whose outcome it
+		// does not keeps its Job: the pod is the only witness of how the
+		// command ended, and nothing yet stops or recovers it.
+		if p.exact.recordedStart() {
+			logger.Info("keeping-started-exact-step-job")
+			return
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := deleteStepJob(cleanupCtx, p.clientset, p.config.Namespace, p.jobName, ""); err != nil {
@@ -101,6 +111,9 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	}
 	podName := pod.Name
 	logger = logger.WithData(lager.Data{"pod": podName})
+	if p.exact != nil {
+		p.exact.admit(ctx, podName)
+	}
 
 	sidecarWriters, err := p.sidecarLogWriters()
 	if err != nil {
@@ -148,6 +161,14 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	if !mainStreamed && logWriter != nil {
 		if err := readContainerLogs(ctx, p.clientset, p.config.Namespace, podName, mainContainerName, logWriter); err != nil && p.processIO.Stderr != nil {
 			fmt.Fprintf(p.processIO.Stderr, "\nwarning: the command's log could not be read: %v\n", err)
+		}
+	}
+
+	// An exact task's exit is exposed only once the node holds it.
+	if p.exact != nil {
+		if err := p.exact.finish(ctx, podName, state.result.ExitStatus); err != nil {
+			spanErr = err
+			return runtime.ProcessResult{}, err
 		}
 	}
 
