@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,7 @@ import (
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
@@ -60,6 +62,11 @@ func (log *eventLog) all() []string {
 type orderedOutputControl struct {
 	OutputControl
 	log *eventLog
+
+	mu sync.Mutex
+	// loseStartAnswers is how many starts the node commits whose answer
+	// never reaches the web, as a connection cut after the write does.
+	loseStartAnswers int
 }
 
 func (ordered *orderedOutputControl) RecordStart(ctx context.Context, id executioncontrol.Identity,
@@ -67,8 +74,24 @@ func (ordered *orderedOutputControl) RecordStart(ctx context.Context, id executi
 	ack, err := ordered.OutputControl.RecordStart(ctx, id, pod, process)
 	if err == nil {
 		ordered.log.add("node-start")
+		ordered.mu.Lock()
+		defer ordered.mu.Unlock()
+		if ordered.loseStartAnswers > 0 {
+			ordered.loseStartAnswers--
+			return executioncontrol.Acknowledgement{}, errors.New("connection reset by peer")
+		}
 	}
 	return ack, err
+}
+
+func (log *eventLog) count(event string) int {
+	n := 0
+	for _, e := range log.all() {
+		if e == event {
+			n++
+		}
+	}
+	return n
 }
 
 func (ordered *orderedOutputControl) RecordOutcome(ctx context.Context, id executioncontrol.Identity,
@@ -102,11 +125,14 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		container *Container
 		handler   *StepEnvelopeHandler
 		events    *eventLog
+		ordered   *orderedOutputControl
 		witnesses []executioncontrol.Acknowledgement
 		witnessMu sync.Mutex
-		ctx       context.Context
-		jobName   string
-		mainPod   string
+		// failStartWitnesses is how many start witnesses the Run refuses.
+		failStartWitnesses int
+		ctx                context.Context
+		jobName            string
+		mainPod            string
 	)
 
 	executionID := executioncontrol.ExecutionID(fmt.Sprintf("%08x-bbbb-4bbb-8bbb-bbbbbbbbbbbb", os.Getpid()))
@@ -163,21 +189,37 @@ var _ = Describe("An exact task on the job step runtime", func() {
 
 	// start runs the task and has Wait follow it, returning once the node
 	// has admitted the execution against the Job's pod.
-	start := func() <-chan waited {
+	run := func() *jobProcess {
 		process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "exit 3"}},
 			runtime.ProcessIO{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
 		Expect(err).ToNot(HaveOccurred())
+		return process.(*jobProcess)
+	}
+	startWith := func(waitCtx context.Context) (*jobProcess, <-chan waited) {
+		process := run()
 		done := make(chan waited, 1)
 		go func() {
 			defer GinkgoRecover()
-			result, err := process.Wait(ctx)
+			result, err := process.Wait(waitCtx)
 			done <- waited{result, err}
 		}()
 		Eventually(func() error {
 			_, err := harness.Client.Classify(ctx, identity)
 			return err
 		}, 10*time.Second, 50*time.Millisecond).Should(Succeed(), "the execution was never admitted")
+		return process, done
+	}
+	start := func() <-chan waited {
+		_, done := startWith(ctx)
 		return done
+	}
+	jobExists := func() bool {
+		_, err := clientset.BatchV1().Jobs("test-ns").Get(ctx, jobName, metav1.GetOptions{})
+		if err != nil {
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "reading the Job: %v", err)
+			return false
+		}
+		return true
 	}
 
 	BeforeEach(func() {
@@ -192,6 +234,7 @@ var _ = Describe("An exact task on the job step runtime", func() {
 
 		events = &eventLog{}
 		witnesses = nil
+		failStartWitnesses = 0
 
 		clientset = fake.NewSimpleClientset(&corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{Name: "node-1", UID: types.UID(harnessNodeUID)},
@@ -213,9 +256,15 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			},
 		}, nil, clientset, config, "worker", nil, nil, nil, stepPodIdentities{}, false, false)
 		container.envelopes = NewStepEnvelopes()
-		container.outputControls = staticOutputControls{control: &orderedOutputControl{OutputControl: harness.Client, log: events}}
+		ordered = &orderedOutputControl{OutputControl: harness.Client, log: events}
+		container.outputControls = staticOutputControls{control: ordered}
 		container.recordWitness = func(_ context.Context, witness executioncontrol.Acknowledgement) error {
 			witnessMu.Lock()
+			if witness.Kind == executioncontrol.AcknowledgementStart && failStartWitnesses > 0 {
+				failStartWitnesses--
+				witnessMu.Unlock()
+				return errors.New("the Run's database is unreachable")
+			}
 			witnesses = append(witnesses, witness)
 			witnessMu.Unlock()
 			events.add("run-witness-" + string(witness.Kind))
@@ -224,9 +273,11 @@ var _ = Describe("An exact task on the job step runtime", func() {
 
 		jobName = container.podName
 		mainPod = jobName + "-abcde"
-		// The Job controller gives the Job one running pod on node-1. A
-		// second pod that also names the Job as its owner stands for an
-		// earlier Job's pod the garbage collector has not taken.
+		// The Job controller gives the Job one running pod on node-1. Two
+		// more pods name the Job as their owner: one owned by this very Job
+		// (a second pod of it, which backoffLimit 0 should never make), and
+		// one owned by an earlier Job of the same name that the garbage
+		// collector has not taken.
 		jobControllerDouble(clientset, func(job *batchv1.Job) *corev1.Pod {
 			return &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: mainPod, UID: types.UID("uid-" + mainPod)},
@@ -236,11 +287,14 @@ var _ = Describe("An exact task on the job step runtime", func() {
 				}}},
 			}
 		})
-		other := stepJobPod(jobName+"-other", jobName)
-		other.Spec.NodeName = "node-1"
-		_, err = clientset.CoreV1().Pods("test-ns").Create(ctx, other, metav1.CreateOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		tokenReviewDouble(clientset, map[string]string{"tok-main": mainPod, "tok-other": jobName + "-other"})
+		for name, owner := range map[string]types.UID{jobName + "-other": types.UID("uid-" + jobName), jobName + "-stale": "uid-an-earlier-job"} {
+			pod := stepJobPod(name, jobName)
+			pod.Spec.NodeName = "node-1"
+			pod.OwnerReferences[0].UID = owner
+			_, err = clientset.CoreV1().Pods("test-ns").Create(ctx, pod, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+		}
+		tokenReviewDouble(clientset, map[string]string{"tok-main": mainPod, "tok-other": jobName + "-other", "tok-stale": jobName + "-stale"})
 		handler = &StepEnvelopeHandler{Logger: lagertest.NewTestLogger("envelope"), Clientset: clientset, Namespace: "test-ns", Envelopes: container.envelopes}
 	})
 
@@ -274,9 +328,9 @@ var _ = Describe("An exact task on the job step runtime", func() {
 
 		Expect(second.Classification).To(Equal(executioncontrol.ClassificationExecuting))
 		Expect(second.Acknowledgement).To(Equal(first.Acknowledgement), "the node's start changed on the retry")
-		starts := recorded()
-		Expect(starts).To(HaveLen(2))
-		Expect(starts[1]).To(Equal(starts[0]), "the retry's start is not the ledger's replay of the first")
+		Expect(events.count("node-start")).To(Equal(1), "the retry recorded a second start")
+		Expect(recorded()).To(HaveLen(1))
+		Expect(events.count("envelope-served")).To(Equal(2))
 
 		terminate(0, launcherRecord(0))
 		var finished waited
@@ -284,22 +338,192 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		Expect(finished.err).ToNot(HaveOccurred())
 	})
 
-	It("refuses a second pod of the execution and records nothing for it", func() {
+	It("serves two concurrent requests by the same pod on one start", func() {
 		done := start()
-		Expect(fetch("tok-other")).To(Equal(http.StatusConflict))
-		Expect(classify().Classification).To(Equal(executioncontrol.ClassificationNeverStarted))
-		Expect(events.all()).To(BeEmpty())
-		Expect(recorded()).To(BeEmpty())
+		codes := make(chan int, 2)
+		var ready sync.WaitGroup
+		ready.Add(2)
+		for range 2 {
+			go func() {
+				defer GinkgoRecover()
+				ready.Done()
+				ready.Wait()
+				codes <- fetch("tok-main")
+			}()
+		}
+		Expect(<-codes).To(Equal(http.StatusOK))
+		Expect(<-codes).To(Equal(http.StatusOK))
+		Expect(events.count("node-start")).To(Equal(1), "two requests recorded two starts")
+		Expect(recorded()).To(HaveLen(1))
 
-		// The refusal did not take the envelope from the admitted pod.
+		terminate(0, launcherRecord(0))
+		var finished waited
+		Eventually(done, 15*time.Second).Should(Receive(&finished))
+		Expect(finished.err).ToNot(HaveOccurred())
+	})
+
+	It("serves a start whose answer the web lost as the ledger's replay of it", func() {
+		done := start()
+		ordered.mu.Lock()
+		ordered.loseStartAnswers = 1
+		ordered.mu.Unlock()
+		Expect(fetch("tok-main")).To(Equal(http.StatusServiceUnavailable))
+		Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
+		Expect(events.all()).To(Equal([]string{"node-start"}), "the envelope was served on a start the web never saw")
+		first := classify().Acknowledgement
+
 		Expect(fetch("tok-main")).To(Equal(http.StatusOK))
-		Expect(fetch("tok-other")).To(Equal(http.StatusConflict))
+		Expect(classify().Acknowledgement).To(Equal(first), "the retry was not the ledger's replay")
+		Expect(recorded()).To(HaveLen(1))
+
+		terminate(0, launcherRecord(0))
+		var finished waited
+		Eventually(done, 15*time.Second).Should(Receive(&finished))
+		Expect(finished.err).ToNot(HaveOccurred())
+	})
+
+	DescribeTable("refuses another pod and records nothing for it",
+		func(token string) {
+			done := start()
+			Expect(fetch(token)).To(Equal(http.StatusConflict))
+			Expect(classify().Classification).To(Equal(executioncontrol.ClassificationNeverStarted))
+			Expect(events.all()).To(BeEmpty())
+			Expect(recorded()).To(BeEmpty())
+
+			// The refusal did not take the envelope from the admitted pod.
+			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+			Expect(fetch(token)).To(Equal(http.StatusConflict))
+			Expect(events.all()).To(Equal([]string{"node-start", "run-witness-start", "envelope-served"}))
+
+			terminate(0, launcherRecord(0))
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).ToNot(HaveOccurred())
+		},
+		// Owned by this Job, so only the admitted pod's UID tells it apart.
+		Entry("a second pod of this Job", "tok-other"),
+		Entry("a pod of an earlier Job of the same name", "tok-stale"),
+	)
+
+	It("serves nothing while the Run cannot retain the start, and serves it once the Run does", func() {
+		done := start()
+		witnessMu.Lock()
+		failStartWitnesses = 1
+		witnessMu.Unlock()
+		Expect(fetch("tok-main")).To(Equal(http.StatusServiceUnavailable))
+		Expect(events.all()).To(Equal([]string{"node-start"}), "the envelope was served with the Run not holding the start")
+		Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
+
+		Expect(fetch("tok-main")).To(Equal(http.StatusOK))
 		Expect(events.all()).To(Equal([]string{"node-start", "run-witness-start", "envelope-served"}))
 
 		terminate(0, launcherRecord(0))
 		var finished waited
 		Eventually(done, 15*time.Second).Should(Receive(&finished))
 		Expect(finished.err).ToNot(HaveOccurred())
+	})
+
+	It("tells a launcher that asks before admission to retry", func() {
+		previous := exactJobAdmissionWait
+		exactJobAdmissionWait = 200 * time.Millisecond
+		DeferCleanup(func() { exactJobAdmissionWait = previous })
+		// Run, and no Wait: nothing admits the execution.
+		run()
+		Expect(fetch("tok-main")).To(Equal(http.StatusServiceUnavailable))
+		Expect(events.all()).To(BeEmpty())
+		Expect(recorded()).To(BeEmpty())
+	})
+
+	It("closes a task whose command could not be started on the launcher's record", func() {
+		done := start()
+		Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+		terminate(127, launcherRecord(127))
+		var finished waited
+		Eventually(done, 15*time.Second).Should(Receive(&finished))
+		Expect(finished.err).ToNot(HaveOccurred())
+		Expect(finished.result.ExitStatus).To(Equal(127))
+		closed := classify()
+		Expect(closed.Classification.Authoritative()).To(BeTrue())
+		Expect(closed.Acknowledgement.Outcome.ExitCode).To(Equal(127))
+	})
+
+	It("leaves a started task unresolved when main's exit and the launcher's record disagree", func() {
+		done := start()
+		Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+		terminate(3, launcherRecord(4))
+		var finished waited
+		Eventually(done, 15*time.Second).Should(Receive(&finished))
+		Expect(finished.err).To(MatchError(ErrExactOutcomeUnresolved))
+		Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
+		Expect(events.all()).ToNot(ContainElement("node-outcome"))
+		Expect(jobExists()).To(BeTrue(), "the Job of a started execution with no outcome was deleted")
+	})
+
+	It("reports an abort after the start as unresolved and keeps the Job", func() {
+		waitCtx, abort := context.WithCancel(ctx)
+		defer abort()
+		_, done := startWith(waitCtx)
+		Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+		abort()
+		var finished waited
+		Eventually(done, 15*time.Second).Should(Receive(&finished))
+		Expect(finished.err).To(MatchError(ErrExactOutcomeUnresolved))
+		Expect(finished.err).To(MatchError(context.Canceled), "the step's own cancellation is not reported")
+		Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
+		Expect(jobExists()).To(BeTrue())
+	})
+
+	It("never records a start after an aborted step's Job was deleted", func() {
+		waitCtx, abort := context.WithCancel(ctx)
+		defer abort()
+		process, done := startWith(waitCtx)
+		pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, mainPod, metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
+		abort()
+		var finished waited
+		Eventually(done, 15*time.Second).Should(Receive(&finished))
+		Expect(finished.err).To(MatchError(context.Canceled))
+		Expect(jobExists()).To(BeFalse(), "an aborted step that never started kept its Job")
+
+		// A launcher that asks now, through the handler or straight at the
+		// gate, is refused; nothing reaches the ledger.
+		Expect(fetch("tok-main")).ToNot(Equal(http.StatusOK))
+		Expect(process.exact.beforeServe(ctx, pod)).To(MatchError(errExactJobClosed))
+		Expect(classify().Classification).To(Equal(executioncontrol.ClassificationNeverStarted))
+		Expect(events.all()).To(BeEmpty())
+	})
+
+	It("keeps the Job of a start recorded while the step was being aborted", func() {
+		waitCtx, abort := context.WithCancel(ctx)
+		defer abort()
+		process, done := startWith(waitCtx)
+		entered, release := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		process.exact.beforeStart = func() {
+			once.Do(func() {
+				close(entered)
+				<-release
+			})
+		}
+		served := make(chan int, 1)
+		go func() {
+			defer GinkgoRecover()
+			served <- fetch("tok-main")
+		}()
+		Eventually(entered, 10*time.Second).Should(BeClosed())
+
+		// The abort's cleanup runs while the gate is inside: it waits.
+		abort()
+		Consistently(done, 300*time.Millisecond).ShouldNot(Receive(), "Wait decided on the Job with a start in flight")
+		close(release)
+
+		Expect(<-served).To(BeElementOf(http.StatusOK, http.StatusServiceUnavailable))
+		var finished waited
+		Eventually(done, 15*time.Second).Should(Receive(&finished))
+		Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
+		Expect(jobExists()).To(BeTrue(), "a recorded start's Job was deleted")
+		Expect(finished.err).To(MatchError(ErrExactOutcomeUnresolved))
 	})
 
 	DescribeTable("never serves an execution the ledger does not classify never_started",
