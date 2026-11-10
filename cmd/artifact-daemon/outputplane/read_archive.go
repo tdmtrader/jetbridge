@@ -42,6 +42,30 @@ func (server *Server) configureReads(config Config, store *controlStore) error {
 	return nil
 }
 
+// readSlot waits for a scratch slot for one managed read, and only then starts
+// the read's timeout. Reads share one slot pool with input publication and
+// seals, and two Runs' managed inputs on one node queue behind each other; a
+// timeout that ran during the wait would spend a queued read's budget on the
+// read ahead of it and turn the queue into 503s.
+//
+// The wait is bounded by the request's own context: a reader that gives up --
+// the managed-input init's per-attempt timeout, the web's client timeout, a
+// closed connection -- leaves the queue holding nothing, having spent nothing.
+// A warrant whose window closed while it waited reads nothing.
+func (server *Server) readSlot(request context.Context, warrant hangar.Warrant) (context.Context, func(), error) {
+	release, err := server.spooling(request)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !nowUTC().Before(warrantExpiry(warrant)) {
+		release()
+		return nil, nil, fmt.Errorf("%w: the read warrant's window closed while it waited for a scratch slot",
+			output.ErrUnauthorized)
+	}
+	ctx, cancel := context.WithTimeout(request, server.reads.timeout)
+	return ctx, func() { cancel(); release() }, nil
+}
+
 // verifyRead admits a read warrant for exactly this request's tree,
 // destination and node. The claim id is the warrant's to tell; it is what the
 // node keeps the warrant single-use by.
@@ -78,9 +102,7 @@ func (server *Server) readArchive(w http.ResponseWriter, request *http.Request) 
 		readRefusal(w, output.ErrUnauthorized)
 		return
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), server.reads.timeout)
-	defer cancel()
-	release, err := server.spooling(ctx)
+	ctx, release, err := server.readSlot(request.Context(), warrant)
 	if err != nil {
 		readRefusal(w, err)
 		return
