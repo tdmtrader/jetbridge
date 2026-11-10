@@ -369,6 +369,125 @@ func TestLiveJobRuntimeExactTask(t *testing.T) {
 	}
 }
 
+// TestLiveJobRuntimeExactTaskStop aborts a started exact task on a real
+// kubelet: the stop cuts the pod's activeDeadlineSeconds, which only a real
+// kubelet acts on -- it must end the containers with their grace, keep the
+// pod and keep the launcher's termination record -- and the outcome is read
+// from that record. What no unit tier can say: the web's Role may patch the
+// pod, the kubelet sends SIGTERM rather than SIGKILL first, and the pod is
+// still there to read when the command has ended.
+func TestLiveJobRuntimeExactTaskStop(t *testing.T) {
+	ip := ownPodIP(t)
+	envelopes := jetbridge.NewStepEnvelopes()
+	clientset, _ := kubeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	controls, err := jetbridge.StartLiveNodeOutputControls(ctx, clientset)
+	if err != nil {
+		t.Fatalf("starting the node ledgers: %v", err)
+	}
+	t.Cleanup(controls.Stop)
+	listener, err := net.Listen("tcp", net.JoinHostPort(ip, "0"))
+	if err != nil {
+		t.Fatalf("listening for envelope requests: %v", err)
+	}
+	server := &http.Server{Handler: &jetbridge.StepEnvelopeHandler{
+		Logger: lagertest.NewTestLogger("envelope"), Clientset: clientset, Namespace: liveTestNamespace(), Envelopes: envelopes,
+	}}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+	envelopeURL := "http://" + listener.Addr().String() + jetbridge.StepEnvelopePath
+
+	identity := executioncontrol.Identity{
+		ExecutionID: executioncontrol.ExecutionID(fmt.Sprintf("%08x-dddd-4ddd-8ddd-%012x", os.Getpid(), time.Now().UnixNano()&0xffffffffffff)),
+		Fence:       1,
+	}
+	preparer := &exactTaskPreparer{control: &runtime.ExecutionControl{
+		Version: runtime.ExecutionControlVersion, Phase: runtime.ControlPhaseAdmitted,
+		Identity: identity, Endpoint: controls.Endpoint(), Capability: "base-capability",
+	}}
+	worker, _, _, _ := newLiveWorker(t, nil, nil, func(cfg *jetbridge.Config, deps *jetbridge.WorkerDeps) {
+		cfg.StepRuntime = jetbridge.StepRuntimeJob
+		cfg.LauncherImage = deployed.webContainer.Image
+		cfg.StepEnvelopeURL = envelopeURL
+		deps.StepEnvelopes = envelopes
+		deps.OutputControls = controls
+		deps.ExecutionPreparer = preparer
+	})
+	worker.RouteExactTasksToJobRuntimeForTesting()
+	namespace := liveTestNamespace()
+
+	handle := "live-job-exact-stop-" + time.Now().Format("150405")
+	metadata := db.ContainerMetadata{Type: db.ContainerTypeTask, StepName: "job-exact-stop"}
+	container, _, err := worker.FindOrCreateContainer(ctx, db.NewFixedHandleContainerOwner(handle), metadata,
+		runtime.ContainerSpec{TeamID: 1, Type: db.ContainerTypeTask, ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"}}, nil)
+	if err != nil {
+		t.Fatalf("FindOrCreateContainer: %v", err)
+	}
+	jobName := jetbridge.GeneratePodName(metadata, handle)
+	t.Cleanup(func() { cleanupStepJob(t, clientset, namespace, jobName) })
+
+	stepCtx, abort := context.WithCancel(ctx)
+	defer abort()
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	process, err := container.Run(stepCtx, runtime.ProcessSpec{
+		Path: "/bin/sh", Args: []string{"-c", "echo running; exec sleep 600"},
+	}, runtime.ProcessIO{Stdout: stdout, Stderr: stderr})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	type waited struct {
+		result runtime.ProcessResult
+		err    error
+	}
+	done := make(chan waited, 1)
+	go func() {
+		result, err := process.Wait(stepCtx)
+		done <- waited{result, err}
+	}()
+
+	// Abort once the start is recorded: the command is running.
+	deadline := time.Now().Add(3 * time.Minute)
+	for len(preparer.recorded()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the start was never recorded (stderr: %s)", stderr.String())
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	abort()
+	var finished waited
+	select {
+	case finished = <-done:
+	case <-time.After(2 * time.Minute):
+		t.Fatal("Wait did not return after the abort")
+	}
+	if finished.err != nil {
+		t.Fatalf("Wait: %v (stderr: %s)", finished.err, stderr.String())
+	}
+	if finished.result.ExitStatus != 143 {
+		t.Errorf("exit = %d, want 143 from the command SIGTERM ended", finished.result.ExitStatus)
+	}
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "batch.kubernetes.io/job-name=" + jobName})
+	if err != nil || len(pods.Items) != 1 {
+		t.Fatalf("the Job owns %d pods (%v), want the stopped one kept", len(pods.Items), err)
+	}
+	if pods.Items[0].DeletionTimestamp != nil {
+		t.Error("the stop deleted the pod that witnesses the outcome")
+	}
+	ledger, err := controls.ForNode(ctx, pods.Items[0].Spec.NodeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := ledger.Classify(ctx, identity)
+	if err != nil {
+		t.Fatalf("classifying at the node: %v", err)
+	}
+	if !closed.Classification.Authoritative() || closed.Acknowledgement == nil || closed.Acknowledgement.Outcome == nil || closed.Acknowledgement.Outcome.ExitCode != 143 {
+		t.Errorf("the node classifies the execution %s (%+v), want it closed with exit 143", closed.Classification, closed.Acknowledgement)
+	}
+}
+
 func mainExitStatus(pod corev1.Pod) (int32, bool) {
 	for _, status := range pod.Status.ContainerStatuses {
 		if status.Name == "main" && status.State.Terminated != nil {
