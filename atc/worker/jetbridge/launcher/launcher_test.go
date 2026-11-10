@@ -144,6 +144,58 @@ func TestTerminationMessage(t *testing.T) {
 	})
 }
 
+// A command that cannot be started did not run, and the launcher says so in
+// its termination message with the exit it returns, so the web can close an
+// exact execution on it. A launcher failure before that point (125: bad
+// usage, no token, no envelope) leaves no message: the web cannot tell it
+// from a launcher that never got to write one.
+func TestTerminationMessageForAStartFailure(t *testing.T) {
+	notExec := filepath.Join(t.TempDir(), "not-executable")
+	if err := os.WriteFile(notExec, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"not found", []string{"--", "jb-launcher-no-such-command-xyz"}, 127},
+		{"not executable", []string{"--", notExec}, 126},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := time.Now().Add(-time.Second)
+			code, _, _, termPath := runLauncher(t, tc.args...)
+			if code != tc.want {
+				t.Fatalf("exit = %d, want %d", code, tc.want)
+			}
+			msg := readTermination(t, termPath)
+			if msg.Exit != tc.want || msg.StdoutBytes != 0 {
+				t.Fatalf("message = %+v, want exit %d", msg, tc.want)
+			}
+			if msg.StartedAt.Before(before) || msg.FinishedAt.Before(msg.StartedAt) {
+				t.Fatalf("timestamps out of order: %+v", msg)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"no command", []string{}},
+		{"missing token file", []string{"--envelope-url", "http://127.0.0.1:1/", "--token-file", "/nonexistent/token", "--", "true"}},
+	} {
+		t.Run(tc.name+" leaves no message", func(t *testing.T) {
+			code, _, _, termPath := runLauncher(t, tc.args...)
+			if code != 125 {
+				t.Fatalf("exit = %d, want 125", code)
+			}
+			if _, err := os.Stat(termPath); !os.IsNotExist(err) {
+				t.Fatalf("a termination message was written for a launcher failure: %v", err)
+			}
+		})
+	}
+}
+
 func TestStdoutFile(t *testing.T) {
 	outPath := filepath.Join(t.TempDir(), "stdout")
 	if err := os.WriteFile(outPath, []byte("stale content that must be truncated"), 0o600); err != nil {

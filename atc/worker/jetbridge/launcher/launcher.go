@@ -148,7 +148,11 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(stderr, "jb-launcher: starting %q: %v\n", command[0], err)
-		return startExitCode(err)
+		// The command did not run, and that is as much its outcome as an
+		// exit is: the record says so, with the code returned.
+		code := startExitCode(err)
+		writeTerminationMessage(*termPath, terminationMessage{Exit: code, StartedAt: startedAt, FinishedAt: time.Now()})
+		return code
 	}
 	pgid := cmd.Process.Pid // Setpgid makes the child the leader of its own group
 
