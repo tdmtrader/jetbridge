@@ -23,6 +23,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"syscall"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -186,6 +188,15 @@ func (p *execProcess) stopAdmission() (admitted bool) {
 	return false
 }
 
+// admitDialBudget is how long an admission keeps dialling a node's artifact
+// daemon that is not accepting connections -- restarting, as a rollout or a
+// crash restarts it. Variables so that a spec need not wait minutes.
+var (
+	admitDialBudget     = 2 * time.Minute
+	admitDialBackoff    = 250 * time.Millisecond
+	admitDialBackoffCap = 5 * time.Second
+)
+
 func (p *execProcess) admitExactExecution(ctx context.Context) error {
 	pod, err := p.awaitScheduledPod(ctx)
 	if err != nil {
@@ -220,7 +231,7 @@ func (p *execProcess) admitExactExecution(ctx context.Context) error {
 		NodeUID:         executioncontrol.NodeUID(node.UID),
 		Capability:      p.control.Capability,
 	}
-	if _, err := client.Admit(ctx, envelope); err != nil {
+	if err := admitThroughRestart(ctx, client, envelope, pod.Spec.NodeName); err != nil {
 		return fmt.Errorf("admitting the exact execution: %w", err)
 	}
 
@@ -232,6 +243,53 @@ func (p *execProcess) admitExactExecution(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// admitThroughRestart admits, dialling again while the node's daemon accepts
+// no connection, for admitDialBudget under the step's context.
+//
+// Repeating an admission is safe: the daemon's ledger answers the same
+// identity at the same fence with the admission it already has and changes
+// nothing (ExecutionLedger.Admit), and each attempt mints its own warrant. Only
+// a failure to reach the daemon is retried. An answer -- any status -- is
+// final, exactly as before.
+func admitThroughRestart(ctx context.Context, client OutputControl,
+	envelope executioncontrol.Envelope, node string) error {
+	deadline := time.Now().Add(admitDialBudget)
+	delay := admitDialBackoff
+	for {
+		_, err := client.Admit(ctx, envelope)
+		if err == nil || !daemonUnreachable(err) {
+			return err
+		}
+		if time.Now().Add(delay).After(deadline) {
+			return fmt.Errorf("the artifact daemon on node %s accepted no connection for %s: %w",
+				node, admitDialBudget, err)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("the artifact daemon on node %s accepted no connection before the step ended: %w",
+				node, errors.Join(ctx.Err(), err))
+		case <-time.After(delay):
+		}
+		delay = min(2*delay, admitDialBackoffCap)
+	}
+}
+
+// daemonUnreachable is a failure to reach the daemon at all: nothing is
+// listening, the connection was reset, or there is no route to the node. A
+// daemon's refusal is an answer and is never one.
+func daemonUnreachable(err error) bool {
+	var refusal *OutputControlRefusal
+	if errors.As(err, &refusal) {
+		return false
+	}
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH)
 }
 
 // awaitScheduledPod waits for the Pod to be BOUND, not running. The node is
