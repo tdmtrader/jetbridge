@@ -369,3 +369,36 @@ restarts, and re-enabling before both have rolled admits work into it.
 Deleting an old Secret before the rollout finishes leaves a restarted old pod
 unable to mount it. Rendering the new chart before the values change fails,
 naming the removed key, and the cluster stays on the old release.
+
+## The privilege mode (2026-11-09)
+
+A new value, `kubernetes.stepPrivilege` (`any | granted`, default `any`),
+chooses which step pods may hold privilege: a privileged container, an added
+Linux capability, or a host namespace. Nothing needs an edit to upgrade. `any`
+is the behaviour before this value: a step pod is privileged when its task's
+`privileged:` or, for a get, put or check, its resource type's says so,
+whatever `kubernetes.stepPodGrants` declare, and an `any` render is byte for
+byte the render of the chart before it. A grant that already sets
+`privileged: true` changes nothing until you choose `granted`.
+
+Under `granted` the web refuses, when it creates the pod, every privileged step
+outside a grant that declares `privileged: true`. The step fails with an error
+naming its owner (`<team>/<pipeline>/<job>` or `main/one-off`) and the grant it
+lacks, and no Pod or Job is made. A check holds no grant in this release, so a
+check whose resource type is privileged is refused too. To opt in:
+
+1. Run `hack/step-pod-audit pods` against the cluster (it is read-only). Each
+   privileged step pod it reports beyond a grant is an owner that needs one.
+2. Add a `kubernetes.stepPodGrants` entry with `privileged: true` for each such
+   owner, leaving `serviceAccount` out to keep the default step pod identity's
+   account, and sync. Under `any` this changes nothing a step runs.
+3. Set `kubernetes.stepPrivilege: granted` and sync; the web logs
+   `step-privilege-mode` with the mode and the privileged grants at startup.
+   A privileged check, or a privileged step of an owner no grant can name (an
+   instanced pipeline's job, another team's one-off, a Run), must lose its
+   `privileged:` first.
+
+`granted` with no privileged grant is legal: nothing runs privileged. A pod
+already running when the mode changes, and a step Job a restarted web resumes,
+are not re-checked in this release; let running builds finish before relying
+on the gate. To back out, set `any` (or remove the value) and sync.

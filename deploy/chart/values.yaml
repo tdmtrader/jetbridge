@@ -227,13 +227,26 @@ kubernetes:
   # pipeline, or main/one-off for team main's one-off builds. Every other
   # build's pods run as serviceAccount above, the default step pod identity.
   # Only this configuration selects a grant; nothing in a pipeline can.
-  # privileged: true is carried on the owner's step pod identity, but nothing
-  # reads it yet: privilege is not gated today, and a step pod's security
-  # context follows its task's privileged: or, for a get, put or check, its
-  # resource type's. Such a grant may leave serviceAccount out and keep the
-  # default identity's account.
+  # privileged: true is carried on the owner's step pod identity and is read
+  # only under stepPrivilege: granted (below), where it is what lets the
+  # owner's steps run privileged. Under any, the default, a step pod's
+  # security context follows its task's privileged: or, for a get, put or
+  # check, its resource type's, whatever the grants say. Such a grant may
+  # leave serviceAccount out and keep the default identity's account.
   # e.g. [{name: brine-live, owner: main/one-off, serviceAccount: jetbridge-brine-live, privileged: true}]
   stepPodGrants: []
+
+  # -- Privilege mode: which step pods may hold privilege (a privileged
+  # container, an added capability, a host namespace).
+  # any: as the task's or resource type's privileged: asks, whatever
+  # stepPodGrants declare -- the behaviour before this value existed.
+  # granted: only a step pod whose owner's grant declares privileged: true;
+  # any other privileged step, and every privileged check, fails when its pod
+  # is created, naming its owner and the grant it lacks. Before choosing it,
+  # run hack/step-pod-audit pods and add the grants it shows. granted with no
+  # privileged grant is legal: nothing runs privileged. A pod reused, or a
+  # step Job resumed after a web restart, is not re-checked yet.
+  stepPrivilege: any
 
   # -- Pod startup timeout
   podStartupTimeout: 5m

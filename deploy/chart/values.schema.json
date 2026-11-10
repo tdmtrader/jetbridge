@@ -332,6 +332,13 @@
             "job"
           ]
         },
+        "stepPrivilege": {
+          "type": "string",
+          "enum": [
+            "any",
+            "granted"
+          ]
+        },
         "imageRegistrySecret": {
           "type": "string"
         },

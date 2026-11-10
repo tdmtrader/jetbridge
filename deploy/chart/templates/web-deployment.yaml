@@ -171,6 +171,12 @@ spec:
             {{- if $privileged }}{{ $grantFlag = printf "%s,privileged=true" $grantFlag }}{{ end }}
             - {{ printf "--kubernetes-step-pod-grant=%s" $grantFlag | quote }}
             {{- end }}
+            {{- if eq .Values.kubernetes.stepPrivilege "granted" }}
+            # Rendered only for granted: any is the binary's default, so an any
+            # render is the render from before the value existed, and a web
+            # built before the flag is never handed it.
+            - --kubernetes-step-privilege=granted
+            {{- end }}
             {{- if .Values.kubernetes.podStartupTimeout }}
             - --kubernetes-pod-startup-timeout={{ .Values.kubernetes.podStartupTimeout }}
             {{- end }}
