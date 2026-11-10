@@ -89,7 +89,14 @@ import (
 // One artifact daemon key, secrets.artifactDaemonKeySecret, replaces
 // artifactDaemon.resolveCapability.existingSecret and the Hangar key's
 // artifactDaemon.hangar.keySecret and allowGeneratedKey, leaving 176.
-const maxValues = 176
+// 2026-11-09: kubernetes.stepPrivilege (any | granted), the privilege mode,
+// leaving 177. An owner-accepted exception to the raise rule (ADR-0008,
+// amended 2026-11-09): it removes no value. The mode's default, any, keeps a
+// deployment that runs privileged steps on its behaviour across the upgrade;
+// enforcement must be an explicit choice, and no honest existing value could
+// carry it (a step pod grant's privileged: true already means something under
+// any, and inferring enforcement from it would change upgrading deployments).
+const maxValues = 177
 
 // allowedSwitches are the only booleans the chart may have. A switch stays
 // only when it reflects something the cluster has or lacks. Booleans inside

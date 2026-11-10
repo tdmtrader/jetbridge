@@ -136,3 +136,13 @@ open schema stubs, the removed-keys table in `_validate.tpl` and the
 `removedKeys` guard are gone; a stale key fails the render as an unknown key
 under its closed parent, and MIGRATING.md carries the replacement. The
 tombstone wording in the amendments above is historical.
+
+Amended 2026-11-09: one exception to the raise rule. `kubernetes.stepPrivilege`
+(`any | granted`), the privilege mode, raises `maxValues` by one without
+removing a value. It is a mode, and its default, `any`, keeps a deployment
+that runs privileged steps on its behaviour across the upgrade, so the
+privilege gate is switched on only by an explicit choice. No honest existing
+value could carry it: a step pod grant's `privileged: true` already means
+something under `any`, and reading enforcement from it would change what an
+upgrading deployment runs. The owner accepted the exception; the raise rule
+otherwise stands, and the reason is written beside the constant.
