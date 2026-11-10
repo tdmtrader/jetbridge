@@ -120,7 +120,7 @@ func (r *Reaper) Run(ctx context.Context) error {
 	reapNow, retained := r.splitCompletedPods(logger, completedPods)
 	for _, podMeta := range reapNow {
 		if err := deleteStepPod(ctx, r.clientset, r.cfg.Namespace, podMeta, metav1.DeleteOptions{}); err != nil {
-			if !apierrors.IsNotFound(err) && !r.stepJobsForbidden(logger, err) {
+			if !apierrors.IsNotFound(err) && !r.stepJobsForbidden(logger, err, owningStepJob(podMeta) != "") {
 				logger.Error("failed-to-cleanup-completed-pod", err, lager.Data{"pod": podMeta.Name})
 			}
 		}
@@ -196,7 +196,7 @@ func (r *Reaper) Run(ctx context.Context) error {
 		}
 		err := deleteStepPod(ctx, r.clientset, r.cfg.Namespace, podMeta, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
-			if !r.stepJobsForbidden(logger, err) {
+			if !r.stepJobsForbidden(logger, err, owningStepJob(podMeta) != "") {
 				logger.Error("failed-to-delete-pod", err, lager.Data{"handle": handle, "pod": podMeta.Name})
 				failures = append(failures, fmt.Errorf("deleting pod %s: %w", podMeta.Name, err))
 			}
@@ -219,14 +219,17 @@ func (r *Reaper) Run(ctx context.Context) error {
 
 // stepJobsForbidden reports whether err is the API server refusing this web
 // batch/jobs under the exec step runtime, and says so once per process.
+// jobCall says the refused call was on a step Job (its list, or the delete
+// of the Job that owns a pod): a refusal of anything else, a pause pod's
+// delete among them, is never quiet.
 //
 // Under exec the web creates no step Jobs; it only collects the ones a web
 // left behind under job. A Role without batch/jobs list and delete (a chart
 // older than this web: the image moves ahead of the chart) cannot, and that
 // is not worth an error every pass. Under job a refusal stays an error: that
 // runtime cannot work without the grant.
-func (r *Reaper) stepJobsForbidden(logger lager.Logger, err error) bool {
-	if r.cfg.StepRuntime == StepRuntimeJob || !apierrors.IsForbidden(err) {
+func (r *Reaper) stepJobsForbidden(logger lager.Logger, err error, jobCall bool) bool {
+	if !jobCall || r.cfg.StepRuntime == StepRuntimeJob || !apierrors.IsForbidden(err) {
 		return false
 	}
 	if r.stepJobsForbiddenNoted.CompareAndSwap(false, true) {
@@ -252,7 +255,7 @@ func (r *Reaper) reapPodlessStepJobs(ctx context.Context, logger lager.Logger, w
 		LabelSelector: fmt.Sprintf("%s=%s", workerLabelKey, workerName),
 	})
 	if err != nil {
-		if !r.stepJobsForbidden(logger, err) {
+		if !r.stepJobsForbidden(logger, err, true) {
 			logger.Error("failed-to-list-step-jobs", err)
 		}
 		return
@@ -265,7 +268,7 @@ func (r *Reaper) reapPodlessStepJobs(ctx context.Context, logger lager.Logger, w
 			continue
 		}
 		logger.Info("deleting-podless-step-job", lager.Data{"job": job.Name, "age": time.Since(job.CreationTimestamp.Time).String()})
-		if err := deleteStepJob(ctx, r.clientset, r.cfg.Namespace, job.Name); err != nil && !r.stepJobsForbidden(logger, err) {
+		if err := deleteStepJob(ctx, r.clientset, r.cfg.Namespace, job.Name, job.UID); err != nil && !r.stepJobsForbidden(logger, err, true) {
 			logger.Error("failed-to-delete-podless-step-job", err, lager.Data{"job": job.Name})
 		}
 	}

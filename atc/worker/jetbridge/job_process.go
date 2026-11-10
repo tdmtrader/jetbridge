@@ -89,7 +89,7 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := deleteStepJob(cleanupCtx, p.clientset, p.config.Namespace, p.jobName); err != nil {
+		if err := deleteStepJob(cleanupCtx, p.clientset, p.config.Namespace, p.jobName, ""); err != nil {
 			logger.Error("failed-to-delete-unfinished-step-job", err)
 		}
 	}()

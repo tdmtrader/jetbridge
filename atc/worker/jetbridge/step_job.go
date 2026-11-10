@@ -345,7 +345,7 @@ func (c *Container) replaceFinishedStepJob(ctx context.Context) error {
 	c.mu.RLock()
 	uid := c.jobUID
 	c.mu.RUnlock()
-	if err := deleteStepJob(ctx, c.clientset, c.config.Namespace, c.podName); err != nil {
+	if err := deleteStepJob(ctx, c.clientset, c.config.Namespace, c.podName, ""); err != nil {
 		return err
 	}
 	c.mu.Lock()
@@ -378,10 +378,22 @@ func (c *Container) replaceFinishedStepJob(ctx context.Context) error {
 // is never deleted on its own: the Job controller would create another, and
 // that would run the command a second time. Background propagation: the
 // call returns at once and the pod receives its termination grace.
-func deleteStepJob(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error {
+//
+// With a uid, only the Job of that UID is deleted. A Job recreated under the
+// same name is another step's: the API server refuses the delete with a
+// Conflict, which is taken as the Job being gone already -- as it is, and a
+// pod it owned goes with it through the garbage collector.
+func deleteStepJob(ctx context.Context, clientset kubernetes.Interface, namespace, name string, uid types.UID) error {
 	propagation := metav1.DeletePropagationBackground
-	err := clientset.BatchV1().Jobs(namespace).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &propagation})
-	if err != nil && !apierrors.IsNotFound(err) {
+	opts := metav1.DeleteOptions{PropagationPolicy: &propagation}
+	if uid != "" {
+		opts.Preconditions = metav1.NewUIDPreconditions(string(uid))
+	}
+	err := clientset.BatchV1().Jobs(namespace).Delete(ctx, name, opts)
+	if apierrors.IsNotFound(err) || (uid != "" && apierrors.IsConflict(err)) {
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("delete step job %s: %w", name, err)
 	}
 	return nil
@@ -390,19 +402,26 @@ func deleteStepJob(ctx context.Context, clientset kubernetes.Interface, namespac
 // owningStepJob is the name of the step Job that owns a pod, or "" for a pod
 // no Job owns (an exec-runtime pause pod).
 func owningStepJob(pod metav1.ObjectMeta) string {
+	name, _ := owningStepJobRef(pod)
+	return name
+}
+
+// owningStepJobRef is the name and UID of the step Job that owns a pod.
+func owningStepJobRef(pod metav1.ObjectMeta) (string, types.UID) {
 	for _, owner := range pod.OwnerReferences {
 		if owner.Kind == "Job" && owner.APIVersion == "batch/v1" {
-			return owner.Name
+			return owner.Name, owner.UID
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // deleteStepPod deletes a step pod the right way for its runtime: through
-// its Job when one owns it, directly otherwise.
+// its Job when one owns it, directly otherwise. The Job is deleted only if
+// it is still the one the pod's owner reference names.
 func deleteStepPod(ctx context.Context, clientset kubernetes.Interface, namespace string, pod metav1.ObjectMeta, opts metav1.DeleteOptions) error {
-	if job := owningStepJob(pod); job != "" {
-		return deleteStepJob(ctx, clientset, namespace, job)
+	if job, uid := owningStepJobRef(pod); job != "" {
+		return deleteStepJob(ctx, clientset, namespace, job, uid)
 	}
 	return clientset.CoreV1().Pods(namespace).Delete(ctx, pod.Name, opts)
 }
