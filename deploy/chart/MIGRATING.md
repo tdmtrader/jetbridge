@@ -400,7 +400,7 @@ type needs the privileged type's grant; the type must be a lowercase
 identifier). A check of a base type, of an instanced or Run pipeline, or in a
 one-off build is refused. A grant binds a team and a pipeline *name*, as a job
 grant does: whoever may set the pipeline of that name, including re-creating
-it after it is destroyed while the grant remains, gets the grant. An unknown mode
+it after it is destroyed while the grant remains, gets the grant. A task file can name a granted type as its `image_resource.type` with any source, so grant privileged types only in pipelines whose task configs are trusted. In a job build, a task image of a privileged custom type needs both: the job's grant for its image get and the resource-type grant for its image check. An unknown mode
 stops the web at startup. To opt in:
 
 1. Run `hack/step-pod-audit pods` against the cluster (it is read-only). Each
