@@ -174,14 +174,6 @@ type Config struct {
 	// launcher). Empty means exec.
 	StepRuntime string
 
-	// ExactTasksOnJobRuntimeForTesting lets a test run a Run-owned exact
-	// execution's task on the job step runtime (exact_job_process.go). No
-	// flag, chart value or environment variable sets it, and the web's
-	// wiring never copies it: in production an exact execution still runs on
-	// a pause pod under either runtime. Only a task: an exact check, get or
-	// put stays on the pause pod even with it set.
-	ExactTasksOnJobRuntimeForTesting bool
-
 	// LauncherImage is the image the launcher init container copies the
 	// jb-launcher binary from under StepRuntimeJob: the jetbridge image
 	// itself, which ships the binary beside the web.

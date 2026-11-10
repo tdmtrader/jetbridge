@@ -12,6 +12,11 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// RouteExactTasksToJobRuntimeForTesting routes every exact task of the
+// containers this worker makes to the job step runtime. It is in a _test
+// file, so no production binary has it.
+func (w *Worker) RouteExactTasksToJobRuntimeForTesting() { w.exactTasksOnJobRuntime = true }
+
 // LiveNodeOutputControls is a real artifact daemon output plane per node of
 // the cluster, run by the live test's own process, each with its node's UID.
 // The deployed daemons' control plane takes only the web's client

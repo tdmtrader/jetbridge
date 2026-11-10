@@ -241,7 +241,6 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		})
 
 		config := jobRuntimeConfig()
-		config.ExactTasksOnJobRuntimeForTesting = true
 		metadata := db.ContainerMetadata{Type: db.ContainerTypeTask, PipelineName: "p", JobName: "j", BuildName: "1", StepName: "s"}
 		container = newContainer("exact-job-handle", metadata, runtime.ContainerSpec{
 			Type:      db.ContainerTypeTask,
@@ -256,6 +255,7 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			},
 		}, nil, clientset, config, "worker", nil, nil, nil, stepPodIdentities{}, false, false)
 		container.envelopes = NewStepEnvelopes()
+		container.routeExactTasksToJobRuntime()
 		ordered = &orderedOutputControl{OutputControl: harness.Client, log: events}
 		container.outputControls = staticOutputControls{control: ordered}
 		container.recordWitness = func(_ context.Context, witness executioncontrol.Acknowledgement) error {

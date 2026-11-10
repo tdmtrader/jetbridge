@@ -36,6 +36,10 @@ type Worker struct {
 
 	// identities resolves which ServiceAccount a container's pods run as.
 	identities stepPodIdentities
+
+	// exactTasksOnJobRuntime is handed to every container it makes
+	// (step_job.go: exactTaskOnJobRuntime). Only a test sets it.
+	exactTasksOnJobRuntime bool
 }
 
 // WorkerDeps is everything a Worker reaches beyond its row, its clientset and
@@ -193,6 +197,7 @@ func (w *Worker) FindOrCreateContainer(
 		container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, w.identities, true, false)
 		container.outputControls = w.outputControls
 		container.envelopes = w.stepEnvelopes
+		container.exactTasksOnJobRuntime = w.exactTasksOnJobRuntime
 		w.bindStartCheck(container, owner)
 		return container, mounts, nil
 	}
@@ -211,6 +216,7 @@ func (w *Worker) FindOrCreateContainer(
 	container := newContainer(containerHandle, metadata, containerSpec, createdContainer, w.clientset, w.config, w.Name(), w.executor, volumes, w.storageBackend, w.identities, false, false)
 	container.outputControls = w.outputControls
 	container.envelopes = w.stepEnvelopes
+	container.exactTasksOnJobRuntime = w.exactTasksOnJobRuntime
 	w.bindStartCheck(container, owner)
 	return container, mounts, nil
 }
