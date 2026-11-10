@@ -80,6 +80,13 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- else }}
+  # stepRuntime=exec creates no step Jobs, but the reaper still collects the
+  # ones a web left behind under job: a deployment switched back to exec has
+  # nothing else that removes them.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["list", "delete"]
   {{- end }}
   - apiGroups: [""]
     resources: ["pods/log"]

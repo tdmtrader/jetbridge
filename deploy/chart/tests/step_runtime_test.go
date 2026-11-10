@@ -19,8 +19,12 @@ import (
 // job adds the launcher image and the envelope URL the step pod fetches its
 // request from, and the grants that runtime needs. pods/exec stays in both
 // modes: a Run-owned exact execution still uses exec in this release.
+//
+// batch/jobs list and delete are granted in both modes: a web switched from
+// job back to exec still has step Jobs to collect, and nothing else removes
+// them. Creating or changing a Job stays job-only.
 
-func TestTheDefaultStepRuntimeIsExecWithNoJobGrants(t *testing.T) {
+func TestTheDefaultStepRuntimeIsExecAndMayOnlyCollectStepJobs(t *testing.T) {
 	out := render(t)
 	for _, flag := range []string{"--kubernetes-step-runtime", "--kubernetes-launcher-image", "--kubernetes-step-envelope-url", "CONCOURSE_KUBERNETES_WEB_POD_NAME"} {
 		if strings.Contains(out, flag) {
@@ -28,8 +32,15 @@ func TestTheDefaultStepRuntimeIsExecWithNoJobGrants(t *testing.T) {
 		}
 	}
 	role := podManagerRole(t, out)
-	if rulesGrant(role.Rules, "batch", "jobs", "get") {
-		t.Errorf("the exec runtime grants batch/jobs: %+v", role.Rules)
+	for _, verb := range []string{"list", "delete"} {
+		if !rulesGrant(role.Rules, "batch", "jobs", verb) {
+			t.Errorf("the exec runtime cannot %s leftover step Jobs: %+v", verb, role.Rules)
+		}
+	}
+	for _, verb := range []string{"get", "watch", "create", "update", "patch"} {
+		if rulesGrant(role.Rules, "batch", "jobs", verb) {
+			t.Errorf("the exec runtime grants batch/jobs %s: %+v", verb, role.Rules)
+		}
 	}
 	if !rulesGrant(role.Rules, "", "pods/exec", "create") {
 		t.Errorf("the exec runtime lacks pods/exec create: %+v", role.Rules)
