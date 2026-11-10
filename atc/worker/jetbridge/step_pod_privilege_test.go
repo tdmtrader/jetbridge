@@ -203,13 +203,13 @@ var _ = Describe("The privilege gate", func() {
 					Entry("a put", db.ContainerTypePut),
 				)
 
-				It("refuses a privileged check, which holds no step pod grant, even in a privileged grant's build", func() {
+				It("refuses a privileged check no resource-type grant covers, even in a privileged job grant's build", func() {
 					worker := newWorker(jetbridge.StepPrivilegeGranted)
 					_, err := run(worker, "refused-check", metadataFor(checkBuild(), db.ContainerTypeCheck), privilegedSpec())
-					Expect(err).To(MatchError(ContainSubstring("A check holds no step pod grant")))
+					Expect(err).To(MatchError(ContainSubstring("no step pod grant can cover")))
 
 					_, err = run(worker, "refused-check-in-dind", metadataFor(jobBuild("dind"), db.ContainerTypeCheck), privilegedSpec())
-					Expect(err).To(MatchError(ContainSubstring("A check holds no step pod grant")))
+					Expect(err).To(MatchError(ContainSubstring("no step pod grant can cover")))
 				})
 
 				It("admits an unprivileged step of any kind outside every grant", func() {

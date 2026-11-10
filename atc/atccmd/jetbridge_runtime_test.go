@@ -361,6 +361,9 @@ func TestTheWorkerFactoryHandsWorkersTheBuildLookup(t *testing.T) {
 	if factory.K8sStepPodBuilds == nil {
 		t.Fatal("the worker factory has no build lookup for step pod grants")
 	}
+	if factory.K8sStepPodPipelines == nil {
+		t.Fatal("the worker factory has no pipeline lookup for check eligibility")
+	}
 }
 
 // The privilege mode defaults to any, today's behaviour, so a deployment that

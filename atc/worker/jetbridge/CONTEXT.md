@@ -36,9 +36,12 @@ team/pipeline/job of a non-instanced pipeline, or a one-off build of team
 ServiceAccount, declares `privileged=true`, or both; the step pod identity
 carries that declaration, and the privilege gate reads it under the
 `granted` privilege mode only (see **Privilege gate**).
-Only web's configuration sets one; check builds, instanced pipelines and other
-teams' builds match none, and nothing a pipeline or API caller supplies can
-select one.
+A check is owned instead by the resource type whose image it runs, in its own
+non-instanced pipeline (`<team>/<pipeline>/resource-type/<type>`, see **Check
+eligibility**); such a grant declares `privileged=true` and nothing else.
+Only web's configuration sets one; instanced pipelines, Runs and other teams'
+builds match none, and nothing a pipeline or API caller supplies can select
+one.
 _Avoid_: grant (alone; that is the agentic context's MCP authorization),
 service account mapping
 
@@ -70,10 +73,26 @@ grant (an instanced pipeline's job, another team's one-off, a Run, a build
 not found) is refused the same way, and a failed build lookup refuses any
 step. The pod's identity is resolved once, and each step runtime admits the
 pod it submits exactly once: the exec runtime's pod, or the finished step
-Job template. A check holds no step pod grant,
-so a privileged check is refused in that mode. Sidecars are never privileged.
+Job template. A privileged check is admitted in that mode only through
+**Check eligibility**. Sidecars are never privileged.
 Reusing a live pod and resuming a step Job after a web restart do not
 re-admit privilege yet: a pod created before the mode changed keeps running.
+
+**Check eligibility**:
+How a check's pod can hold a step pod grant under the `granted` privilege mode.
+A check build runs in memory with no builds row, so its pods are owned by the
+resource type whose image they run, in the checked resource's pipeline:
+`<team>/<pipeline>/resource-type/<type>`. The type is read from the pipeline's
+own rows and the step's name: a check of resource R runs R's type; a check or
+image fetch named after resource type T (T's own check, or the fetch of T's
+image) runs T's type, so a type built on a privileged type needs the grant of
+the privileged one. A check container in a job build is owned the same way.
+Only a privileged grant of that owner admits the pod privileged; the pod keeps
+the default step pod identity and is annotated
+`concourse.dev/step-pod-grant=<grant>`. Ungrantable, with a refusal saying
+why: a check in a one-off, Run or instanced pipeline's build, an instanced or
+Run pipeline's check, a name the pipeline does not declare, and a base type.
+Under `any` nothing about a check is looked up.
 
 **Privilege mode**:
 The operator's choice of what the privilege gate enforces, one value per web
