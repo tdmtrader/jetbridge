@@ -89,4 +89,31 @@ var _ = Describe("Privileged steps", func() {
 					"so a privileged step in it would be refused once the privilege gate enforces", path)
 		}
 	})
+
+	// The inventory a privilege gate's step pod grants must cover, as
+	// "<job>/<step>". Every deployment that runs one of these pipelines needs a
+	// privileged=true step pod grant for each job listed.
+	DescribeTable("in the CI pipelines are exactly the checked-in inventory",
+		func(path string, inventory []string) {
+			Expect(privilegedSteps(path)).To(ConsistOf(inventory),
+				"%s's privileged steps changed. A new privileged job needs a privileged=true step pod grant "+
+					"(--kubernetes-step-pod-grant) on every deployment that runs this pipeline, or the privilege gate "+
+					"will refuse its step once it enforces; then update this inventory. A privileged pod a task creates "+
+					"with kubectl (a dind pod) is not a step pod and does not belong here.", path)
+		},
+		Entry("concourse-pipeline.yml", "../concourse-pipeline.yml", []string{
+			"brine/brine-suite",
+			"worker-image/worker-image",
+			"build-image/build-and-push-local",
+			"release/tag-push-release",
+		}),
+		Entry("k8s-e2e-pipeline.yml", "../k8s-e2e-pipeline.yml", []string{
+			"build-kind-runner/build-kind-runner-image",
+			"hangar-generated-pod-contract/hangar-generated-pod-contract",
+			"hangar-disk-store-contract/hangar-disk-store-contract",
+			"hangar-cluster-contract/hangar-cluster-contract",
+			"run-cancellation-kubelet/run-cancellation-kubelet",
+			"k8s-behavioral-tests/k8s-behavioral",
+		}),
+	)
 })
