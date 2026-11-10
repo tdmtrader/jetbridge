@@ -56,14 +56,16 @@ runs privileged without a step pod grant.
 The rule that a step pod holds privilege only where the operator allowed it.
 No step configuration can add a capability or join a host namespace: nothing
 that builds a step pod sets one, and
-`TestNoStepPodCodeSetsACapabilityOrAHostNamespace` keeps it so. A step pod's
-security context follows the task's `privileged:` or, for a get, put or
-check, its resource type's `privileged:`, and whether that is admitted is the
-privilege mode's. Under the `granted` privilege mode the step pod admission
-refuses, at creation, a pod that is privileged, adds a capability or joins a
-host namespace in any container or init container unless its step pod
-identity's grant declares `privileged=true`; the refusal names the owner and
-the grant it lacks, and no Pod or Job is made. A check holds no step pod grant,
+`TestNoStepPodCodeSetsACapabilityOrAHostNamespace` keeps it so, and the step
+pod admission refuses such a pod in every privilege mode and under every
+grant, naming what it found: a host namespace or a capability is a different
+power from `privileged`, and no grant admits one. A step pod's security
+context follows the task's `privileged:` or, for a get, put or check, its
+resource type's `privileged:`, and whether that is admitted is the privilege
+mode's. Under the `granted` privilege mode the step pod admission refuses, at
+creation, a pod with a privileged container or init container unless its step
+pod identity's grant declares `privileged=true`; the refusal names the owner
+and the grant it lacks, and no Pod or Job is made. A check holds no step pod grant,
 so a privileged check is refused in that mode. Sidecars are never privileged.
 Reusing a live pod and resuming a step Job after a web restart do not
 re-admit privilege yet: a pod created before the mode changed keeps running.
