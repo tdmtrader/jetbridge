@@ -126,6 +126,12 @@ func startOutputDaemon() (*outputDaemonHarness, error) { return startOutputDaemo
 func startTLSOutputDaemon() (*outputDaemonHarness, error) { return startOutputDaemonWith(true) }
 
 func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
+	return startOutputDaemonForNode(secure, harnessNodeUID)
+}
+
+// startOutputDaemonForNode is the daemon of the node whose UID is nodeUID: it
+// refuses an admission that names any other.
+func startOutputDaemonForNode(secure bool, nodeUID string) (*outputDaemonHarness, error) {
 	binary, err := buildOutputDaemon()
 	if err != nil {
 		return nil, err
@@ -177,7 +183,7 @@ func startOutputDaemonWith(secure bool) (*outputDaemonHarness, error) {
 		// two MACs are domain-separated, so the one file serves both.
 		"--resolve-capability-key", keyFile,
 		"--execution-control",
-		"--node-uid", harnessNodeUID,
+		"--node-uid", nodeUID,
 		"--storage-path", filepath.Join(dir, "storage"),
 		"--output-scratch-dir", filepath.Join(dir, "scratch"),
 		// Standalone: no Kubernetes API to read Pods from, so a capture seal
