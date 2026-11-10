@@ -36,6 +36,9 @@ func (s *OutputSource) RecoverExecutionOutcome(ctx context.Context, name string,
 	if start.Kind != executioncontrol.AcknowledgementStart {
 		return executioncontrol.ClassifyResult{}, output.ErrInvalidIdentity
 	}
+	if job, ok := stepJobOfIdentity(start.ProcessIdentity); ok {
+		return s.recoverJobExecutionOutcome(ctx, name, start, job)
+	}
 	state, _, err := executionJournalFromIdentity(start.ProcessIdentity)
 	if err != nil {
 		return executioncontrol.ClassifyResult{}, fmt.Errorf("%w: %v", output.ErrUnresolved, err)

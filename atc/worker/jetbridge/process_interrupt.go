@@ -26,6 +26,9 @@ func (s *OutputSource) InterruptExecution(ctx context.Context, node string, star
 	if start.Kind != executioncontrol.AcknowledgementStart {
 		return output.ErrInvalidIdentity
 	}
+	if job, ok := stepJobOfIdentity(start.ProcessIdentity); ok {
+		return s.interruptJobExecution(ctx, node, start, job)
+	}
 	state, resource, err := executionJournalFromIdentity(start.ProcessIdentity)
 	if err != nil {
 		return fmt.Errorf("%w: %v", output.ErrUnresolved, err)

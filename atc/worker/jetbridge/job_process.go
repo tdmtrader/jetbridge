@@ -42,9 +42,19 @@ type jobProcess struct {
 	// answer is set for a resource command, whose stdout the launcher wrote
 	// to the step's answer directory rather than to the container log.
 	answer bool
-	// exact is an exact task's control state (exact_job_process.go); nil
-	// for every other step.
-	exact *exactJobExecution
+	// exact is an exact task's control state for its current Job
+	// (exact_job_process.go); nil for every other step. The rest is what an
+	// exact task's Wait needs to make another Job for it (exact_job_wait.go).
+	exact           *exactJobExecution
+	spec            runtime.ProcessSpec
+	stdin           []byte
+	replaced        bool
+	relocatedFrom   []string
+	relocationSpent bool
+	// relocatable, when set, says whether an Unschedulable pod may be moved
+	// to another node; followPod then hands it back with errExactRelocate
+	// once it has waited relocationGrace.
+	relocatable func(*corev1.Pod) bool
 }
 
 func newJobProcess(id string, container *Container, pio runtime.ProcessIO) *jobProcess {
@@ -83,6 +93,12 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	var spanErr error
 	defer func() { tracing.End(span, spanErr) }()
 
+	if p.exact != nil {
+		result, err := p.waitExact(lagerctx.NewContext(ctx, logger))
+		spanErr = err
+		return result, err
+	}
+
 	// The envelope is the command's to fetch while it runs and nobody's
 	// after; it holds the resource's credentials, so it does not outlive
 	// Wait on any path.
@@ -96,14 +112,6 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	finished := false
 	defer func() {
 		if finished {
-			return
-		}
-		// An exact task whose start the ledger holds and whose outcome it
-		// does not keeps its Job: the pod is the only witness of how the
-		// command ended, and nothing yet stops or recovers it. The start
-		// gate is shut first, so no start is recorded after this decides.
-		if p.exact.closeGate() {
-			logger.Info("keeping-started-exact-step-job")
 			return
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -123,9 +131,6 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	}
 	podName := pod.Name
 	logger = logger.WithData(lager.Data{"pod": podName})
-	if p.exact != nil {
-		p.exact.admit(ctx, podName)
-	}
 
 	sidecarWriters, err := p.sidecarLogWriters()
 	if err != nil {
@@ -151,20 +156,6 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 
 	state, err := p.followPod(ctx, podName)
 	if err != nil {
-		// An exact task whose start was recorded may still be running: its
-		// fate is unproven, as the exec runtime reports a lost transport.
-		// The step's own cancellation is joined, as there. Stopping the
-		// command (the ledger's stop request, then the pod) is the next
-		// seam to fill; until then its Job is kept (above).
-		if p.exact.closeGate() {
-			err = fmt.Errorf("%w: following the started step job's pod: %v", ErrExactOutcomeUnresolved, err)
-			if ctx.Err() != nil && !errors.Is(err, ctx.Err()) {
-				err = errors.Join(err, ctx.Err())
-			}
-			logger.Error("exact-step-unresolved", err)
-			spanErr = err
-			return runtime.ProcessResult{}, err
-		}
 		if ctx.Err() != nil {
 			spanErr = ctx.Err()
 			return runtime.ProcessResult{}, ctx.Err()
@@ -187,14 +178,6 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	if !mainStreamed && logWriter != nil {
 		if err := readContainerLogs(ctx, p.clientset, p.config.Namespace, podName, mainContainerName, logWriter); err != nil && p.processIO.Stderr != nil {
 			fmt.Fprintf(p.processIO.Stderr, "\nwarning: the command's log could not be read: %v\n", err)
-		}
-	}
-
-	// An exact task's exit is exposed only once the node holds it.
-	if p.exact != nil {
-		if err := p.exact.finish(ctx, podName, state.result.ExitStatus); err != nil {
-			spanErr = err
-			return runtime.ProcessResult{}, err
 		}
 	}
 
@@ -254,7 +237,18 @@ func (p *jobProcess) followPod(ctx context.Context, podName string) (jobPodOutco
 		if !running {
 			nextCtx = startupCtx
 		}
+		// An Unschedulable pod is updated once and then left alone, so a move
+		// that falls due must not wait for an event that may never come.
+		cancelNext := context.CancelFunc(func() {})
+		relocating := !unschedulableFirstSeen.IsZero() && lastPod != nil && p.relocatable != nil && p.relocatable(lastPod)
+		if relocating {
+			nextCtx, cancelNext = context.WithTimeout(nextCtx, max(relocationGrace-time.Since(unschedulableFirstSeen), 0)+10*time.Millisecond)
+		}
 		pod, err := watcher.Next(nextCtx)
+		cancelNext()
+		if err != nil && relocating && errors.Is(err, context.DeadlineExceeded) && startupCtx.Err() == nil && ctx.Err() == nil {
+			pod, err = lastPod, nil
+		}
 		if err != nil && !running && startupCtx.Err() != nil && ctx.Err() == nil {
 			if lastPod != nil {
 				writePodDiagnostics(lastPod, p.processIO.Stderr)
@@ -303,6 +297,9 @@ func (p *jobProcess) followPod(ctx context.Context, podName string) (jobPodOutco
 			if !unschedulableNotified {
 				fmt.Fprintf(p.processIO.Stderr, "pod is Unschedulable: %s — waiting up to %s for cluster resources\n", message, podSchedulingTimeout(p.config))
 				unschedulableNotified = true
+			}
+			if p.relocatable != nil && time.Since(unschedulableFirstSeen) > relocationGrace && p.relocatable(pod) {
+				return jobPodOutcome{}, errExactRelocate
 			}
 			if time.Since(unschedulableFirstSeen) > podSchedulingTimeout(p.config) {
 				writePodDiagnostics(pod, p.processIO.Stderr)
