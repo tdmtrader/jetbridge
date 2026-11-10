@@ -254,7 +254,7 @@ var _ = Describe("An exact task on the job step runtime", func() {
 
 		starts := recorded()
 		Expect(starts).To(HaveLen(1))
-		Expect(starts[0].PodUID).To(Equal(executioncontrol.PodUID("uid-" + mainPod)), "the start names the token's pod")
+		Expect(starts[0].PodUID).To(Equal(executioncontrol.PodUID("uid-"+mainPod)), "the start names the token's pod")
 		Expect(starts[0].ProcessIdentity).To(Equal(executioncontrol.ProcessIdentity("job-v1:uid-" + jobName)))
 		Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
 
@@ -377,9 +377,9 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		var execWitnesses []executioncontrol.Acknowledgement
 		execConfig := NewConfig("test-ns", "")
 		execContainer := &Container{
-			handle:        "pause-handle",
-			podName:       "pause-pod",
-			metadata:      db.ContainerMetadata{Type: db.ContainerTypeTask},
+			handle:   "pause-handle",
+			podName:  "pause-pod",
+			metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
 			containerSpec: runtime.ContainerSpec{Type: db.ContainerTypeTask, ExecutionControl: &runtime.ExecutionControl{
 				Version: runtime.ExecutionControlVersion, Phase: runtime.ControlPhaseAdmitted, Identity: identity,
 				Endpoint: execHarness.Endpoint, Capability: "base-capability",

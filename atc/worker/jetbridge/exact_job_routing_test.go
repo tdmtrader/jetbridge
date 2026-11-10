@@ -91,35 +91,36 @@ func TestNothingInProductionSetsTheExactJobRuntimeGate(t *testing.T) {
 		filepath.Join("atc", "worker", "jetbridge", "config.go"):   true,
 		filepath.Join("atc", "worker", "jetbridge", "step_job.go"): true,
 	}
-	for _, dir := range []string{"atc", "cmd", "deploy"} {
-		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, entry os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				if entry.Name() == "node_modules" || entry.Name() == "brine" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			if !strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") && !strings.HasSuffix(path, ".tpl") && !strings.HasSuffix(path, ".json") {
-				return nil
-			}
-			body, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			relative, _ := filepath.Rel(root, path)
-			if strings.Contains(string(body), field) && !allowed[relative] {
-				t.Errorf("%s names %s: only tests may route an exact execution to the job runtime", relative, field)
+	// The whole repository: a chart template, a pipeline, a script or a
+	// command's wiring could each set it. Only tests may.
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			switch {
+			case entry.Name() == ".git", entry.Name() == "node_modules":
+				return filepath.SkipDir
+			case entry.Name() == ".claude" && filepath.Dir(path) == root:
+				// Other worktrees of this repository live under it.
+				return filepath.SkipDir
 			}
 			return nil
-		})
-		if err != nil {
-			t.Fatalf("walking %s: %v", dir, err)
 		}
+		if !entry.Type().IsRegular() || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		relative, _ := filepath.Rel(root, path)
+		if bytes.Contains(body, []byte(field)) && !allowed[relative] {
+			t.Errorf("%s names %s: only tests may route an exact execution to the job runtime", relative, field)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", root, err)
 	}
 }
