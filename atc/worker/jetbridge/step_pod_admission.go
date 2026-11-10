@@ -50,12 +50,15 @@ func stepPodRootsFor(config Config, handle, reservedDir string) stepPodRoots {
 // `steps/<handle>/`, and filepath.Join cleans `..` away, so an unchecked name
 // could otherwise mount any path on the node.
 //
-// It is also the privilege gate at creation: under allowance.enforced
-// (--kubernetes-step-privilege=granted) a pod that holds privilege -- a
-// privileged container or init container, an added Linux capability, or the
-// host's network, PID or IPC namespace -- is refused unless its step pod
-// identity's grant declares privileged=true. Unenforced, privilege is admitted
-// as the task or resource type asks, as it was before the gate.
+// It is also the privilege gate at creation. A pod that adds a Linux
+// capability or joins the host's network, PID or IPC namespace is refused in
+// every mode and under every grant: no step pod builder sets one
+// (TestNoStepPodCodeSetsACapabilityOrAHostNamespace), so the refusal changes
+// nothing that runs today and covers any path that someday would. A
+// privileged container or init container is refused under allowance.enforced
+// (--kubernetes-step-privilege=granted) unless the step pod identity's grant
+// declares privileged=true; unenforced, it is admitted as the task or
+// resource type asks, as it was before the gate.
 func admitStepPod(pod *corev1.Pod, roots stepPodRoots, allowance privilegeAllowance) error {
 	if err := allowance.admit(pod); err != nil {
 		return err
@@ -130,8 +133,8 @@ func (roots stepPodRoots) classify(volume corev1.Volume) (hostPathKind, error) {
 
 // privilegeAllowance is what privilege one step pod may hold, derived from its
 // resolved step pod identity and the web's privilege mode
-// (Container.privilegeAllowanceFor). The zero value is the any mode: nothing is
-// gated.
+// (Container.privilegeAllowanceFor). The zero value is the any mode: a
+// privileged container is admitted; a capability or host namespace never is.
 type privilegeAllowance struct {
 	// enforced is --kubernetes-step-privilege=granted.
 	enforced bool
@@ -143,10 +146,14 @@ type privilegeAllowance struct {
 }
 
 func (allowance privilegeAllowance) admit(pod *corev1.Pod) error {
+	if found := forbiddenPrivilege(pod); found != "" {
+		return fmt.Errorf("refusing step pod %q: %s, and no step pod grant admits it: a step pod never adds a "+
+			"Linux capability or joins a host namespace, whatever --kubernetes-step-privilege is", pod.Name, found)
+	}
 	if !allowance.enforced || allowance.privileged {
 		return nil
 	}
-	held := heldPrivilege(pod)
+	held := privilegedContainer(pod)
 	if held == "" {
 		return nil
 	}
@@ -154,9 +161,9 @@ func (allowance privilegeAllowance) admit(pod *corev1.Pod) error {
 		"that declares privileged=true (--kubernetes-step-privilege=granted). %s", pod.Name, held, allowance.refusal)
 }
 
-// heldPrivilege names the first privilege a pod holds, or is empty for a pod
-// that holds none.
-func heldPrivilege(pod *corev1.Pod) string {
+// forbiddenPrivilege names the first host namespace or added capability a pod
+// holds, or is empty for a pod that holds none.
+func forbiddenPrivilege(pod *corev1.Pod) string {
 	switch {
 	case pod.Spec.HostNetwork:
 		return "the pod joins the host's network namespace"
@@ -165,35 +172,46 @@ func heldPrivilege(pod *corev1.Pod) string {
 	case pod.Spec.HostIPC:
 		return "the pod joins the host's IPC namespace"
 	}
-	containerPrivilege := func(container corev1.Container, kind string) string {
+	return eachContainer(pod, func(container corev1.Container, kind string) string {
 		context := container.SecurityContext
-		if context == nil {
+		if context == nil || context.Capabilities == nil || len(context.Capabilities.Add) == 0 {
 			return ""
 		}
-		if context.Privileged != nil && *context.Privileged {
+		added := make([]string, len(context.Capabilities.Add))
+		for i, capability := range context.Capabilities.Add {
+			added[i] = string(capability)
+		}
+		noun := "capability"
+		if len(added) > 1 {
+			noun = "capabilities"
+		}
+		return fmt.Sprintf("%s %q adds the Linux %s %s", kind, container.Name, noun, strings.Join(added, ", "))
+	})
+}
+
+// privilegedContainer names the first privileged container or init container
+// of a pod, or is empty.
+func privilegedContainer(pod *corev1.Pod) string {
+	return eachContainer(pod, func(container corev1.Container, kind string) string {
+		context := container.SecurityContext
+		if context != nil && context.Privileged != nil && *context.Privileged {
 			return fmt.Sprintf("%s %q is privileged", kind, container.Name)
 		}
-		if context.Capabilities != nil && len(context.Capabilities.Add) > 0 {
-			added := make([]string, len(context.Capabilities.Add))
-			for i, capability := range context.Capabilities.Add {
-				added[i] = string(capability)
-			}
-			noun := "capability"
-			if len(added) > 1 {
-				noun = "capabilities"
-			}
-			return fmt.Sprintf("%s %q adds the Linux %s %s", kind, container.Name, noun, strings.Join(added, ", "))
-		}
 		return ""
-	}
+	})
+}
+
+// eachContainer returns the first non-empty answer of found over a pod's init
+// containers, then its containers.
+func eachContainer(pod *corev1.Pod, found func(corev1.Container, string) string) string {
 	for _, container := range pod.Spec.InitContainers {
-		if held := containerPrivilege(container, "init container"); held != "" {
-			return held
+		if answer := found(container, "init container"); answer != "" {
+			return answer
 		}
 	}
 	for _, container := range pod.Spec.Containers {
-		if held := containerPrivilege(container, "container"); held != "" {
-			return held
+		if answer := found(container, "container"); answer != "" {
+			return answer
 		}
 	}
 	return ""
