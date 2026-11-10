@@ -646,8 +646,8 @@ func (c *Container) attachJob(ctx context.Context, processID string) (runtime.Pr
 		}
 	}
 	// An exact task's exit is its result only once the ledger holds it, and
-	// the annotation above is written only then. Recovering it from the pod
-	// is not done yet (exact_job_process.go).
+	// the annotation above is written only then. Anything else falls through
+	// to Run, which resumes the Job and asks the ledger (exact_job_wait.go).
 	if c.exactTaskOnJobRuntime() {
 		return nil, fmt.Errorf("attach: exact step job %q has no acknowledged outcome to report", c.podName)
 	}

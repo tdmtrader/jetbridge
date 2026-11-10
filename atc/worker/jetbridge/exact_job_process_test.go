@@ -32,8 +32,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
@@ -110,6 +112,15 @@ func (log *eventLog) count(event string) int {
 		}
 	}
 	return n
+}
+
+func (ordered *orderedOutputControl) RequestStop(ctx context.Context,
+	id executioncontrol.Identity) (executioncontrol.RequestSourcePreservingStopResult, error) {
+	result, err := ordered.OutputControl.RequestStop(ctx, id)
+	if err == nil {
+		ordered.log.add("node-stop")
+	}
+	return result, err
 }
 
 func (ordered *orderedOutputControl) RecordOutcome(ctx context.Context, id executioncontrol.Identity,
@@ -536,12 +547,55 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		Expect(finished.err).To(MatchError(context.Canceled))
 		Expect(jobExists()).To(BeFalse(), "an aborted step that never started kept its Job")
 
-		// A launcher that asks now, through the handler or straight at the
-		// gate, is refused; nothing reaches the ledger.
-		Expect(fetch("tok-main")).ToNot(Equal(http.StatusOK))
+		// The envelope went with the step, so only the gate itself can be
+		// asked: it is shut, and nothing reaches the ledger.
 		Expect(process.exact.beforeServe(ctx, pod)).To(MatchError(errExactJobClosed))
 		Expect(classify().Classification).To(Equal(executioncontrol.ClassificationNeverStarted))
 		Expect(events.all()).To(BeEmpty())
+	})
+
+	// The node committed the start and its answer never reached this web,
+	// so nothing in memory says the command may be running: the ledger does.
+	loseTheStartAnswer := func() {
+		ordered.mu.Lock()
+		ordered.loseStartAnswers = 1
+		ordered.mu.Unlock()
+		Expect(fetch("tok-main")).To(Equal(http.StatusServiceUnavailable))
+		Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
+	}
+
+	It("keeps the Job of an aborted step whose start the node holds and the web never heard", func() {
+		waitCtx, abort := context.WithCancel(ctx)
+		defer abort()
+		_, done := startWith(waitCtx)
+		loseTheStartAnswer()
+
+		abort()
+		var finished waited
+		Eventually(done, 15*time.Second).Should(Receive(&finished))
+		Expect(finished.err).To(MatchError(ErrExactOutcomeUnresolved))
+		Expect(finished.err).To(MatchError(context.Canceled))
+		Expect(jobExists()).To(BeTrue(), "the Job of an execution the node holds as executing was deleted")
+	})
+
+	It("keeps the Job of a step whose pod failed after a start the web never heard", func() {
+		done := start()
+		loseTheStartAnswer()
+		terminate(1, "")
+		var finished waited
+		Eventually(done, 15*time.Second).Should(Receive(&finished))
+		Expect(finished.err).To(MatchError(ErrExactOutcomeUnresolved))
+		Expect(jobExists()).To(BeTrue(), "the Job of an execution the node holds as executing was deleted")
+	})
+
+	It("does not serve a pod whose command a stop has already ended", func() {
+		done := start()
+		loseTheStartAnswer()
+		// A Run's cancellation found the node's start and stopped the pod.
+		Expect(stopStepJobPod(ctx, clientset, "test-ns", mainPod, types.UID("uid-"+mainPod))).To(Succeed())
+		Expect(fetch("tok-main")).To(Equal(http.StatusConflict), "the launcher's retry was served after its pod was stopped")
+		terminate(143, "")
+		Eventually(done, 15*time.Second).Should(Receive())
 	})
 
 	It("keeps the Job of a start recorded while the step was being aborted", func() {
@@ -704,8 +758,29 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		terminatePod(name, exit, launcherRecord(int(exit)))
 	}
 
+	// outputSource is a Run's view of the node, as a web with no step in
+	// hand has it: mTLS to the node's daemon.
+	outputSource := func() *OutputSource {
+		endpoint, err := url.Parse(harness.Endpoint)
+		Expect(err).ToNot(HaveOccurred())
+		port, err := strconv.Atoi(endpoint.Port())
+		Expect(err).ToNot(HaveOccurred())
+		config := NewConfig("test-ns", "")
+		config.OutputPlaneEnabled = true
+		config.ArtifactDaemonPort = port
+		config.ArtifactDaemonTLSEnabled = true
+		config.ArtifactDaemonTLSCert = harness.PKI.clientCert
+		config.ArtifactDaemonTLSKey = harness.PKI.clientKey
+		config.ArtifactDaemonTLSCACert = harness.PKI.caCert
+		return NewOutputSource(clientset, config, harness.Signer)
+	}
+
 	Describe("stopping", func() {
 		It("stops an aborted task through the node and the pod's deadline, and records how it ended", func() {
+			clientset.PrependReactor("patch", "pods", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
+				events.add("pod-deadline")
+				return false, nil, nil
+			})
 			waitCtx, abort := context.WithCancel(ctx)
 			defer abort()
 			_, done := startWith(waitCtx)
@@ -717,6 +792,14 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			Eventually(done, 15*time.Second).Should(Receive(&finished))
 			Expect(finished.err).ToNot(HaveOccurred())
 			Expect(finished.result.ExitStatus).To(Equal(143))
+
+			// The node is asked first, then the pod: a stop the node never
+			// accepted must not end a command the node still holds as running.
+			Expect(events.all()).To(ContainElements("node-stop", "pod-deadline"))
+			Expect(indexOf(events.all(), "node-stop")).To(BeNumerically("<", indexOf(events.all(), "pod-deadline")))
+			stopped, err := clientset.CoreV1().Pods("test-ns").Get(ctx, mainPod, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(*stopped.Spec.ActiveDeadlineSeconds).To(BeNumerically("<=", 2), "the deadline is not what the pod had run")
 
 			closed := classify()
 			Expect(closed.Classification.Authoritative()).To(BeTrue())
@@ -731,21 +814,9 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			done := start()
 			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
 			start := recorded()[0]
+			source := outputSource()
 
-			endpoint, err := url.Parse(harness.Endpoint)
-			Expect(err).ToNot(HaveOccurred())
-			port, err := strconv.Atoi(endpoint.Port())
-			Expect(err).ToNot(HaveOccurred())
-			config := NewConfig("test-ns", "")
-			config.OutputPlaneEnabled = true
-			config.ArtifactDaemonPort = port
-			config.ArtifactDaemonTLSEnabled = true
-			config.ArtifactDaemonTLSCert = harness.PKI.clientCert
-			config.ArtifactDaemonTLSKey = harness.PKI.clientKey
-			config.ArtifactDaemonTLSCACert = harness.PKI.caCert
-			source := NewOutputSource(clientset, config, harness.Signer)
-
-			_, err = source.RecoverExecutionOutcome(ctx, "node-1", start)
+			_, err := source.RecoverExecutionOutcome(ctx, "node-1", start)
 			Expect(err).To(MatchError(output.ErrUnresolved), "a running command was recovered")
 			Expect(source.InterruptExecution(ctx, "node-1", start)).To(Succeed())
 			kubeletEndsOnDeadline(mainPod, 143)
@@ -760,6 +831,99 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			Eventually(done, 15*time.Second).Should(Receive(&finished))
 			Expect(finished.err).ToNot(HaveOccurred())
 			Expect(finished.result.ExitStatus).To(Equal(143))
+		})
+
+		It("leaves a stopped task unresolved when its launcher leaves no record", func() {
+			waitCtx, abort := context.WithCancel(ctx)
+			defer abort()
+			_, done := startWith(waitCtx)
+			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+			abort()
+			Eventually(func() *int64 {
+				pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, mainPod, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				return pod.Spec.ActiveDeadlineSeconds
+			}, 10*time.Second, 20*time.Millisecond).ShouldNot(BeNil())
+			// Killed before it could write anything.
+			terminate(137, "")
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).To(MatchError(ErrExactOutcomeUnresolved))
+			Expect(finished.err).To(MatchError(context.Canceled))
+			Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
+			Expect(jobExists()).To(BeTrue())
+		})
+
+		It("reports the outcome the node already holds when an aborted task had ended", func() {
+			waitCtx, abort := context.WithCancel(ctx)
+			defer abort()
+			_, done := startWith(waitCtx)
+			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+			_, err := harness.Client.RecordOutcome(ctx, identity, executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{ExitCode: 6})
+			Expect(err).ToNot(HaveOccurred())
+			abort()
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).ToNot(HaveOccurred())
+			Expect(finished.result.ExitStatus).To(Equal(6))
+			pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, mainPod, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pod.Spec.ActiveDeadlineSeconds).To(BeNil(), "an ended command's pod was stopped")
+			Expect(events.all()).ToNot(ContainElement("node-stop"))
+		})
+
+		DescribeTable("leaves a Run's recovery unresolved or refused when the start's pod is not there to read",
+			func(lose func(), want error) {
+				done := start()
+				Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+				start := recorded()[0]
+				lose()
+				_, err := outputSource().RecoverExecutionOutcome(ctx, "node-1", start)
+				Expect(err).To(MatchError(want))
+				Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
+				if _, err := clientset.CoreV1().Pods("test-ns").Get(ctx, mainPod, metav1.GetOptions{}); err == nil {
+					terminate(0, launcherRecord(0))
+				}
+				Eventually(done, 15*time.Second).Should(Receive())
+			},
+			Entry("the pod is gone", func() {
+				Expect(clientset.Tracker().Delete(corev1.SchemeGroupVersion.WithResource("pods"), "test-ns", mainPod)).To(Succeed())
+			}, output.ErrUnresolved),
+			Entry("the pod is another Job's", func() {
+				pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, mainPod, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pod.OwnerReferences[0].UID = "uid-another-job"
+				_, err = clientset.CoreV1().Pods("test-ns").Update(ctx, pod, metav1.UpdateOptions{})
+				Expect(err).ToNot(HaveOccurred())
+			}, output.ErrInvalidIdentity),
+		)
+	})
+
+	Describe("attaching", func() {
+		It("answers an exact task from the exit the node acknowledged, never from the pod alone", func() {
+			first := run()
+			first.exact.admit(ctx, mainPod)
+			Expect(first.exact.awaitAdmission(ctx)).To(Succeed())
+			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+			terminate(7, launcherRecord(7))
+
+			// A new web: the pod has an exit and nothing acknowledged it.
+			container = newWeb()
+			_, err := container.Attach(ctx, "exact-job-handle", runtime.ProcessIO{})
+			Expect(err).To(HaveOccurred(), "an unacknowledged exit was reported")
+
+			// The annotation is written only once the node holds the outcome.
+			pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, mainPod, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Annotations = map[string]string{exitStatusAnnotationKey: "7"}
+			_, err = clientset.CoreV1().Pods("test-ns").Update(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			container = newWeb()
+			process, err := container.Attach(ctx, "exact-job-handle", runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+			result, err := process.Wait(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.ExitStatus).To(Equal(7))
 		})
 	})
 
@@ -801,6 +965,24 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			Eventually(done, 15*time.Second).Should(Receive(&finished))
 			Expect(finished.err).ToNot(HaveOccurred())
 			Expect(jobUID()).To(Equal(before), "the Job was replaced rather than resumed")
+		})
+
+		It("unsuspends a Job a web before it made and died before unsuspending", func() {
+			job, err := container.buildStepJob(runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "exit 3"}}, true)
+			Expect(err).ToNot(HaveOccurred())
+			_, err = clientset.BatchV1().Jobs("test-ns").Create(ctx, job, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			done := restartWeb()
+			Eventually(func() bool {
+				resumed, err := clientset.BatchV1().Jobs("test-ns").Get(ctx, jobName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				return resumed.Spec.Suspend != nil && *resumed.Spec.Suspend
+			}, 10*time.Second, 50*time.Millisecond).Should(BeFalse(), "the resumed Job is still suspended")
+			Eventually(func() int { return fetch("tok-main") }, 10*time.Second, 50*time.Millisecond).Should(Equal(http.StatusOK))
+			terminate(0, launcherRecord(0))
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).ToNot(HaveOccurred())
 		})
 
 		It("follows a command a web before it started, on the ledger's replay of its start", func() {
@@ -885,9 +1067,11 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			Expect(classify().Classification).To(Equal(executioncontrol.ClassificationNeverStarted))
 		})
 
-		It("is never replaced once a start is recorded", func() {
+		It("is never replaced once the node holds a start, even one the web never heard", func() {
 			done := start()
-			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+			// Nothing in this web's memory says the command started; only the
+			// node's classification can stop the replacement.
+			loseTheStartAnswer()
 			evict(mainPod)
 			var finished waited
 			Eventually(done, 15*time.Second).Should(Receive(&finished))
@@ -979,13 +1163,11 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		It("puts a refused move back where it was and spends the relocations", func() {
 			refuse = errors.New("no other node fits")
 			podFor = func(n int, job *batchv1.Job) *corev1.Pod { return unschedulableJobPod(nthJobPod(jobName, n)) }
-			waitCtx, abort := context.WithCancel(ctx)
-			defer abort()
 			process := run()
 			done := make(chan waited, 1)
 			go func() {
 				defer GinkgoRecover()
-				result, err := process.Wait(waitCtx)
+				result, err := process.Wait(ctx)
 				done <- waited{result, err}
 			}()
 			Eventually(func() error {
@@ -993,11 +1175,50 @@ var _ = Describe("An exact task on the job step runtime", func() {
 				return err
 			}, 10*time.Second).Should(Succeed(), "the refused move did not put the Job back")
 			Consistently(func() int { return len(relocated) }, 500*time.Millisecond).Should(Equal(1), "a spent relocation was tried again")
-			abort()
-			Eventually(done, 15*time.Second).Should(Receive())
+
+			// The node frees up: the Job put back is scheduled where it was
+			// admitted, and starts there.
+			back, err := clientset.CoreV1().Pods("test-ns").Get(ctx, nthJobPod(jobName, 2), metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			scheduled := runningJobPod(back.Name, "node-1")
+			back.Spec.NodeName, back.Status = scheduled.Spec.NodeName, scheduled.Status
+			_, err = clientset.CoreV1().Pods("test-ns").Update(ctx, back, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Eventually(func() int { return fetch("tok-2") }, 10*time.Second, 50*time.Millisecond).Should(Equal(http.StatusOK))
+			terminatePod(back.Name, 0, launcherRecord(0))
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).ToNot(HaveOccurred())
+			Expect(classify().Classification.Authoritative()).To(BeTrue())
+		})
+
+		It("does not move a pod that was bound and admitted", func() {
+			podFor = func(n int, job *batchv1.Job) *corev1.Pod { return runningJobPod(nthJobPod(jobName, n), "node-1") }
+			process := run()
+			process.exact.admit(ctx, mainPod)
+			Expect(process.exact.awaitAdmission(ctx)).To(Succeed())
+			before, err := clientset.BatchV1().Jobs("test-ns").Get(ctx, jobName, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(process.relocateExactJob(ctx)).To(Succeed())
+			Expect(relocated).To(BeEmpty(), "an admitted pod's execution was moved")
+			Expect(process.relocationSpent).To(BeTrue())
+			after, err := clientset.BatchV1().Jobs("test-ns").Get(ctx, jobName, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(after.UID).To(Equal(before.UID))
+			Expect(fetch("tok-main")).To(Equal(http.StatusOK), "the admitted pod's gate was shut")
 		})
 	})
 })
+
+func indexOf(values []string, value string) int {
+	for i, v := range values {
+		if v == value {
+			return i
+		}
+	}
+	return -1
+}
 
 // nodeControls is one output control per node name.
 type nodeControls map[string]OutputControl

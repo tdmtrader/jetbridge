@@ -202,6 +202,13 @@ func (e *exactJobExecution) beforeServe(ctx context.Context, pod *corev1.Pod) er
 	if e.closed {
 		return errExactJobClosed
 	}
+	// A pod whose deadline was cut (a stop: stopStepJobPod) or that has
+	// failed is ending; a command must not begin in it, whatever the ledger
+	// still says. The ledger's own refusal of a start after a stop is not
+	// here yet.
+	if pod.Spec.ActiveDeadlineSeconds != nil || pod.Status.Phase == corev1.PodFailed {
+		return fmt.Errorf("pod %s has been stopped: its envelope is never served", pod.Name)
+	}
 
 	wait, cancel := context.WithTimeout(ctx, exactJobAdmissionWait)
 	defer cancel()
