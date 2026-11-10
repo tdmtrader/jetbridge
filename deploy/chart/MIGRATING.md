@@ -392,20 +392,28 @@ outside a grant that declares `privileged: true`. The step fails with an error
 naming its owner (`<team>/<pipeline>/<job>` or `main/one-off`) and the grant it
 lacks, and no Pod or Job is made. A build that can hold no grant (an instanced
 pipeline's job, another team's one-off, a Run, or a build the web cannot find)
-fails the same way, and a failed build lookup fails any step. A check holds no
-grant in this release, so a check whose resource type is privileged is refused
-too. An unknown mode stops the web at startup. To opt in:
+fails the same way, and a failed build lookup fails any step. A check is
+owned by the resource type whose image it runs: a privileged check is admitted
+only under a grant whose owner is `<team>/<pipeline>/resource-type/<type>`,
+with `privileged: true` and no `serviceAccount` (a type built on a privileged
+type needs the privileged type's grant). A check of a base type, of an
+instanced or Run pipeline, or in a one-off build is refused. An unknown mode
+stops the web at startup. To opt in:
 
 1. Run `hack/step-pod-audit pods` against the cluster (it is read-only). Each
-   privileged step pod it reports beyond a grant is an owner that needs one.
+   privileged step pod it reports beyond a grant is an owner that needs one; a
+   privileged check pod needs a resource-type grant for the privileged type it
+   runs, which the pipeline's `resource_types` show.
 2. Add a `kubernetes.stepPodGrants` entry with `privileged: true` for each such
    owner, leaving `serviceAccount` out to keep the default step pod identity's
    account, and sync. Under `any` this changes nothing a step runs.
 3. Set `kubernetes.stepPrivilege: granted` and sync; the web logs
    `step-privilege-mode` with the mode and the privileged grants at startup.
-   A privileged check, or a privileged step of an owner no grant can name (an
-   instanced pipeline's job, another team's one-off, a Run), must lose its
-   `privileged:` first.
+   A privileged step of an owner no grant can name (an instanced pipeline's
+   job or check, another team's one-off, a Run, a check of a base type) must
+   lose its `privileged:` first. `hack/step-pod-audit pods` then holds each
+   privileged check pod to the grant its `concourse.dev/step-pod-grant`
+   annotation names.
 
 `granted` with no privileged grant is legal: nothing runs privileged. A pod
 already running when the mode changes, and a step Job a restarted web resumes,

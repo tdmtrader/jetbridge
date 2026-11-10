@@ -30,6 +30,24 @@ func TestStepPodGrantsRenderOneFlagEachOnWeb(t *testing.T) {
 	}
 }
 
+// A resource-type owner is one more owner form, passed through as written;
+// web's parser holds it to privileged=true and no ServiceAccount.
+func TestAResourceTypeStepPodGrantRendersItsFlag(t *testing.T) {
+	args := webArgs(t, render(t,
+		"kubernetes.stepPodGrants[0].name=dind-checks",
+		"kubernetes.stepPodGrants[0].owner=main/ci/resource-type/dind",
+		"kubernetes.stepPodGrants[0].privileged=true",
+	))
+	want := "--kubernetes-step-pod-grant=name=dind-checks,owner=main/ci/resource-type/dind,privileged=true"
+	found := false
+	for _, arg := range args {
+		found = found || arg == want
+	}
+	if !found {
+		t.Errorf("the web args lack %s: %v", want, args)
+	}
+}
+
 func TestNoStepPodGrantRendersNoFlag(t *testing.T) {
 	if strings.Contains(render(t), "--kubernetes-step-pod-grant") {
 		t.Error("the default render passes a step pod grant")
