@@ -88,6 +88,17 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return fail("no command given")
 	}
 
+	// Past the envelope the web has recorded the command's start, so a
+	// failure to set the command up leaves the record a command that did not
+	// run leaves, with the launcher's own code. Before it (usage, the token,
+	// the fetch) nothing was started and nothing is written.
+	setupFrom := time.Now()
+	notRun := func(format string, a ...any) int {
+		fmt.Fprintf(stderr, "jb-launcher: "+format+"\n", a...)
+		writeTerminationMessage(*termPath, terminationMessage{Exit: exitUsage, StartedAt: setupFrom, FinishedAt: time.Now()})
+		return exitUsage
+	}
+
 	var childStdin io.Reader
 	if *envelopeURL != "" {
 		token, err := os.ReadFile(*tokenFile)
@@ -98,13 +109,14 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail("fetching step envelope: %v", err)
 		}
+		setupFrom = time.Now()
 		if len(stdinBytes) > 0 {
 			// A file, not a pipe: exec.Cmd copies a non-file stdin through
 			// a goroutine that only Wait collects, and the launcher reaps
 			// its children itself (see below) rather than calling Wait.
 			f, err := stdinFile(stdinBytes)
 			if err != nil {
-				return fail("staging stdin: %v", err)
+				return notRun("staging stdin: %v", err)
 			}
 			defer f.Close()
 			childStdin = f
@@ -122,7 +134,7 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	if *stdoutFile != "" {
 		f, err := os.OpenFile(*stdoutFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 		if err != nil {
-			return fail("opening stdout file: %v", err)
+			return notRun("opening stdout file: %v", err)
 		}
 		defer f.Close()
 		outFile = f
