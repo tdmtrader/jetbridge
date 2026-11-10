@@ -92,8 +92,9 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		}
 		// An exact task whose start the ledger holds and whose outcome it
 		// does not keeps its Job: the pod is the only witness of how the
-		// command ended, and nothing yet stops or recovers it.
-		if p.exact.recordedStart() {
+		// command ended, and nothing yet stops or recovers it. The start
+		// gate is shut first, so no start is recorded after this decides.
+		if p.exact.closeGate() {
 			logger.Info("keeping-started-exact-step-job")
 			return
 		}
@@ -139,6 +140,20 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 
 	state, err := p.followPod(ctx, podName)
 	if err != nil {
+		// An exact task whose start was recorded may still be running: its
+		// fate is unproven, as the exec runtime reports a lost transport.
+		// The step's own cancellation is joined, as there. Stopping the
+		// command (the ledger's stop request, then the pod) is the next
+		// seam to fill; until then its Job is kept (above).
+		if p.exact.closeGate() {
+			err = fmt.Errorf("%w: following the started step job's pod: %v", ErrExactOutcomeUnresolved, err)
+			if ctx.Err() != nil && !errors.Is(err, ctx.Err()) {
+				err = errors.Join(err, ctx.Err())
+			}
+			logger.Error("exact-step-unresolved", err)
+			spanErr = err
+			return runtime.ProcessResult{}, err
+		}
 		if ctx.Err() != nil {
 			spanErr = ctx.Err()
 			return runtime.ProcessResult{}, ctx.Err()

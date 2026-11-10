@@ -19,9 +19,12 @@ package jetbridge
 // TokenReview bound the launcher's token to and the process identity
 // job-v1:<step Job UID>; nothing else about the ledger or the Run witness
 // differs from the exec runtime's. A launcher that lost its answer and asks
-// again gets the ledger's idempotent replay of the same start. Another pod is
+// again is served on the start this web already recorded; a start whose
+// answer the web lost is the ledger's idempotent replay of it. Another pod is
 // refused before anything is recorded, and an execution the ledger does not
-// classify never_started is never served unless it is that replay.
+// classify never_started is never served unless it is that replay. Wait
+// shuts the gate before it decides whether to keep the Job, so a start is
+// never recorded for a Job it deleted.
 //
 // Not here yet: stopping or aborting a started command, recovering its
 // outcome after a web restart, resuming it, relocation, replacement, and the
@@ -73,9 +76,20 @@ type exactJobExecution struct {
 
 	// mu serializes the start gate: two requests (a launcher retry racing
 	// its first, or another pod) never interleave a classify and a start.
+	// It also orders the gate against Wait's cleanup: closed, set under it,
+	// means no start is recorded after Wait decided what to do with the Job.
 	mu      sync.Mutex
+	closed  bool
 	started atomic.Bool
+
+	// beforeStart, when set, runs inside the gate (mu held) before the
+	// ledger is asked anything. Only a test sets it, to hold the gate open.
+	beforeStart func()
 }
+
+// errExactJobClosed is a start gate whose step is over: its Wait has
+// returned, and its Job was deleted or kept on what was known then.
+var errExactJobClosed = errors.New("the exact step is over: its envelope is never served")
 
 // newExactJobExecution is the control state for an exact task routed to the
 // job runtime, or nil for every other step. A step Job of this name that
@@ -127,12 +141,29 @@ func (e *exactJobExecution) recordedStart() bool {
 	return e != nil && e.started.Load()
 }
 
+// closeGate shuts the start gate and reports whether a start was recorded
+// before it shut. A request already inside the gate finishes first; one that
+// arrives after is refused. What Wait does with the Job is decided on this
+// answer, so a start is never recorded for a Job already deleted.
+func (e *exactJobExecution) closeGate() bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closed = true
+	return e.started.Load()
+}
+
 // beforeServe is the start gate. pod is the pod the launcher's token is bound
 // to, read from the API with the UID the TokenReview named. It returns nil
 // only once the start is durable at the node and retained by the Run.
 func (e *exactJobExecution) beforeServe(ctx context.Context, pod *corev1.Pod) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return errExactJobClosed
+	}
 
 	wait, cancel := context.WithTimeout(ctx, exactJobAdmissionWait)
 	defer cancel()
@@ -144,11 +175,30 @@ func (e *exactJobExecution) beforeServe(ctx context.Context, pod *corev1.Pod) er
 	if e.admitErr != nil {
 		return fmt.Errorf("the exact execution was not admitted: %w", e.admitErr)
 	}
+	if e.beforeStart != nil {
+		e.beforeStart()
+	}
 	p := e.control
 
 	process, err := e.processIdentity(pod)
 	if err != nil {
 		return err
+	}
+
+	// This web recorded the start already: the launcher lost the answer and
+	// asks again. The same pod is served again once the Run holds the start;
+	// nothing is recorded at the node a second time.
+	if e.started.Load() {
+		if err := e.confirmAdmittedPod(pod); err != nil {
+			return err
+		}
+		if unretained := p.exact.unretainedStart; unretained != nil {
+			if err := p.recordRunWitness(ctx, *unretained); err != nil {
+				return fmt.Errorf("%w: retaining the node's exact start in the Run: %v", ErrStepEnvelopeNotReady, err)
+			}
+			p.exact.unretainedStart = nil
+		}
+		return nil
 	}
 
 	// Classify first, as the exec runtime does: an execution the ledger knows
@@ -173,7 +223,8 @@ func (e *exactJobExecution) beforeServe(ctx context.Context, pod *corev1.Pod) er
 			}
 		}
 	case executioncontrol.ClassificationExecuting:
-		// Only an idempotent replay by the same pod and process.
+		// The node committed a start whose answer this web never saw: only
+		// the ledger's idempotent replay of it, by the same pod and process.
 	default:
 		return fmt.Errorf("execution %s is %s: its envelope is never served", p.control.Identity.ExecutionID, classified.Classification)
 	}
