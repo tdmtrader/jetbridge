@@ -373,19 +373,28 @@ naming the removed key, and the cluster stays on the old release.
 ## The privilege mode (2026-11-09)
 
 A new value, `kubernetes.stepPrivilege` (`any | granted`, default `any`),
-chooses which step pods may hold privilege: a privileged container, an added
-Linux capability, or a host namespace. Nothing needs an edit to upgrade. `any`
+chooses which step pods may run a privileged container or init container.
+Nothing needs an edit to upgrade. `any`
 is the behaviour before this value: a step pod is privileged when its task's
 `privileged:` or, for a get, put or check, its resource type's says so,
 whatever `kubernetes.stepPodGrants` declare, and an `any` render is byte for
 byte the render of the chart before it. A grant that already sets
 `privileged: true` changes nothing until you choose `granted`.
 
+In both modes, and under every grant, the web refuses a step pod that adds a
+Linux capability or joins the host's network, PID or IPC namespace, naming
+what it found: a grant's `privileged: true` admits a privileged container
+only. No step the runtime builds asks for either, so this changes nothing a
+deployment runs today.
+
 Under `granted` the web refuses, when it creates the pod, every privileged step
 outside a grant that declares `privileged: true`. The step fails with an error
 naming its owner (`<team>/<pipeline>/<job>` or `main/one-off`) and the grant it
-lacks, and no Pod or Job is made. A check holds no grant in this release, so a
-check whose resource type is privileged is refused too. To opt in:
+lacks, and no Pod or Job is made. A build that can hold no grant (an instanced
+pipeline's job, another team's one-off, a Run, or a build the web cannot find)
+fails the same way, and a failed build lookup fails any step. A check holds no
+grant in this release, so a check whose resource type is privileged is refused
+too. An unknown mode stops the web at startup. To opt in:
 
 1. Run `hack/step-pod-audit pods` against the cluster (it is read-only). Each
    privileged step pod it reports beyond a grant is an owner that needs one.

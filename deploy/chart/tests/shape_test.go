@@ -94,8 +94,9 @@ import (
 // amended 2026-11-09): it removes no value. The mode's default, any, keeps a
 // deployment that runs privileged steps on its behaviour across the upgrade;
 // enforcement must be an explicit choice, and no honest existing value could
-// carry it (a step pod grant's privileged: true already means something under
-// any, and inferring enforcement from it would change upgrading deployments).
+// carry it (a step pod grant's privileged: true, unread under any, may already
+// be set, and inferring enforcement from it would change upgrading
+// deployments).
 const maxValues = 177
 
 // allowedSwitches are the only booleans the chart may have. A switch stays

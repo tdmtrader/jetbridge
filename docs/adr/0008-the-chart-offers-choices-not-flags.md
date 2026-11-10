@@ -142,7 +142,7 @@ Amended 2026-11-09: one exception to the raise rule. `kubernetes.stepPrivilege`
 removing a value. It is a mode, and its default, `any`, keeps a deployment
 that runs privileged steps on its behaviour across the upgrade, so the
 privilege gate is switched on only by an explicit choice. No honest existing
-value could carry it: a step pod grant's `privileged: true` already means
-something under `any`, and reading enforcement from it would change what an
-upgrading deployment runs. The owner accepted the exception; the raise rule
+value could carry it: a step pod grant's `privileged: true` is unread under
+`any` but may already be set, and reading enforcement from it would change
+what an upgrading deployment runs. The owner accepted the exception; the raise rule
 otherwise stands, and the reason is written beside the constant.

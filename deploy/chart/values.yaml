@@ -236,8 +236,9 @@ kubernetes:
   # e.g. [{name: brine-live, owner: main/one-off, serviceAccount: jetbridge-brine-live, privileged: true}]
   stepPodGrants: []
 
-  # -- Privilege mode: which step pods may hold privilege (a privileged
-  # container, an added capability, a host namespace).
+  # -- Privilege mode: which step pods may run a privileged container. (A
+  # step pod that adds a capability or joins a host namespace is refused in
+  # both modes, under every grant.)
   # any: as the task's or resource type's privileged: asks, whatever
   # stepPodGrants declare -- the behaviour before this value existed.
   # granted: only a step pod whose owner's grant declares privileged: true;
@@ -819,9 +820,10 @@ artifactDaemon:
 # the operator lists, and every step pod grant identity that holds privilege
 # or may create pods. Nobody else may read an inventory Secret, create a pod
 # that mounts one, or reach the node. No pipeline can join that set through a
-# ServiceAccount, a capability or a host namespace, but privilege is not
-# gated yet: a task that sets privileged:, or a step whose resource type
-# does, runs privileged without a step pod grant.
+# ServiceAccount, a capability or a host namespace. Privilege is gated only
+# under kubernetes.stepPrivilege: granted; under any, the default, a task that
+# sets privileged:, or a step whose resource type does, runs privileged
+# without a step pod grant.
 hangarBootstrap:
   enabled: false
   secretNames:
