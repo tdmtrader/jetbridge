@@ -34,6 +34,11 @@ func checkPod(name, kind, pipeline, grant string) string {
 func TestTheAuditHoldsACheckPodToItsResourceTypeGrant(t *testing.T) {
 	for _, tool := range []string{"sh", "jq"} {
 		if _, err := exec.LookPath(tool); err != nil {
+			// In CI (HANGAR_CI set) a missing tool is a failure, never a
+			// skip: a skipped audit test passes the tier vacuously.
+			if os.Getenv("HANGAR_CI") != "" {
+				t.Fatalf("no %s on PATH in CI: %v", tool, err)
+			}
 			t.Skipf("no %s on PATH: %v", tool, err)
 		}
 	}
