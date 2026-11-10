@@ -391,6 +391,7 @@ func TestDaemonSetBackend_ManagedReadInitRequiresTheExactReceipt(t *testing.T) {
 		receiptMode   os.FileMode
 		wantSuccess   bool
 		wantAttempts  int
+		wantOutput    string
 	}{
 		{name: "exact 204 and exact receipt", sequence: "204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 1},
 		{name: "a receipt already sealed needs no request", sequence: "204", receipt: exactReceipt, receiptBefore: true, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 0},
@@ -409,9 +410,10 @@ func TestDaemonSetBackend_ManagedReadInitRequiresTheExactReceipt(t *testing.T) {
 		{name: "a lost response with a sealed receipt succeeds", sequence: "204", wgetExit: "1", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 1},
 		{name: "retry no status only", sequence: "none,204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 2},
 		{name: "retry exact 503 only", sequence: "503,204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 2},
-		{name: "no status retry is bounded", sequence: "none", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 5},
-		{name: "503 retry is bounded", sequence: "503,503,503,503,503", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 5},
-		{name: "other status is terminal", sequence: "500,204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1},
+		{name: "503 six times then success", sequence: "503,503,503,503,503,503,204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 7},
+		{name: "no status six times then success", sequence: "none,none,none,none,none,none,204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantSuccess: true, wantAttempts: 7},
+		{name: "403 is terminal at once", sequence: "403,204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1, wantOutput: "refused"},
+		{name: "other status is terminal", sequence: "500,204", receipt: exactReceipt, rootMode: 0555, receiptMode: 0444, wantAttempts: 1, wantOutput: "refused"},
 	}
 
 	for _, test := range tests {
@@ -426,6 +428,47 @@ func TestDaemonSetBackend_ManagedReadInitRequiresTheExactReceipt(t *testing.T) {
 			}
 			if result.attempts != test.wantAttempts {
 				t.Fatalf("attempts = %d, want %d", result.attempts, test.wantAttempts)
+			}
+			if !strings.Contains(result.output, test.wantOutput) {
+				t.Fatalf("output = %q, want it to say %q", result.output, test.wantOutput)
+			}
+		})
+	}
+}
+
+// A daemon that is busy or restarting answers 503 or nothing. The init keeps
+// asking, backing off, until a wall-clock budget runs out -- not for a count
+// of attempts that a queue of two Runs' inputs on one node outlasts. The
+// fake clock moves only when the script sleeps.
+func TestDaemonSetBackend_ManagedReadInitRetriesUnavailabilityForItsBudget(t *testing.T) {
+	ref := hangar.TreeRef{
+		Scope:      "builds",
+		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Generation: 7,
+	}
+	receipt, _ := json.Marshal(ref)
+	budget := int(managedInputRetryBudget.Seconds())
+	for _, sequence := range []string{"503", "none"} {
+		t.Run(sequence, func(t *testing.T) {
+			result := runManagedReadInitShell(t, ref, managedReadShellFixture{
+				sequence: sequence, receipt: receipt, rootMode: 0555, receiptMode: 0444,
+			})
+			if result.err == nil {
+				t.Fatal("an init that never got an answer succeeded")
+			}
+			if !strings.Contains(result.output, "managed input materialization is unavailable") {
+				t.Fatalf("output = %q, want the unavailable message", result.output)
+			}
+			if result.slept > budget {
+				t.Fatalf("the init slept %ds, past its %ds budget", result.slept, budget)
+			}
+			// Capped backoff: the budget is spent to within one capped,
+			// jittered sleep of its end.
+			if result.slept < budget-2*managedInputRetryCapSeconds {
+				t.Fatalf("the init gave up after %ds of a %ds budget", result.slept, budget)
+			}
+			if result.attempts < 10 || result.attempts > 60 {
+				t.Fatalf("attempts = %d over a %ds budget; want capped exponential backoff", result.attempts, budget)
 			}
 		})
 	}
@@ -478,6 +521,7 @@ type managedReadShellResult struct {
 	err       error
 	output    string
 	attempts  int
+	slept     int
 	leftovers []string
 }
 
@@ -560,7 +604,16 @@ esac
 `)
 	writeExecutable(t, filepath.Join(binDir, "sleep"), `#!/bin/sh
 if [ "${TEST_SIGNAL_SLEEP:-}" = 1 ]; then kill -"$TEST_SIGNAL" "$PPID"; /bin/sleep 0.1; fi
+SLEPT=0
+if [ -f "$TEST_STATE/slept" ]; then SLEPT=$(cat "$TEST_STATE/slept"); fi
+printf '%s' "$((SLEPT + $1))" >"$TEST_STATE/slept"
 exit 0
+`)
+	// The clock is the fake sleep's: an epoch plus everything slept so far.
+	writeExecutable(t, filepath.Join(binDir, "date"), `#!/bin/sh
+SLEPT=0
+if [ -f "$TEST_STATE/slept" ]; then SLEPT=$(cat "$TEST_STATE/slept"); fi
+echo "$((1700000000 + SLEPT))"
 `)
 
 	scriptTmp := t.TempDir()
@@ -595,8 +648,10 @@ exit 0
 	output, runErr := cmd.CombinedOutput()
 	attemptBytes, _ := os.ReadFile(filepath.Join(stateDir, "attempts"))
 	attempts, _ := strconv.Atoi(string(attemptBytes))
+	sleptBytes, _ := os.ReadFile(filepath.Join(stateDir, "slept"))
+	slept, _ := strconv.Atoi(string(sleptBytes))
 	leftovers, _ := filepath.Glob(filepath.Join(scriptTmp, "hangar-input.*"))
-	return managedReadShellResult{err: runErr, output: string(output), attempts: attempts, leftovers: leftovers}
+	return managedReadShellResult{err: runErr, output: string(output), attempts: attempts, slept: slept, leftovers: leftovers}
 }
 
 func writeExecutable(t *testing.T, path, contents string) {
