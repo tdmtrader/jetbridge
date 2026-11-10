@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -40,6 +41,10 @@ type Reaper struct {
 	nodeIPResolver      *NodeIPResolver
 	wire                *artifactwire.Client
 	buildLookup         RunningBuildLookup
+
+	// stepJobsForbiddenNoted is set once this process has said that its Role
+	// cannot collect step Jobs (see stepJobsForbidden).
+	stepJobsForbiddenNoted atomic.Bool
 }
 
 // SetBuildLookup sets the source of truth for which builds are still running.
@@ -115,7 +120,7 @@ func (r *Reaper) Run(ctx context.Context) error {
 	reapNow, retained := r.splitCompletedPods(logger, completedPods)
 	for _, podMeta := range reapNow {
 		if err := deleteStepPod(ctx, r.clientset, r.cfg.Namespace, podMeta, metav1.DeleteOptions{}); err != nil {
-			if !apierrors.IsNotFound(err) {
+			if !apierrors.IsNotFound(err) && !r.stepJobsForbidden(logger, err) {
 				logger.Error("failed-to-cleanup-completed-pod", err, lager.Data{"pod": podMeta.Name})
 			}
 		}
@@ -177,6 +182,10 @@ func (r *Reaper) Run(ctx context.Context) error {
 		return fmt.Errorf("finding destroying containers: %w", err)
 	}
 
+	// One pod that cannot be deleted does not stop the others: it is left
+	// for the next pass, and the pass reports the failure once it is over.
+	var reaped []string
+	var failures []error
 	for _, handle := range destroying {
 		// Look up the actual pod name from the handle→podName map.
 		// If the handle isn't in the map (pod already gone), try
@@ -187,17 +196,46 @@ func (r *Reaper) Run(ctx context.Context) error {
 		}
 		err := deleteStepPod(ctx, r.clientset, r.cfg.Namespace, podMeta, metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
-			logger.Error("failed-to-delete-pod", err, lager.Data{"handle": handle, "pod": podMeta.Name})
-			return fmt.Errorf("deleting pod %s: %w", podMeta.Name, err)
+			if !r.stepJobsForbidden(logger, err) {
+				logger.Error("failed-to-delete-pod", err, lager.Data{"handle": handle, "pod": podMeta.Name})
+				failures = append(failures, fmt.Errorf("deleting pod %s: %w", podMeta.Name, err))
+			}
+			continue
 		}
+		reaped = append(reaped, handle)
 	}
 
-	// Drop the artifacts those containers produced.
-	r.cleanupDaemonSetArtifacts(ctx, logger, destroying)
+	// Drop the artifacts the reaped containers produced. A container whose
+	// pod is still there keeps them until a pass deletes the pod.
+	r.cleanupDaemonSetArtifacts(ctx, logger, reaped)
 
 	r.reapPodlessStepJobs(ctx, logger, workerName)
 
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
 	return nil
+}
+
+// stepJobsForbidden reports whether err is the API server refusing this web
+// batch/jobs under the exec step runtime, and says so once per process.
+//
+// Under exec the web creates no step Jobs; it only collects the ones a web
+// left behind under job. A Role without batch/jobs list and delete (a chart
+// older than this web: the image moves ahead of the chart) cannot, and that
+// is not worth an error every pass. Under job a refusal stays an error: that
+// runtime cannot work without the grant.
+func (r *Reaper) stepJobsForbidden(logger lager.Logger, err error) bool {
+	if r.cfg.StepRuntime == StepRuntimeJob || !apierrors.IsForbidden(err) {
+		return false
+	}
+	if r.stepJobsForbiddenNoted.CompareAndSwap(false, true) {
+		logger.Info("step-jobs-not-collected", lager.Data{
+			"reason": "the Role lacks batch/jobs list and delete; step Jobs left by the job step runtime will not be collected",
+			"error":  err.Error(),
+		})
+	}
+	return true
 }
 
 // podlessStepJobGrace is how old a step Job with no pod must be before the
@@ -214,7 +252,9 @@ func (r *Reaper) reapPodlessStepJobs(ctx context.Context, logger lager.Logger, w
 		LabelSelector: fmt.Sprintf("%s=%s", workerLabelKey, workerName),
 	})
 	if err != nil {
-		logger.Error("failed-to-list-step-jobs", err)
+		if !r.stepJobsForbidden(logger, err) {
+			logger.Error("failed-to-list-step-jobs", err)
+		}
 		return
 	}
 	for _, job := range jobs.Items {
@@ -225,7 +265,7 @@ func (r *Reaper) reapPodlessStepJobs(ctx context.Context, logger lager.Logger, w
 			continue
 		}
 		logger.Info("deleting-podless-step-job", lager.Data{"job": job.Name, "age": time.Since(job.CreationTimestamp.Time).String()})
-		if err := deleteStepJob(ctx, r.clientset, r.cfg.Namespace, job.Name); err != nil {
+		if err := deleteStepJob(ctx, r.clientset, r.cfg.Namespace, job.Name); err != nil && !r.stepJobsForbidden(logger, err) {
 			logger.Error("failed-to-delete-podless-step-job", err, lager.Data{"job": job.Name})
 		}
 	}
