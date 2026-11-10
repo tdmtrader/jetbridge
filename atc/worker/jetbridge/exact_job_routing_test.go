@@ -115,6 +115,11 @@ func TestNothingInProductionSetsTheExactJobRuntimeGate(t *testing.T) {
 			return err
 		}
 		relative, _ := filepath.Rel(root, path)
+		// A binary is no configuration; a test binary (ginkgo leaves its
+		// compiled suite in the package directory) names every field.
+		if bytes.IndexByte(body, 0) >= 0 {
+			return nil
+		}
 		if bytes.Contains(body, []byte(field)) && !allowed[relative] {
 			t.Errorf("%s names %s: only tests may route an exact execution to the job runtime", relative, field)
 		}
