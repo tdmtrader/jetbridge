@@ -13,6 +13,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -157,6 +158,13 @@ func (h *StepEnvelopeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 
 	pod, err := h.reviewToken(ctx, strings.TrimSpace(token))
+	if errors.Is(err, errTokenReviewUnavailable) {
+		// The API did not answer; nothing was refused. The launcher
+		// retries a 5xx and gives up on anything else.
+		h.Logger.Info("step-envelope-review-unavailable", lager.Data{"reason": err.Error()})
+		http.Error(w, "the token could not be verified yet", http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil {
 		h.Logger.Info("step-envelope-refused", lager.Data{"reason": err.Error()})
 		w.WriteHeader(http.StatusUnauthorized)
@@ -189,6 +197,10 @@ func (h *StepEnvelopeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(stepEnvelopeResponse{Stdin: envelope.Stdin})
 }
 
+// errTokenReviewUnavailable is a token that could not be verified because the
+// API failed, not because it was refused.
+var errTokenReviewUnavailable = errors.New("the step token could not be verified")
+
 // reviewToken verifies the launcher's token and returns the pod it is bound
 // to, read from the API so its labels and owner are the cluster's word.
 func (h *StepEnvelopeHandler) reviewToken(ctx context.Context, token string) (*corev1.Pod, error) {
@@ -196,7 +208,7 @@ func (h *StepEnvelopeHandler) reviewToken(ctx context.Context, token string) (*c
 		Spec: authenticationv1.TokenReviewSpec{Token: token, Audiences: []string{StepTokenAudience}},
 	}, metav1.CreateOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("token review: %w", err)
+		return nil, fmt.Errorf("%w: token review: %v", errTokenReviewUnavailable, err)
 	}
 	if !review.Status.Authenticated {
 		return nil, fmt.Errorf("token not authenticated: %s", review.Status.Error)
@@ -216,8 +228,11 @@ func (h *StepEnvelopeHandler) reviewToken(ctx context.Context, token string) (*c
 		return nil, errors.New("token is not bound to a pod")
 	}
 	pod, err := h.Clientset.CoreV1().Pods(h.Namespace).Get(ctx, podName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("the token's pod is gone: %w", err)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("reading the token's pod: %w", err)
+		return nil, fmt.Errorf("%w: reading the token's pod: %v", errTokenReviewUnavailable, err)
 	}
 	if string(pod.UID) != podUID {
 		return nil, errors.New("the token's pod UID does not match the pod")
