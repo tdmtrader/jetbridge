@@ -266,7 +266,7 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		// hijacking would hand the step that identity, so it is refused before
 		// anything is exec'd into the pod.
 		if getErr == nil && existingPod.Status.Phase != corev1.PodSucceeded && existingPod.Status.Phase != corev1.PodFailed {
-			identity, resolveErr := c.identities.resolve(c.metadata)
+			identity, resolveErr := c.identities.resolve(c.metadata, c.containerSpec)
 			if resolveErr != nil {
 				return nil, resolveErr
 			}
@@ -652,7 +652,7 @@ func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string
 
 	// The pod's identity comes from the build that owns it, resolved here so
 	// no path to a pod can skip it.
-	identity, err := c.identities.resolve(c.metadata)
+	identity, err := c.identities.resolve(c.metadata, c.containerSpec)
 	if err != nil {
 		return nil, privilegeAllowance{}, err
 	}
