@@ -83,6 +83,15 @@ func (c *Container) runExactAsJob(ctx context.Context, processID string, spec ru
 	existing, err := c.stepJob(ctx)
 	switch {
 	case err == nil:
+		// A web that died between creating the Job and unsuspending it left
+		// it suspended with no pod. Unsuspending is idempotent, and the gate
+		// still decides whether its pod starts anything.
+		if existing.Spec.Suspend != nil && *existing.Spec.Suspend {
+			patch := []byte(`{"spec":{"suspend":false}}`)
+			if _, err := c.clientset.BatchV1().Jobs(c.config.Namespace).Patch(ctx, c.podName, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+				return nil, wrapIfTransient(fmt.Errorf("unsuspending the resumed step job: %w", err))
+			}
+		}
 		e := newExactJobExecution(c, processID, spec, pio, existing.UID)
 		e.reattached = true
 		c.envelopes.RegisterWithStartGate(c.podName, StepEnvelope{Stdin: stdin}, e.startGate())
@@ -168,7 +177,7 @@ func (p *jobProcess) followExactJob(ctx context.Context) (runtime.ProcessResult,
 			return runtime.ProcessResult{}, exactNextDone, fmt.Errorf("%w: the resumed step job has no pod: %v", ErrExactOutcomeUnresolved, err)
 		}
 		e.closeGate()
-		return runtime.ProcessResult{}, exactNextDone, p.abandonExactJob(ctx, wrapIfTransient(fmt.Errorf("waiting for the step job's pod: %w", err)))
+		return runtime.ProcessResult{}, exactNextDone, p.abandonUnstarted(ctx, wrapIfTransient(fmt.Errorf("waiting for the step job's pod: %w", err)))
 	}
 	podName := pod.Name
 	logger = logger.WithData(lager.Data{"pod": podName})
@@ -183,7 +192,7 @@ func (p *jobProcess) followExactJob(ctx context.Context) (runtime.ProcessResult,
 	logs, err := p.followExactLogs(ctx, podName)
 	if err != nil {
 		e.closeGate()
-		return runtime.ProcessResult{}, exactNextDone, p.abandonExactJob(ctx, err)
+		return runtime.ProcessResult{}, exactNextDone, p.abandonUnstarted(ctx, err)
 	}
 
 	_, err = p.followPod(ctx, podName)
@@ -194,14 +203,14 @@ func (p *jobProcess) followExactJob(ctx context.Context) (runtime.ProcessResult,
 	if err != nil {
 		logs.abandon()
 		if !e.closeGate() {
-			// No start: the command never ran, and nothing of this Job is
-			// owed to anyone.
+			// No start this web knows of: abandonUnstarted asks the node
+			// before the Job goes.
 			if ctx.Err() != nil {
-				return runtime.ProcessResult{}, exactNextDone, p.abandonExactJob(ctx, ctx.Err())
+				return runtime.ProcessResult{}, exactNextDone, p.abandonUnstarted(ctx, ctx.Err())
 			}
 			if why := p.exactNotReplaceable(ctx); why != nil {
 				logger.Info("not-replacing-exact-step-job", lager.Data{"why": why.Error()})
-				return runtime.ProcessResult{}, exactNextDone, p.abandonExactJob(ctx, wrapIfTransient(err))
+				return runtime.ProcessResult{}, exactNextDone, p.abandonUnstarted(ctx, wrapIfTransient(err))
 			}
 			return runtime.ProcessResult{}, exactNextReplace, err
 		}
@@ -239,7 +248,7 @@ func (p *jobProcess) completeExact(ctx context.Context, podName string) (runtime
 			}
 		default:
 		}
-		return runtime.ProcessResult{}, p.abandonExactJob(ctx, err)
+		return runtime.ProcessResult{}, p.abandonUnstarted(ctx, err)
 	}
 	exit, nodeName, err := p.recordOutcomeFromPod(ctx, podName)
 	if err != nil {
@@ -482,7 +491,11 @@ func (p *jobProcess) relocateExactJob(ctx context.Context) error {
 		p.relocationSpent = true
 		return nil
 	}
-	e.closeGate()
+	if e.closeGate() {
+		// Not admitted, so not started: a start here means the gate's
+		// rule was broken, and the Job is not moved.
+		return fmt.Errorf("%w: step job %s holds a start though its pod was never admitted", ErrExactOutcomeUnresolved, e.jobUID)
+	}
 	from := e.control.control.Node.Name
 	if err := p.deleteExactJob(ctx); err != nil {
 		return fmt.Errorf("relocating the step job: %w", err)
@@ -542,8 +555,33 @@ func (p *jobProcess) deleteExactJob(ctx context.Context) error {
 	}
 }
 
+// abandonUnstarted is the end of a step whose gate shut with no start this
+// web knows of. That proves nothing once the pod was admitted: the node may
+// have committed a start whose answer never reached this web, and the
+// command may be running. So the node is asked first, and the Job is deleted
+// only on its never_started; any other answer, or none, keeps the Job and
+// leaves the outcome unresolved.
+func (p *jobProcess) abandonUnstarted(ctx context.Context, err error) error {
+	e := p.exact
+	if e.isAdmitted() {
+		checkCtx, cancel := detachedLedgerContext(ctx)
+		defer cancel()
+		classified, classifyErr := e.control.exact.client.Classify(checkCtx, e.control.control.Identity)
+		if classifyErr == nil && classified.Classification != executioncontrol.ClassificationNeverStarted {
+			classifyErr = fmt.Errorf("the node classifies the execution %s", classified.Classification)
+		}
+		if classifyErr != nil {
+			lagerctx.FromContext(ctx).Info("keeping-exact-step-job-the-node-may-have-started", lager.Data{"why": classifyErr.Error()})
+			unresolved := fmt.Errorf("%w: no start this web knows of, and %v; the step job is kept (%v)", ErrExactOutcomeUnresolved, classifyErr, err)
+			return errors.Join(unresolved, ctx.Err())
+		}
+	}
+	return p.abandonExactJob(ctx, err)
+}
+
 // abandonExactJob deletes the Job of a command that never ran and returns
-// err. Called only with the gate shut and no start in it.
+// err. Called only with the gate shut and no start in it, and, once the pod
+// was admitted, the node's word that there is none (abandonUnstarted).
 func (p *jobProcess) abandonExactJob(ctx context.Context, err error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
@@ -624,7 +662,9 @@ func stopStepJobPod(ctx context.Context, clientset kubernetes.Interface, namespa
 	if pod.Status.StartTime != nil {
 		started = pod.Status.StartTime.Time
 	}
-	deadline := int64(time.Since(started)/time.Second) + 1
+	// At least 1, the least the API accepts: a start time ahead of this
+	// web's clock would otherwise make it zero or negative.
+	deadline := max(int64(time.Since(started)/time.Second)+1, 1)
 	if current := pod.Spec.ActiveDeadlineSeconds; current != nil && *current <= deadline {
 		return nil
 	}
