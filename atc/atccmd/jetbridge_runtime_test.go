@@ -172,6 +172,7 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		"--kubernetes-cache-host-path", "/var/cache/steps",
 		"--kubernetes-artifact-helper-image", "registry.example/helper:1",
 		"--kubernetes-step-runtime", "job",
+		"--kubernetes-step-privilege", "granted",
 		"--kubernetes-launcher-image", "registry.example/jetbridge:1",
 		"--kubernetes-web-pod-name", "concourse-web-0",
 		"--kubernetes-web-pod-namespace", "ci-web",
@@ -234,6 +235,7 @@ func TestTheJetbridgeConfigIsAssembledFromTheFlags(t *testing.T) {
 		CacheHostPath:                      "/var/cache/steps",
 		ArtifactHelperImage:                "registry.example/helper:1",
 		StepRuntime:                        "job",
+		StepPrivilege:                      "granted",
 		LauncherImage:                      "registry.example/jetbridge:1",
 		StepEnvelopeURL:                    "http://web.ci.svc:8080/runtime/v1/step-envelope",
 		ImageRegistry:                      &jetbridge.ImageRegistryConfig{SecretName: "registry-auth"},
@@ -356,5 +358,56 @@ func TestTheWorkerFactoryHandsWorkersTheBuildLookup(t *testing.T) {
 	}
 	if factory.K8sStepPodBuilds == nil {
 		t.Fatal("the worker factory has no build lookup for step pod grants")
+	}
+}
+
+// The privilege mode defaults to any, today's behaviour, so a deployment that
+// already set privileged=true on a step pod grant sees no change on upgrade;
+// only an explicit granted switches the gate on. Anything else is refused at
+// parse time. Web logs the mode once, when it builds the runtime's components.
+func TestTheStepPrivilegeModeIsAnyUnlessGrantedIsChosen(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{nil, jetbridge.StepPrivilegeAny},
+		{[]string{"--kubernetes-step-privilege", "any"}, jetbridge.StepPrivilegeAny},
+		{[]string{"--kubernetes-step-privilege", "granted"}, jetbridge.StepPrivilegeGranted},
+	} {
+		cmd := &RunCommand{}
+		if _, err := flags.NewParser(cmd, flags.None).ParseArgs(tc.args); err != nil {
+			var flagsErr *flags.Error
+			if !errors.As(err, &flagsErr) || flagsErr.Type != flags.ErrRequired {
+				t.Fatalf("parse %v: %v", tc.args, err)
+			}
+		}
+		if cmd.Kubernetes.StepPrivilege != tc.want {
+			t.Errorf("%v: StepPrivilege = %q, want %q", tc.args, cmd.Kubernetes.StepPrivilege, tc.want)
+		}
+	}
+
+	cmd := &RunCommand{}
+	_, err := flags.NewParser(cmd, flags.None).ParseArgs([]string{"--kubernetes-step-privilege", "strict"})
+	var flagsErr *flags.Error
+	if !errors.As(err, &flagsErr) || flagsErr.Type != flags.ErrInvalidChoice {
+		t.Fatalf("an unknown privilege mode was not refused as an invalid choice: %v", err)
+	}
+
+	for _, mode := range []string{jetbridge.StepPrivilegeAny, jetbridge.StepPrivilegeGranted} {
+		cmd := jetbridgeCommand(t)
+		cmd.Kubernetes.StepPrivilege = mode
+		logger := lagertest.NewTestLogger("test")
+		if _, err := cmd.jetbridgeComponents(logger, nil, nil, nil); err != nil {
+			t.Fatalf("runtime components: %v", err)
+		}
+		var logged []string
+		for _, entry := range logger.Logs() {
+			if strings.HasSuffix(entry.Message, "step-privilege-mode") {
+				logged = append(logged, entry.Data["mode"].(string))
+			}
+		}
+		if len(logged) != 1 || logged[0] != mode {
+			t.Errorf("web logged the privilege mode %v, want it once as %q", logged, mode)
+		}
 	}
 }

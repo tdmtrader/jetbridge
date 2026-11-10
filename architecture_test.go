@@ -2160,8 +2160,9 @@ func TestExactlyOneFunctionWritesARunsStatusAndOneRecordsItsCancellationFence(t 
 // to carry one (step_pod_privilege_gate, spec amendment B1 §1). This test
 // keeps it so: it fails when production code in atc/worker/jetbridge sets
 // Capabilities, HostNetwork, HostPID or HostIPC, or when SidecarConfig has a
-// field that could carry a security request. The step pod admission checks
-// only hostPath volumes and their mounts, so it would not refuse such a pod.
+// field that could carry a security request. The step pod admission refuses
+// such a pod only under --kubernetes-step-privilege=granted; under any, the
+// default, it checks only hostPath volumes and their mounts.
 func TestNoStepPodCodeSetsACapabilityOrAHostNamespace(t *testing.T) {
 	files := productionGoFiles(t, func(rel string) bool {
 		return filepath.ToSlash(filepath.Dir(rel)) == "atc/worker/jetbridge"

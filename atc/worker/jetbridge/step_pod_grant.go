@@ -22,10 +22,11 @@ type StepPodGrant struct {
 	// account, with no token.
 	ServiceAccount string
 	// Privileged is the step pod grant's privileged=true declaration. The
-	// step pod identity carries it, but nothing reads it: privilege is not
-	// gated yet (Privilege gate, in this package's CONTEXT.md). A step pod's
-	// security context follows its task's privileged: or, for a get, put or
-	// check, its resource type's privileged:.
+	// step pod identity carries it, and the privilege gate reads it only under
+	// Config.StepPrivilege == StepPrivilegeGranted (Privilege gate, in this
+	// package's CONTEXT.md). A step pod's security context follows its task's
+	// privileged: or, for a get, put or check, its resource type's
+	// privileged:.
 	Privileged bool
 }
 
@@ -64,6 +65,9 @@ type stepPodIdentity struct {
 	serviceAccount string
 	ownAccount     bool
 	privileged     bool
+	// owner is the build's step pod owner, or empty for a build that has none
+	// or was not looked up (no grants and no privilege gate need it).
+	owner string
 }
 
 // identifierSegment is a team, pipeline or job name as atc.ValidateIdentifier
@@ -196,6 +200,9 @@ type stepPodIdentities struct {
 	grants         []StepPodGrant
 	builds         StepPodBuilds
 	defaultAccount string
+	// gated is --kubernetes-step-privilege=granted: the build is looked up
+	// even with no grant configured, so a refusal can name its owner.
+	gated bool
 }
 
 // describe names the identity in a refusal.
@@ -245,8 +252,13 @@ func (identities stepPodIdentities) defaultIdentity() stepPodIdentity {
 // grants configured, or for a container no build owns, it is the default. A
 // failed build lookup is a refusal: a pod is never created under an identity
 // nobody could check.
+//
+// A check container resolves to the default whatever build it runs in: no
+// step pod owner form covers a check yet. Check eligibility (an owner naming a
+// resource type) belongs here, and the privilege gate's check refusal in
+// Container.privilegeAllowanceFor goes with it.
 func (identities stepPodIdentities) resolve(metadata db.ContainerMetadata) (stepPodIdentity, error) {
-	if len(identities.grants) == 0 || identities.builds == nil ||
+	if (len(identities.grants) == 0 && !identities.gated) || identities.builds == nil ||
 		metadata.Type == db.ContainerTypeCheck || metadata.BuildID == 0 {
 		return identities.defaultIdentity(), nil
 	}
@@ -263,12 +275,53 @@ func (identities stepPodIdentities) resolve(metadata db.ContainerMetadata) (step
 	}
 	for _, grant := range identities.grants {
 		if grant.Owner == owner {
-			identity := stepPodIdentity{grant: grant.Name, serviceAccount: identities.defaultAccount, privileged: grant.Privileged}
+			identity := stepPodIdentity{grant: grant.Name, serviceAccount: identities.defaultAccount, privileged: grant.Privileged, owner: owner.String()}
 			if grant.ServiceAccount != "" {
 				identity.serviceAccount, identity.ownAccount = grant.ServiceAccount, true
 			}
 			return identity, nil
 		}
 	}
-	return identities.defaultIdentity(), nil
+	identity := identities.defaultIdentity()
+	identity.owner = owner.String()
+	return identity, nil
+}
+
+// privilegeAllowanceFor derives what privilege this container's pod may hold
+// from its resolved identity and the web's privilege mode. Under any (or an
+// unset mode) nothing is gated, whatever the grants declare.
+func (c *Container) privilegeAllowanceFor(identity stepPodIdentity) privilegeAllowance {
+	if c.config.StepPrivilege != StepPrivilegeGranted {
+		return privilegeAllowance{}
+	}
+	allowance := privilegeAllowance{enforced: true, privileged: identity.privileged}
+	const fix = "add a step pod grant with privileged=true for it to kubernetes.stepPodGrants (--kubernetes-step-pod-grant), or run the step unprivileged"
+	switch {
+	case c.metadata.Type == db.ContainerTypeCheck:
+		// The seam for check eligibility: no step pod owner form covers a
+		// check yet (stepPodIdentities.resolve), so none can be privileged.
+		allowance.refusal = "A check holds no step pod grant, so it cannot run privileged in this mode: " +
+			"set privileged: false on its resource type, or set --kubernetes-step-privilege=any (kubernetes.stepPrivilege: any)."
+	case identity.grant != "":
+		allowance.refusal = fmt.Sprintf("Owner %s's step pod grant %q does not declare privileged=true: "+
+			"add privileged=true to it in kubernetes.stepPodGrants (--kubernetes-step-pod-grant), or run the step unprivileged.", identity.owner, identity.grant)
+	case identity.owner != "":
+		allowance.refusal = fmt.Sprintf("Owner %s has no step pod grant: %s.", identity.owner, fix)
+	case c.metadata.BuildID == 0:
+		allowance.refusal = "No build owns this container, so it holds no step pod grant: run the step unprivileged."
+	default:
+		allowance.refusal = fmt.Sprintf("Build %d has no step pod owner (only a job of a non-instanced pipeline, or a one-off build of team %s, "+
+			"can hold a step pod grant): run the step unprivileged.", c.metadata.BuildID, oneOffTeam)
+	}
+	return allowance
+}
+
+// privilegeAllowance resolves this container's identity and derives its
+// privilege allowance, for an admission that does not hold the identity.
+func (c *Container) privilegeAllowance() (privilegeAllowance, error) {
+	identity, err := c.identities.resolve(c.metadata)
+	if err != nil {
+		return privilegeAllowance{}, err
+	}
+	return c.privilegeAllowanceFor(identity), nil
 }
