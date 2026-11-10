@@ -12,7 +12,7 @@ JetBridge 0.4.6 follows jb-0.4.5 (e610ff1acb). These are running notes, kept as 
 - **Admitting an exact execution dials a restarting artifact daemon again.** A refused, reset or closed connection, no route, or no answer within the client's timeout is retried with backoff for 2 minutes under the step's context. Any HTTP answer, and any TLS or certificate failure, is still final. A repeated admission is the same admission: the node's ledger already holds it.
 - **The capture control init waits about 3 minutes for the daemon, not 1,** so it outlasts a restart the admission waits through.
 - **A transient API failure while checking a step envelope's token is retried.** Under `job`, a TokenReview or pod read that failed for want of an answer was a 401, which the launcher treats as final, so the step's pod exited without running its command. It is now a 503, which the launcher retries. A refused token, or a pod that is gone, is still a 401.
-- **The launcher records a command it could not start.** A missing or non-executable command exits 127 or 126 as before, and now also leaves its one-line termination record, saying the command did not run. A failure before the start (bad usage, the token, the envelope fetch: 125) still leaves none.
+- **The launcher records a command it could not start.** A missing or non-executable command exits 127 or 126 as before, and now also leaves its one-line termination record, saying the command did not run. So does a command it could not set up once its envelope was served: its stdin could not be staged or its stdout file opened (exit 125). A failure before the envelope (bad usage, the token, the envelope fetch: 125) still leaves none.
 
 ### Hangar
 
