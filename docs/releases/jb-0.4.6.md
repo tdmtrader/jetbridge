@@ -16,6 +16,13 @@ JetBridge 0.4.6 follows jb-0.4.5 (e610ff1acb). These are running notes, kept as 
 
 - **A managed read's timeout starts once it holds the artifact daemon's scratch slot.** Materializations and archive reads share one slot with input publication and seals. A read queued behind another spent its timeout in the queue and answered 503. Now the wait is bounded by the caller's own request, and a caller that gives up while queued holds nothing and spends no warrant.
 
+### Privilege mode
+
+- **A new privilege mode, `--kubernetes-step-privilege`, decides which step pods may run privileged. Its default, `any`, changes nothing.** Under `any` a privileged container is admitted as before, whatever step pod grants declare. Under `granted` the web refuses a privileged container outside a grant that declares `privileged=true` when it creates the Pod or Job, naming the owner and the missing grant. Builds that can hold no grant (instanced pipelines, other teams' one-offs, Runs, builds not found) and privileged checks fail closed; a failed build lookup fails the step. Opt in: run `hack/step-pod-audit pods`, add the grants it shows, then set `granted` (see `deploy/chart/MIGRATING.md`). A pod reused, or a step Job resumed after a web restart, is not re-checked yet. Web logs `step-privilege-mode` at startup.
+- **No step pod may add a Linux capability or join a host namespace, in either mode and under every grant.** No step the runtime builds asks for either, so nothing that runs today changes.
+
 ## Chart
+
+- **`kubernetes.stepPrivilege` (`any | granted`, default `any`) sets the privilege mode.** Only `granted` renders a flag, so an `any` render is byte-identical to 0.4.5's. The value budget rises by one (`maxValues` 177), an exception recorded in the ADR-0008 amendment of 2026-11-09.
 
 - **The pod-manager Role grants `batch/jobs` `list` and `delete` under `exec` too,** so the reaper can collect step Jobs a `job` deployment left behind. `get`, `watch`, `create`, `update` and `patch` stay `job`-only. No new value.
