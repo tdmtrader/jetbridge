@@ -88,7 +88,9 @@ one the step's plan runs, which the engine sets on the container spec: a check
 of resource R runs R's type; the check of resource type T, and the fetch of
 T's image, run T's type, so a type built on a privileged type needs the grant
 of the privileged one; a task's `image_resource` check runs the image
-resource's type. A check container in a job build is owned the same way. The
+resource's type. A check container in a job build is owned the same way, so a
+privileged custom-type task image needs the job's grant for its get and the
+resource-type grant for its check. The
 type must be a lowercase identifier for a grant to name it. Only a privileged
 grant of that owner admits the pod privileged; the pod keeps the default step
 pod identity and is annotated `concourse.dev/step-pod-grant=<grant>`.
