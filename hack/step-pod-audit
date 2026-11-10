@@ -19,7 +19,12 @@
 #       grant web's own --kubernetes-step-pod-grant args give it, and fails on a
 #       wrong ServiceAccount, a token outside a grant, or privilege (a
 #       privileged container, an added capability, a host namespace, a hostPath
-#       outside the step's own directories) beyond the grant. With --non-step it
+#       outside the step's own directories) beyond the grant. A check pod, and
+#       any pod of a check build, has no build owner: it is held to the
+#       resource-type grant its concourse.dev/step-pod-grant annotation names,
+#       which must be in web's args with privileged=true and an owner
+#       <team>/<pipeline>/resource-type/<type> naming the pod's pipeline
+#       (the team is not on the pod, so it is not checked). With --non-step it
 #       also fails on any other pod there running under `default` with a token
 #       mounted -- read from its projected token volume, so a ServiceAccount
 #       declared with automountServiceAccountToken: false counts as no token.
@@ -115,6 +120,9 @@ pods() {
 		.metadata.name,
 		(.metadata.labels["concourse.ci/build-id"] // "0"),
 		(.metadata.labels["concourse.ci/type"] // ""),
+		(.metadata.labels["concourse.ci/build"] // ""),
+		(.metadata.labels["concourse.ci/pipeline"] // ""),
+		(.metadata.annotations["concourse.dev/step-pod-grant"] // ""),
 		(.spec.serviceAccountName // "default"),
 		(if .spec.automountServiceAccountToken == false then "no" else "yes" end),
 		(if any(.spec.volumes[]?; .projected.sources[]?.serviceAccountToken) then "yes" else "no" end),
@@ -129,12 +137,26 @@ pods() {
 				($path != ($root + "/steps/" + ($pod.metadata.annotations["concourse.dev/hangar-reserved-directory"] // "\u0000"))) and
 				($path | within($cache) | not))
 			| $path ] | join(","))
-	] | join("|")' | while IFS='|' read -r pod build kind sa automount projected escalation stray; do
+	] | join("|")' | while IFS='|' read -r pod build kind build_name pipeline check_grant sa automount projected escalation stray; do
 		want=$default_sa
 		grant=""
 		own=""
 		privileged=no
-		if [ "$kind" != check ] && [ "$build" != 0 ]; then
+		if [ "$kind" = check ] || [ "$build_name" = check ]; then
+			# Check eligibility: a check pod's owner is the resource type it
+			# runs. The runtime names the grant that admitted it; hold the pod
+			# to that grant's own args.
+			if [ -n "$check_grant" ]; then
+				line=$(echo "$grants" | sed 's/.*/,&,/' | grep -F ",name=$check_grant," || true)
+				case "$line" in
+				*,privileged=true,*)
+					if echo "$line" | grep -q ",owner=[^,/]*/$pipeline/resource-type/[^,/]*,"; then
+						grant=$check_grant
+						privileged=yes
+					fi ;;
+				esac
+			fi
+		elif [ "$build" != 0 ]; then
 			owner=$(owner_of "$build")
 			if [ -n "$owner" ]; then
 				# Each grant is padded with a comma at both ends, so every
@@ -186,7 +208,7 @@ case "${1:-}" in
 bindings) shift; [ $# -ge 1 ] || { echo "usage: $0 bindings <ns>:<sa> [namespace...]" >&2; exit 2; }; bindings "$@" ;;
 verbs) shift; [ $# -eq 2 ] || { echo "usage: $0 verbs <ns>:<sa> <file>" >&2; exit 2; }; verbs "$@" ;;
 pods) shift; pods "${1:-}" ;;
-*) sed -n '2,24p' "$0"; exit 2 ;;
+*) sed -n '2,30p' "$0"; exit 2 ;;
 esac
 
 exit $failed
