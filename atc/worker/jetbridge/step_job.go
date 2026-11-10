@@ -88,14 +88,21 @@ const (
 
 // exactExecution reports whether this container's step is a Run-owned exact
 // execution: admitted under an execution control envelope on a worker whose
-// output plane is reachable. Such a step still runs on the exec runtime.
+// output plane is reachable. Such a step still runs on the exec runtime,
+// unless a test routed an exact task to the job runtime.
 func (c *Container) exactExecution() bool {
 	return c.containerSpec.ExecutionControl != nil && c.outputControls != nil
 }
 
 // jobRuntime reports whether this container runs its step as a Job.
 func (c *Container) jobRuntime() bool {
-	return c.config.StepRuntime == StepRuntimeJob && !c.lookedUp && !c.exactExecution()
+	return c.config.StepRuntime == StepRuntimeJob && !c.lookedUp && (!c.exactExecution() || c.exactTaskOnJobRuntime())
+}
+
+// exactTaskOnJobRuntime reports whether this container is an exact task a
+// test routed to the job runtime (Config.ExactTasksOnJobRuntimeForTesting).
+func (c *Container) exactTaskOnJobRuntime() bool {
+	return c.config.ExactTasksOnJobRuntimeForTesting && c.exactExecution() && c.metadata.Type == db.ContainerTypeTask
 }
 
 // stepAnswerKey is the artifact key the daemon serves a step's answer
