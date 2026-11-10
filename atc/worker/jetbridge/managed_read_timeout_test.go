@@ -102,6 +102,19 @@ func TestManagedInputDownloaderCoversTheConfiguredOperation(t *testing.T) {
 	}
 }
 
+// The managed-input init's retry budget, plus the one attempt it may start
+// before the budget ends, fits inside what waitForRunning gives a single
+// input after the default startup: an init that gives up does so before the
+// step's own readiness wait would, and says why.
+func TestManagedInputRetryBudgetFitsTheDefaultReadinessWait(t *testing.T) {
+	config := NewConfig("test-ns", "")
+	init := managedInputRetryBudget + output.ReadTransferTimeout(output.DefaultOperationTimeout)
+	if room := managedInputReadyTimeout(config, 1) - podStartupTimeout(config); init > room {
+		t.Fatalf("the init may retry for %s; a pod that started in the default %s has %s left",
+			init, podStartupTimeout(config), room)
+	}
+}
+
 func TestManagedInputsCanFinishBeyondTheOrdinaryStartupBudget(t *testing.T) {
 	config := NewConfig("test-ns", "")
 	config.PodStartupTimeout, config.PodSchedulingTimeout = 20*time.Millisecond, 20*time.Millisecond

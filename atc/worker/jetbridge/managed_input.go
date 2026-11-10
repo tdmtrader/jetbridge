@@ -22,6 +22,16 @@ func managedInputReadyTimeout(config Config, count int) time.Duration {
 		time.Duration(count)*output.ReadTransferTimeout(config.OutputOperationTimeout)
 }
 
+// managedInputRetryBudget is how long a managed-input init keeps asking a
+// daemon that answers 503 or nothing -- busy with another Run's read, or
+// restarting. waitForRunning still bounds the whole pod: an init retrying
+// past managedInputReadyTimeout's remainder is ended by the step's failure.
+const managedInputRetryBudget = 10 * time.Minute
+
+// managedInputRetryCapSeconds caps the init's exponential backoff; each sleep
+// adds up to half of itself again as jitter.
+const managedInputRetryCapSeconds = 30
+
 func (p *execProcess) podReadyTimeout() time.Duration {
 	count := 0
 	if p.container != nil {
@@ -62,7 +72,7 @@ func (b *DaemonSetBackend) managedInputInit(handle string, input runtime.Input, 
 	allowEscalation := false
 	return corev1.Container{
 		Name: fmt.Sprintf("materialize-run-input-%d", index), Image: b.helperImage(), ImagePullPolicy: corev1.PullIfNotPresent,
-		Command:         []string{"sh", "-c", fmt.Sprintf(managedInputScript, port, base64.StdEncoding.EncodeToString(payload), base64.StdEncoding.EncodeToString(receipt), int64(output.ReadTransferTimeout(b.config.OutputOperationTimeout).Seconds()))},
+		Command:         []string{"sh", "-c", fmt.Sprintf(managedInputScript, port, base64.StdEncoding.EncodeToString(payload), base64.StdEncoding.EncodeToString(receipt), int64(output.ReadTransferTimeout(b.config.OutputOperationTimeout).Seconds()), int64(managedInputRetryBudget.Seconds()), managedInputRetryCapSeconds)},
 		Env:             []corev1.EnvVar{{Name: "HOST_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"}}}},
 		VolumeMounts:    []corev1.VolumeMount{{Name: name, MountPath: "/hangar-input", ReadOnly: true}},
 		SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &allowEscalation},
@@ -72,6 +82,12 @@ func (b *DaemonSetBackend) managedInputInit(handle string, input runtime.Input, 
 // The local sealed materialization receipt is the success authority, including after the
 // daemon committed but its response was lost. Nothing writable is mounted in
 // this init. HTTP error bodies and the lease token never enter task logs.
+//
+// A 503 or no answer is the daemon busy or restarting: the init asks again,
+// with capped, jittered exponential backoff, until managedInputRetryBudget is
+// spent, and never starts a sleep that would end past it. Every other answer
+// is final. The read warrant survives these retries: the daemon spends it only
+// on an outcome a retry cannot change.
 const managedInputScript = `set -u
 umask 077
 PORT=%d
@@ -93,10 +109,12 @@ verified() {
   [ "$(mode_of "$ROOT/.hangar-materialized")" = 444 ] &&
   cmp "$ROOT/.hangar-materialized" "$TMP_DIR/expected" >/dev/null 2>&1
 }
-ATTEMPT=0
-while [ "$ATTEMPT" -lt 5 ]; do
+RETRY_BUDGET_SECONDS=%d
+RETRY_CAP_SECONDS=%d
+START=$(date +%%s)
+DELAY=1
+while :; do
   verified && exit 0
-  ATTEMPT=$((ATTEMPT + 1))
   : >"$TMP_DIR/response"
   : >"$TMP_DIR/headers"
   wget --no-check-certificate -S -q -O "$TMP_DIR/response" -T "$READ_TIMEOUT_SECONDS" --header='Content-Type: application/json' --post-file="$TMP_DIR/request" "https://${HOST_IP}:${PORT}/read/v1/materialize" 2>"$TMP_DIR/headers"
@@ -106,7 +124,11 @@ while [ "$ATTEMPT" -lt 5 ]; do
     printf 'managed input materialization was refused or could not be verified\n' >&2
     exit 1
   fi
-  [ "$ATTEMPT" -ge 5 ] || sleep 2
+  PAUSE=$((DELAY + ${RANDOM:-$$} %% (DELAY / 2 + 1)))
+  [ $(($(date +%%s) - START + PAUSE)) -le "$RETRY_BUDGET_SECONDS" ] || break
+  sleep "$PAUSE"
+  DELAY=$((DELAY * 2))
+  [ "$DELAY" -le "$RETRY_CAP_SECONDS" ] || DELAY=$RETRY_CAP_SECONDS
 done
 printf 'managed input materialization is unavailable\n' >&2
 exit 1
