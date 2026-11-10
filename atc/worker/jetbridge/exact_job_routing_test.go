@@ -90,7 +90,11 @@ func TestNothingInProductionSetsTheExactJobRuntimeGate(t *testing.T) {
 	allowed := map[string]bool{
 		filepath.Join("atc", "worker", "jetbridge", "config.go"):   true,
 		filepath.Join("atc", "worker", "jetbridge", "step_job.go"): true,
+		// The flag-assembly test lists it as a field no flag sets.
+		filepath.Join("atc", "atccmd", "jetbridge_runtime_test.go"): true,
 	}
+	// This package's own tests set it; no other test does.
+	packageDir := filepath.Join("atc", "worker", "jetbridge")
 	// The whole repository: a chart template, a pipeline, a script or a
 	// command's wiring could each set it. Only tests may.
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
@@ -107,14 +111,17 @@ func TestNothingInProductionSetsTheExactJobRuntimeGate(t *testing.T) {
 			}
 			return nil
 		}
-		if !entry.Type().IsRegular() || strings.HasSuffix(path, "_test.go") {
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		relative, _ := filepath.Rel(root, path)
+		if strings.HasSuffix(path, "_test.go") && filepath.Dir(relative) == packageDir {
 			return nil
 		}
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		relative, _ := filepath.Rel(root, path)
 		// A binary is no configuration; a test binary (ginkgo leaves its
 		// compiled suite in the package directory) names every field.
 		if bytes.IndexByte(body, 0) >= 0 {
