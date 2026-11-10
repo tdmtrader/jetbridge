@@ -21,9 +21,13 @@ package jetbridge
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/url"
 	"syscall"
 	"time"
 
@@ -276,19 +280,41 @@ func admitThroughRestart(ctx context.Context, client OutputControl,
 	}
 }
 
-// daemonUnreachable is a failure to reach the daemon at all: nothing is
-// listening, the connection was reset, or there is no route to the node. A
-// daemon's refusal is an answer and is never one.
+// daemonUnreachable is a failure to get an answer from the daemon at all:
+// nothing is listening, the connection was reset or closed before a response
+// (a dying daemon accepts and then goes), there is no route to the node, or
+// nothing answered within the client's timeout. A daemon's refusal is an
+// answer and is never one, and neither is a TLS or certificate failure: that
+// is a daemon that answered as someone it should not be.
 func daemonUnreachable(err error) bool {
 	var refusal *OutputControlRefusal
 	if errors.As(err, &refusal) {
+		return false
+	}
+	var (
+		unknownAuthority x509.UnknownAuthorityError
+		hostname         x509.HostnameError
+		invalid          x509.CertificateInvalidError
+		verification     *tls.CertificateVerificationError
+		header           tls.RecordHeaderError
+		alert            tls.AlertError
+	)
+	if errors.As(err, &unknownAuthority) || errors.As(err, &hostname) || errors.As(err, &invalid) ||
+		errors.As(err, &verification) || errors.As(err, &header) || errors.As(err, &alert) {
 		return false
 	}
 	var op *net.OpError
 	if errors.As(err, &op) && op.Op == "dial" {
 		return true
 	}
-	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) ||
+	// net/http flattens the cause of a Client.Timeout into text, but the
+	// url.Error it returns still says it was a timeout.
+	var request *url.Error
+	if errors.As(err, &request) && request.Timeout() {
+		return true
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH)
 }
 
