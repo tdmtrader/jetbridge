@@ -87,6 +87,8 @@ verbs() {
 }
 
 # owner_of prints a build's owner the way the runtime derives it, or nothing.
+# Limitation: the build API exposes no Run id, so a Run pipeline's build gets
+# an owner here that the runtime would not give it.
 owner_of() {
 	fly -t "$fly_target" curl "/api/v1/builds/$1" 2>/dev/null | jq -r '
 		if .name == "check" or (.resource_name // "") != "" then empty
@@ -135,12 +137,14 @@ pods() {
 		if [ "$kind" != check ] && [ "$build" != 0 ]; then
 			owner=$(owner_of "$build")
 			if [ -n "$owner" ]; then
-				line=$(echo "$grants" | grep -E ",owner=$owner," || true)
+				# Each grant is padded with a comma at both ends, so every
+				# key=value field matches as ",key=value," wherever it sits.
+				line=$(echo "$grants" | sed 's/.*/,&,/' | grep -F ",owner=$owner," || true)
 				if [ -n "$line" ]; then
-					grant=$(echo "$line" | sed -n 's/^name=\([^,]*\),.*/\1/p')
-					own=$(echo "$line" | sed -n 's/.*,service-account=\([^,]*\).*/\1/p')
+					grant=$(echo "$line" | sed -n 's/.*,name=\([^,]*\),.*/\1/p')
+					own=$(echo "$line" | sed -n 's/.*,service-account=\([^,]*\),.*/\1/p')
 					[ -n "$own" ] && want=$own
-					case "$line" in *,privileged=true*) privileged=yes ;; esac
+					case "$line" in *,privileged=true,*) privileged=yes ;; esac
 				fi
 			fi
 		fi
@@ -150,7 +154,7 @@ pods() {
 		if [ -n "$stray" ]; then
 			echo "FAIL: $pod (build $build) mounts host paths outside its step: $stray"
 		elif [ -n "$escalation" ] && [ "$privileged" = no ]; then
-			echo "FAIL: $pod (build $build) holds privilege no grant allows: $escalation"
+			echo "FAIL: $pod (build $build) holds privilege outside any privileged=true step pod grant; the privilege gate would refuse it: $escalation"
 		elif [ "$sa" != "$want" ]; then
 			echo "FAIL: $pod (build $build) runs as $sa, its build resolves to $want"
 		elif [ -z "$own" ] && [ "$token" = yes ]; then
