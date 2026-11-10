@@ -1,6 +1,6 @@
 package jetbridge
 
-// An exact execution's task on the job step runtime.
+// An exact execution's task on the job step runtime: its start gate.
 //
 // The exec runtime starts an exact command by exec'ing its supervisor after
 // the web has recorded the start (process_control.go: beginExactCommand). A
@@ -18,24 +18,22 @@ package jetbridge
 // The web stays the ledger's only writer. The start names the pod the
 // TokenReview bound the launcher's token to and the process identity
 // job-v1:<step Job UID>; nothing else about the ledger or the Run witness
-// differs from the exec runtime's. A launcher that lost its answer and asks
-// again is served on the start this web already recorded; a start whose
-// answer the web lost is the ledger's idempotent replay of it. Another pod is
-// refused before anything is recorded, and an execution the ledger does not
-// classify never_started is never served unless it is that replay. Wait
-// shuts the gate before it decides whether to keep the Job, so a start is
-// never recorded for a Job it deleted.
+// differs from the exec runtime's. A launcher that asks again is served only
+// on the ledger's idempotent replay of the start it holds for that pod and
+// process. Another pod is refused before anything is recorded, and an
+// execution the ledger does not classify never_started is never served
+// unless it is that replay. Wait shuts the gate before it decides what to do
+// with the Job, so a start is never recorded for a Job it deleted.
 //
-// Not here yet: stopping or aborting a started command, recovering its
-// outcome after a web restart, resuming it, relocation, replacement, and the
-// bound session. A step whose start was recorded keeps its Job on every path
-// on which its outcome was not, so nothing that witnesses it is destroyed.
+// What happens after the start -- the outcome, a stop, a web restart, a
+// replaced or moved pod -- is exact_job_wait.go.
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,14 +42,28 @@ import (
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/hangar/output"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
 // jobIdentityPrefix starts the process identity an exact start on the job
 // runtime names: the step Job's UID, which is one command run once.
 const jobIdentityPrefix = "job-v1:"
+
+// jobProcessIdentity is the process identity of an exact start in the Job
+// of this UID.
+func jobProcessIdentity(job types.UID) executioncontrol.ProcessIdentity {
+	return executioncontrol.ProcessIdentity(jobIdentityPrefix + string(job))
+}
+
+// stepJobOfIdentity is the step Job a retained start's process identity
+// names, if it names one.
+func stepJobOfIdentity(identity executioncontrol.ProcessIdentity) (types.UID, bool) {
+	uid, ok := strings.CutPrefix(string(identity), jobIdentityPrefix)
+	if !ok || uid == "" {
+		return "", false
+	}
+	return types.UID(uid), true
+}
 
 // ErrStepEnvelopeNotReady is a start gate that cannot answer yet: the
 // execution is not admitted, or the ledger or the Run did not answer. The
@@ -62,63 +74,55 @@ var ErrStepEnvelopeNotReady = errors.New("the step envelope is not ready yet")
 // execution's admission before the launcher is told to retry.
 var exactJobAdmissionWait = 10 * time.Second
 
-// exactJobExecution is one exact task's control state on the job runtime.
-// Its admission, witness and outcome are the exec runtime's own code, run
-// on an execProcess that never execs anything: it holds the control envelope
+// exactJobExecution is the control state of one step Job of an exact task:
+// its admission and its start gate. A replaced or moved Job gets a new one.
+// Its admission, witness and outcome are the exec runtime's own code, run on
+// an execProcess that never execs anything: it holds the control envelope
 // and the node's client, and names the Job's pod.
 type exactJobExecution struct {
 	container *Container
 	control   *execProcess
+	// jobUID is the step Job this gate belongs to; its pod's start names it.
+	jobUID types.UID
+	// reattached is a Job this web found rather than made: a web before it
+	// may have started its command, so its Wait asks the ledger first.
+	reattached bool
 
-	admitOnce sync.Once
-	admitted  chan struct{}
-	admitErr  error
+	admitOnce   sync.Once
+	admitCancel context.CancelFunc
+	admitted    chan struct{}
+	admitErr    error
 
 	// mu serializes the start gate: two requests (a launcher retry racing
 	// its first, or another pod) never interleave a classify and a start.
-	// It also orders the gate against Wait's cleanup: closed, set under it,
-	// means no start is recorded after Wait decided what to do with the Job.
-	mu      sync.Mutex
-	closed  bool
-	started atomic.Bool
+	// It also orders the gate against Wait: closed, set under it, means no
+	// start is recorded after Wait decided what to do with the Job.
+	mu       sync.Mutex
+	closed   bool
+	started  atomic.Bool
+	startAck *executioncontrol.Acknowledgement
 
 	// beforeStart, when set, runs inside the gate (mu held) before the
 	// ledger is asked anything. Only a test sets it, to hold the gate open.
 	beforeStart func()
 }
 
-// errExactJobClosed is a start gate whose step is over: its Wait has
-// returned, and its Job was deleted or kept on what was known then.
-var errExactJobClosed = errors.New("the exact step is over: its envelope is never served")
+// errExactJobClosed is a start gate whose Job is done with: its Wait has
+// returned, or it was replaced or moved.
+var errExactJobClosed = errors.New("the exact step job is over: its envelope is never served")
 
-// newExactJobExecution is the control state for an exact task routed to the
-// job runtime, or nil for every other step. A step Job of this name that
-// already exists is a step this web did not start, and resuming one is not
-// done yet: it is refused rather than replaced, which could look like a
-// second run.
-func (c *Container) newExactJobExecution(ctx context.Context, processID string, spec runtime.ProcessSpec, pio runtime.ProcessIO) (*exactJobExecution, error) {
-	if !c.exactTaskOnJobRuntime() {
-		return nil, nil
-	}
-	if _, err := c.clientset.BatchV1().Jobs(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{}); err == nil {
-		return nil, fmt.Errorf("%w: step job %q already exists, and an exact execution on the job runtime is not resumed",
-			ErrExactOutcomeUnresolved, c.podName)
-	} else if !apierrors.IsNotFound(err) {
-		return nil, fmt.Errorf("reading the step job before an exact start: %w", err)
-	}
+func newExactJobExecution(c *Container, processID string, spec runtime.ProcessSpec, pio runtime.ProcessIO, job types.UID) *exactJobExecution {
 	return &exactJobExecution{
 		container: c,
 		control:   newExecProcess(processID, "", c.clientset, c.config, c, nil, spec, pio, c.storageBackend),
+		jobUID:    job,
 		admitted:  make(chan struct{}),
-	}, nil
+	}
 }
 
-// startGate is what the envelope store runs before it serves this step's
-// envelope; nil for a step with no exact execution.
+// startGate is what the envelope store runs before it serves this Job's
+// envelope.
 func (e *exactJobExecution) startGate() func(context.Context, *corev1.Pod) error {
-	if e == nil {
-		return nil
-	}
 	return e.beforeServe
 }
 
@@ -128,15 +132,49 @@ func (e *exactJobExecution) startGate() func(context.Context, *corev1.Pod) error
 func (e *exactJobExecution) admit(ctx context.Context, podName string) {
 	e.admitOnce.Do(func() {
 		e.control.podName = podName
+		attemptCtx, cancel := context.WithCancel(ctx)
+		e.admitCancel = cancel
 		go func() {
-			e.admitErr = e.control.admitExactExecution(ctx)
+			e.admitErr = e.control.admitExactExecution(attemptCtx)
 			close(e.admitted)
 		}()
 	})
 }
 
-// recordedStart reports whether this web recorded the execution's start,
-// after which the command may be running and its Job is kept.
+// stopAdmission ends an admission still waiting for its pod to be bound, and
+// reports whether it had admitted: a pod that was bound and admitted is not
+// one a relocation may move.
+func (e *exactJobExecution) stopAdmission() (admitted bool) {
+	if e.admitCancel == nil {
+		return false
+	}
+	e.admitCancel()
+	<-e.admitted
+	return e.admitErr == nil
+}
+
+// awaitAdmission waits for the admission to finish and returns its error.
+func (e *exactJobExecution) awaitAdmission(ctx context.Context) error {
+	select {
+	case <-e.admitted:
+		return e.admitErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// isAdmitted reports whether the admission finished and admitted.
+func (e *exactJobExecution) isAdmitted() bool {
+	select {
+	case <-e.admitted:
+		return e.admitErr == nil
+	default:
+		return false
+	}
+}
+
+// recordedStart reports whether this web holds the execution's start for
+// this Job, after which the command may be running and the Job is kept.
 func (e *exactJobExecution) recordedStart() bool {
 	return e != nil && e.started.Load()
 }
@@ -185,12 +223,24 @@ func (e *exactJobExecution) beforeServe(ctx context.Context, pod *corev1.Pod) er
 		return err
 	}
 
-	// This web recorded the start already: the launcher lost the answer and
-	// asks again. The same pod is served again once the Run holds the start;
-	// nothing is recorded at the node a second time.
+	// This web recorded the start already and the launcher asks again (it
+	// lost the answer). The ledger has the last word: only its replay of the
+	// same start, for the same pod and process, serves the envelope again --
+	// an execution it has since closed refuses the replay -- and nothing is
+	// recorded a second time.
 	if e.started.Load() {
 		if err := e.confirmAdmittedPod(pod); err != nil {
 			return err
+		}
+		replay, err := p.exact.client.RecordStart(ctx, p.control.Identity, p.exact.podUID, process)
+		if err != nil {
+			if errors.Is(err, output.ErrConflict) {
+				return fmt.Errorf("the node no longer answers for this start: %w", err)
+			}
+			return fmt.Errorf("%w: replaying the exact start: %v", ErrStepEnvelopeNotReady, err)
+		}
+		if e.startAck == nil || replay != *e.startAck {
+			return fmt.Errorf("%w: the node's start is not the one this web recorded", ErrExactOutcomeUnresolved)
 		}
 		if unretained := p.exact.unretainedStart; unretained != nil {
 			if err := p.recordRunWitness(ctx, *unretained); err != nil {
@@ -203,8 +253,8 @@ func (e *exactJobExecution) beforeServe(ctx context.Context, pod *corev1.Pod) er
 
 	// Classify first, as the exec runtime does: an execution the ledger knows
 	// as anything but never_started is not started again. The one exception
-	// is the launcher's own retry, which the ledger answers below with the
-	// start it already holds, or refuses.
+	// is a start this web never saw the answer to, which the ledger answers
+	// below with the start it already holds, or refuses.
 	classified, err := p.exact.client.Classify(ctx, p.control.Identity)
 	if err != nil {
 		return fmt.Errorf("%w: classifying before serving the envelope: %v", ErrStepEnvelopeNotReady, err)
@@ -242,6 +292,17 @@ func (e *exactJobExecution) beforeServe(ctx context.Context, pod *corev1.Pod) er
 		// launcher's retry is the ledger's replay.
 		return fmt.Errorf("%w: recording the exact start: %v", ErrStepEnvelopeNotReady, err)
 	}
+	if err := e.adoptStart(ctx, start, process); err != nil {
+		return err
+	}
+	return nil
+}
+
+// adoptStart takes the node's start for this Job's pod as this web's: the Job
+// is kept from here whatever happens to the step, and the command is not
+// served until the Run retains the start. Called with mu held.
+func (e *exactJobExecution) adoptStart(ctx context.Context, start executioncontrol.Acknowledgement, process executioncontrol.ProcessIdentity) error {
+	p := e.control
 	if err := start.Validate(); err != nil {
 		return err
 	}
@@ -249,9 +310,8 @@ func (e *exactJobExecution) beforeServe(ctx context.Context, pod *corev1.Pod) er
 		start.PodUID != p.exact.podUID || start.ProcessIdentity != process {
 		return fmt.Errorf("%w: the node's start does not name this pod and process", ErrExactOutcomeUnresolved)
 	}
-	// Start admission is committed: from here the Job is kept whatever
-	// happens to the step.
 	p.control.MarkStarted()
+	e.startAck = &start
 	e.started.Store(true)
 	if err := p.recordRunWitness(ctx, start); err != nil {
 		// The command does not run until the Run holds its start. The
@@ -282,21 +342,23 @@ func (e *exactJobExecution) confirmAdmittedPod(pod *corev1.Pod) error {
 }
 
 // processIdentity is job-v1:<step Job UID>, from the Job that owns the pod,
-// which must be the Job this web created.
+// which must be this gate's Job.
 func (e *exactJobExecution) processIdentity(pod *corev1.Pod) (executioncontrol.ProcessIdentity, error) {
-	var owner types.UID
+	owner := controllingJob(pod)
+	if owner == "" || e.jobUID == "" || owner != e.jobUID {
+		return "", fmt.Errorf("pod %s is not owned by the step job %s", pod.Name, e.jobUID)
+	}
+	return jobProcessIdentity(e.jobUID), nil
+}
+
+// controllingJob is the UID of the step Job that controls the pod, or "".
+func controllingJob(pod *corev1.Pod) types.UID {
 	for _, reference := range pod.OwnerReferences {
 		if reference.Kind == "Job" && reference.APIVersion == "batch/v1" && reference.Controller != nil && *reference.Controller {
-			owner = reference.UID
+			return reference.UID
 		}
 	}
-	e.container.mu.RLock()
-	created := e.container.jobUID
-	e.container.mu.RUnlock()
-	if owner == "" || created == "" || owner != created {
-		return "", fmt.Errorf("pod %s is not owned by the step job this web created", pod.Name)
-	}
-	return executioncontrol.ProcessIdentity(jobIdentityPrefix + string(created)), nil
+	return ""
 }
 
 // launcherExitRecord is the part of the launcher's termination message the
@@ -305,27 +367,15 @@ type launcherExitRecord struct {
 	Exit *int `json:"exit"`
 }
 
-// finish records the outcome of a started exact task from its pod: main's
-// terminated status, corroborated by the record the launcher writes after
-// the command exits. A pod that ended with no start recorded never ran the
-// command. One that terminated without the launcher's record (killed, out of
-// memory) or with a record that disagrees is left unresolved, never closed.
-func (e *exactJobExecution) finish(ctx context.Context, podName string, exit int) error {
-	select {
-	case <-e.admitted:
-		if e.admitErr != nil && !e.started.Load() {
-			return fmt.Errorf("exact execution admission: %w", e.admitErr)
-		}
-	default:
-	}
-	if !e.started.Load() {
-		return fmt.Errorf("the step job's pod %s ended before its exact start was recorded: "+
-			"its launcher was never served the step envelope, so the command did not run", podName)
-	}
-	pod, err := e.container.clientset.CoreV1().Pods(e.container.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("%w: reading the step job's pod for its exit: %v", ErrExactOutcomeUnresolved, err)
-	}
+// errMainNotTerminated is a step Job's pod whose command has not ended.
+var errMainNotTerminated = errors.New("the step job's command has not terminated")
+
+// jobPodExit is the exit of the command in a step Job's pod: main's
+// terminated status, corroborated by the record the launcher writes once the
+// command has exited or could not be run. A main that terminated without
+// that record (the launcher killed, out of memory, the node lost) or with a
+// record that disagrees proves nothing, and the outcome stays unresolved.
+func jobPodExit(pod *corev1.Pod) (int, error) {
 	var terminated *corev1.ContainerStateTerminated
 	for _, status := range pod.Status.ContainerStatuses {
 		if status.Name == mainContainerName {
@@ -333,16 +383,16 @@ func (e *exactJobExecution) finish(ctx context.Context, podName string, exit int
 		}
 	}
 	if terminated == nil {
-		return fmt.Errorf("%w: pod %s has no terminated status for its command", ErrExactOutcomeUnresolved, podName)
+		return 0, errMainNotTerminated
 	}
 	var record launcherExitRecord
 	if err := json.Unmarshal([]byte(terminated.Message), &record); err != nil || record.Exit == nil {
-		return fmt.Errorf("%w: pod %s terminated with exit %d and no launcher record of the command's exit (reason %q)",
-			ErrExactOutcomeUnresolved, podName, terminated.ExitCode, terminated.Reason)
+		return 0, fmt.Errorf("%w: pod %s terminated with exit %d and no launcher record of the command's exit (reason %q)",
+			ErrExactOutcomeUnresolved, pod.Name, terminated.ExitCode, terminated.Reason)
 	}
-	if *record.Exit != int(terminated.ExitCode) || *record.Exit != exit {
-		return fmt.Errorf("%w: pod %s terminated with exit %d and its launcher recorded exit %d",
-			ErrExactOutcomeUnresolved, podName, terminated.ExitCode, *record.Exit)
+	if *record.Exit != int(terminated.ExitCode) {
+		return 0, fmt.Errorf("%w: pod %s terminated with exit %d and its launcher recorded exit %d",
+			ErrExactOutcomeUnresolved, pod.Name, terminated.ExitCode, *record.Exit)
 	}
-	return e.control.finishExactCommand(ctx, executioncontrol.ExitOutcome{ExitCode: exit}, executioncontrol.AcknowledgementFinish)
+	return *record.Exit, nil
 }

@@ -586,13 +586,13 @@ func (c *Container) runAsJob(ctx context.Context, spec runtime.ProcessSpec, pio 
 		}
 		stdin = read
 	}
-	// An exact task fetches an envelope even with no stdin: the fetch is its
-	// start gate (exact_job_process.go).
-	exact, err := c.newExactJobExecution(ctx, processID, spec, pio)
-	if err != nil {
-		return nil, err
+	// An exact task has a life of its own here: its envelope fetch is its
+	// start gate, and a Job of its name already there is resumed, never
+	// replaced (exact_job_wait.go).
+	if c.exactTaskOnJobRuntime() {
+		return c.runExactAsJob(ctx, processID, spec, pio, stdin)
 	}
-	hasEnvelope := pio.Stdin != nil || exact != nil
+	hasEnvelope := pio.Stdin != nil
 	if hasEnvelope && c.envelopes == nil {
 		return nil, errors.New("job step runtime: no step envelope store; this worker cannot run a command that reads stdin")
 	}
@@ -601,7 +601,7 @@ func (c *Container) runAsJob(ctx context.Context, spec runtime.ProcessSpec, pio 
 		return nil, err
 	}
 	if hasEnvelope {
-		c.envelopes.RegisterWithStartGate(c.podName, StepEnvelope{Stdin: stdin}, exact.startGate())
+		c.envelopes.Register(c.podName, StepEnvelope{Stdin: stdin})
 	}
 	created, err := c.createStepJob(ctx, job)
 	if err != nil {
@@ -616,15 +616,13 @@ func (c *Container) runAsJob(ctx context.Context, spec runtime.ProcessSpec, pio 
 		// that command's. A later web resuming the step registers the same
 		// envelope again, which is what a pod that has not fetched yet needs.
 		c.envelopes.Forget(c.podName)
-		c.envelopes.RegisterWithStartGate(c.podName, StepEnvelope{Stdin: stdin}, exact.startGate())
+		c.envelopes.Register(c.podName, StepEnvelope{Stdin: stdin})
 	}
 	metric.Metrics.ContainersCreated.Inc()
 	// The deferred volumes' exec destination is vestigial here: nothing
 	// streams through exec under the job runtime.
 	c.bindVolumesToPod(c.podName)
-	process := newJobProcess(processID, c, pio)
-	process.exact = exact
-	return process, nil
+	return newJobProcess(processID, c, pio), nil
 }
 
 // attachJob resumes a step Job after a web restart. A finished step is
