@@ -233,7 +233,12 @@ kubernetes:
   # security context follows its task's privileged: or, for a get, put or
   # check, its resource type's, whatever the grants say. Such a grant may
   # leave serviceAccount out and keep the default identity's account.
-  # e.g. [{name: brine-live, owner: main/one-off, serviceAccount: jetbridge-brine-live, privileged: true}]
+  # owner may instead be <team>/<pipeline>/resource-type/<type>: under
+  # granted, the checks (and image fetches of check builds) that run that
+  # pipeline's resource type may run privileged. Such a grant sets
+  # privileged: true and no serviceAccount.
+  # e.g. [{name: brine-live, owner: main/one-off, serviceAccount: jetbridge-brine-live, privileged: true},
+  #       {name: dind-checks, owner: main/ci/resource-type/dind, privileged: true}]
   stepPodGrants: []
 
   # -- Privilege mode: which step pods may run a privileged container. (A
@@ -242,7 +247,8 @@ kubernetes:
   # any: as the task's or resource type's privileged: asks, whatever
   # stepPodGrants declare -- the behaviour before this value existed.
   # granted: only a step pod whose owner's grant declares privileged: true;
-  # any other privileged step, and every privileged check, fails when its pod
+  # any other privileged step, and every privileged check no resource-type
+  # grant covers (owner <team>/<pipeline>/resource-type/<type>), fails when its pod
   # is created, naming its owner and the grant it lacks. Before choosing it,
   # run hack/step-pod-audit pods and add the grants it shows. granted with no
   # privileged grant is legal: nothing runs privileged. A pod reused, or a
