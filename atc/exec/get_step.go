@@ -223,8 +223,9 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 		TeamName:  step.metadata.TeamName,
 		ImageSpec: imageSpec,
 
-		Env:  step.metadata.Env(),
-		Type: db.ContainerTypeGet,
+		Env:              step.metadata.Env(),
+		Type:             db.ContainerTypeGet,
+		StepResourceType: step.plan.Type,
 
 		Dir: resource.ResourcesDir("get"),
 

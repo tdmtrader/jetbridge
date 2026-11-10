@@ -306,6 +306,9 @@ func (step *CheckStep) runCheck(
 		ImageSpec: imageSpec,
 		Env:       step.metadata.Env(),
 		Type:      db.ContainerTypeCheck,
+		// The type whose image runs: the runtime's check eligibility owns
+		// the pod by it.
+		StepResourceType: step.plan.Type,
 
 		CertsBindMount: true,
 	}

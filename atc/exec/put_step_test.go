@@ -801,6 +801,11 @@ var _ = Describe("PutStep", func() {
 			Expect(chosenContainer.Spec.Env).To(ContainElement(MatchRegexp(`TRACEPARENT=.+`)))
 		})
 
+		It("names the plan's resource type on the container spec", func() {
+			Expect(chosenContainer.Spec.StepResourceType).To(Equal(putPlan.Type))
+			Expect(putPlan.Type).NotTo(BeEmpty())
+		})
+
 		It("propagates the step span into the container run", func() {
 			ended := spanRecorder.Ended()
 			Expect(ended).To(HaveLen(1))

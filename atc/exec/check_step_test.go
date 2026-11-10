@@ -450,6 +450,13 @@ var _ = Describe("CheckStep", func() {
 						Expect(chosenContainer.Spec.ImageSpec.ImageURL).To(Equal("registry.example/team-a/tool@sha256:aaa"))
 					})
 
+					// The runtime's check eligibility owns the pod by the
+					// type whose image runs: the plan's, never a name.
+					It("names the plan's resource type on the container spec", func() {
+						Expect(stepErr).ToNot(HaveOccurred())
+						Expect(chosenContainer.Spec.StepResourceType).To(Equal("shared-name"))
+					})
+
 					It("creates the resource config under the pinned image", func() {
 						pinned := resourceConfig.CreatedByResourceCache()
 						Expect(pinned).ToNot(BeNil())
