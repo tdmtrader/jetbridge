@@ -148,9 +148,17 @@ pods() {
 			# to that grant's own args.
 			if [ -n "$check_grant" ]; then
 				line=$(echo "$grants" | sed 's/.*/,&,/' | grep -F ",name=$check_grant," || true)
+				# The owner is split and compared field by field, so a pipeline
+				# name is never read as a pattern.
+				owner=$(echo "$line" | sed -n 's/.*,owner=\([^,]*\),.*/\1/p')
+				rest=${owner#*/}
+				owner_pipeline=${rest%%/*}
+				form=${rest#*/}
+				form=${form%%/*}
 				case "$line" in
 				*,privileged=true,*)
-					if echo "$line" | grep -q ",owner=[^,/]*/$pipeline/resource-type/[^,/]*,"; then
+					if [ "$(echo "$line" | grep -c ",owner=")" = 1 ] && [ "$(echo "$owner" | tr -cd / | wc -c | tr -d ' ')" = 3 ] &&
+						[ "$owner_pipeline" = "$pipeline" ] && [ "$form" = resource-type ]; then
 						grant=$check_grant
 						privileged=yes
 					fi ;;
