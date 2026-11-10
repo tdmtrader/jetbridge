@@ -80,19 +80,22 @@ re-admit privilege yet: a pod created before the mode changed keeps running.
 
 **Check eligibility**:
 How a check's pod can hold a step pod grant under the `granted` privilege mode.
-A check build runs in memory with no builds row, so its pods are owned by the
-resource type whose image they run, in the checked resource's pipeline:
-`<team>/<pipeline>/resource-type/<type>`. The type is read from the pipeline's
-own rows and the step's name: a check of resource R runs R's type; a check or
-image fetch named after resource type T (T's own check, or the fetch of T's
-image) runs T's type, so a type built on a privileged type needs the grant of
-the privileged one. A check container in a job build is owned the same way.
-Only a privileged grant of that owner admits the pod privileged; the pod keeps
-the default step pod identity and is annotated
-`concourse.dev/step-pod-grant=<grant>`. Ungrantable, with a refusal saying
-why: a check in a one-off, Run or instanced pipeline's build, an instanced or
-Run pipeline's check, a name the pipeline does not declare, and a base type.
-Under `any` nothing about a check is looked up.
+A check build is not a job's (a resource's check runs in memory with no builds
+row; a resource type's check and a manual check have one), so its pods are
+owned by the resource type whose image they run, in the checked pipeline:
+exactly one owner, `<team>/<pipeline>/resource-type/<type>`. The type is the
+one the step's plan runs, which the engine sets on the container spec: a check
+of resource R runs R's type; the check of resource type T, and the fetch of
+T's image, run T's type, so a type built on a privileged type needs the grant
+of the privileged one; a task's `image_resource` check runs the image
+resource's type. A check container in a job build is owned the same way. The
+type must be a lowercase identifier for a grant to name it. Only a privileged
+grant of that owner admits the pod privileged; the pod keeps the default step
+pod identity and is annotated `concourse.dev/step-pod-grant=<grant>`.
+Ungrantable, with a refusal saying why: a check in a one-off, Run or
+instanced pipeline's build, an instanced or Run pipeline's check, a pod with
+no pipeline or no type, and a base type. Only a privileged pod is resolved
+this way: an unprivileged check, and any check under `any`, costs no lookup.
 
 **Privilege mode**:
 The operator's choice of what the privilege gate enforces, one value per web

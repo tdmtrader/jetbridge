@@ -8,6 +8,7 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
+	"github.com/concourse/concourse/atc/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -308,26 +309,28 @@ func (identities stepPodIdentities) defaultIdentity() stepPodIdentity {
 	return stepPodIdentity{serviceAccount: identities.defaultAccount}
 }
 
-// resolve returns the identity for a container with this metadata. With no
-// grants configured, or for a container no build owns, it is the default. A
-// failed build lookup is a refusal: a pod is never created under an identity
-// nobody could check.
+// resolve returns the identity for a container with this metadata and spec.
+// With no grants configured, or for a container no build owns, it is the
+// default. A failed build lookup is a refusal: a pod is never created under an
+// identity nobody could check.
 //
-// A check container's ServiceAccount is always the default. Only under an
-// enforced privilege mode is its owner resolved, through check eligibility
-// (resolveCheck): every container of a check build, and a check container of
-// a job build. Under any, nothing about a check is looked up.
-func (identities stepPodIdentities) resolve(metadata db.ContainerMetadata) (stepPodIdentity, error) {
+// A check container's ServiceAccount is always the default. Only a privileged
+// one, under an enforced privilege mode, has its owner resolved, through check
+// eligibility (resolveCheck): every privileged container of a check build, and
+// a privileged check container of a job build. An unprivileged check, and any
+// check under any, costs no lookup.
+func (identities stepPodIdentities) resolve(metadata db.ContainerMetadata, spec runtime.ContainerSpec) (stepPodIdentity, error) {
 	if (len(identities.grants) == 0 && !identities.gated) || identities.builds == nil {
 		return identities.defaultIdentity(), nil
 	}
-	inMemoryCheck := metadata.BuildName == db.CheckBuildName
-	if !identities.gated && (metadata.Type == db.ContainerTypeCheck || metadata.BuildID == 0) {
+	eligible := identities.gated && spec.ImageSpec.Privileged
+	checkBuildName := metadata.BuildName == db.CheckBuildName
+	if metadata.Type == db.ContainerTypeCheck && !eligible {
 		return identities.defaultIdentity(), nil
 	}
 	if metadata.BuildID == 0 {
-		if inMemoryCheck {
-			return identities.resolveCheck(metadata, metadata.PipelineID)
+		if eligible && checkBuildName {
+			return identities.resolveCheck(metadata, spec, metadata.PipelineID)
 		}
 		return identities.defaultIdentity(), nil
 	}
@@ -336,23 +339,28 @@ func (identities stepPodIdentities) resolve(metadata db.ContainerMetadata) (step
 		return stepPodIdentity{}, fmt.Errorf("resolve step pod identity for build %d: %w", metadata.BuildID, err)
 	}
 	if !found {
-		// A check build runs in memory and never has a builds row; its
-		// pipeline is the checked resource's.
-		if identities.gated && inMemoryCheck {
-			return identities.resolveCheck(metadata, metadata.PipelineID)
+		// A check of a resource runs as an in-memory build: an id, no builds
+		// row. Its pipeline is the checked resource's.
+		if eligible && checkBuildName {
+			return identities.resolveCheck(metadata, spec, metadata.PipelineID)
 		}
 		identity := identities.defaultIdentity()
 		identity.buildMissing = true
 		return identity, nil
 	}
-	if identities.gated && (build.Name() == db.CheckBuildName || build.ResourceID() != 0 || build.ResourceTypeID() != 0) {
-		return identities.resolveCheck(metadata, build.PipelineID())
+	if build.Name() == db.CheckBuildName || build.ResourceID() != 0 || build.ResourceTypeID() != 0 {
+		// A check build with a row: a resource type's check, or a manual one.
+		if eligible {
+			return identities.resolveCheck(metadata, spec, build.PipelineID())
+		}
+		return identities.defaultIdentity(), nil
 	}
 	if metadata.Type == db.ContainerTypeCheck {
-		// gated here. A check in a job build is owned by its type as in a
-		// check build; a check in a one-off or Run build is ungrantable.
+		// Privileged and gated here. A check in a job build (a task
+		// image_resource's, say) is owned by its type as in a check build; a
+		// check in a one-off or Run build is ungrantable.
 		if _, ok := stepPodOwnerOf(build); ok && build.JobID() != 0 {
-			return identities.resolveCheck(metadata, build.PipelineID())
+			return identities.resolveCheck(metadata, spec, build.PipelineID())
 		}
 		identity := identities.defaultIdentity()
 		identity.check = true
@@ -378,18 +386,16 @@ func (identities stepPodIdentities) resolve(metadata db.ContainerMetadata) (step
 	return identity, nil
 }
 
-// resolveCheck is check eligibility: the owner of a check build's container,
-// or of a check container in a job build, is the resource type whose image it
-// runs, in the pipeline pipelineID names. Which type that is comes from the
-// pipeline's own rows and the step's name, as the engine plans it: a check of
-// resource R runs R's type, and a check or image fetch named after resource
-// type T (T's own check, or the fetch of T's image) runs T's type. When a name
-// is both a resource and a resource type, both types must be granted. The pod
-// keeps the default step pod identity; a privileged grant on every such type
-// makes it privileged. Anything that cannot be resolved this way -- no
-// pipeline, an instanced or Run pipeline, a name the pipeline does not
-// declare, a base type -- is ungrantable, and checkRefusal says why.
-func (identities stepPodIdentities) resolveCheck(metadata db.ContainerMetadata, pipelineID int) (stepPodIdentity, error) {
+// resolveCheck is check eligibility: the owner of a privileged container of a
+// check build, or of a privileged check container in a job build, is the
+// resource type whose image it runs -- the type its plan names, which the
+// engine sets on the spec (runtime.ContainerSpec.StepResourceType) -- in the
+// pipeline pipelineID names: exactly one owner,
+// <team>/<pipeline>/resource-type/<type>. The pod keeps the default step pod
+// identity; that owner's privileged grant makes it privileged. Anything that
+// cannot be resolved this way -- no pipeline, an instanced or Run pipeline, no
+// type on the spec, a base type -- is ungrantable, and checkRefusal says why.
+func (identities stepPodIdentities) resolveCheck(metadata db.ContainerMetadata, spec runtime.ContainerSpec, pipelineID int) (stepPodIdentity, error) {
 	identity := identities.defaultIdentity()
 	identity.check = true
 	refuse := func(reason string, args ...any) (stepPodIdentity, error) {
@@ -401,6 +407,10 @@ func (identities stepPodIdentities) resolveCheck(metadata db.ContainerMetadata, 
 	}
 	if pipelineID == 0 {
 		return refuse("The check belongs to no pipeline, so no step pod grant can cover it: only a pipeline's resource types can be granted.")
+	}
+	typeName := spec.StepResourceType
+	if typeName == "" {
+		return refuse("The engine named no resource type for this %s step, so no step pod grant can cover it.", metadata.Type)
 	}
 	pipeline, found, err := identities.pipelines.Pipeline(pipelineID)
 	if err != nil {
@@ -416,47 +426,18 @@ func (identities stepPodIdentities) resolveCheck(metadata db.ContainerMetadata, 
 	if _, ok := pipeline.PipelineRunID(); ok {
 		return refuse("Pipeline %s is a Run's pipeline, whose checks no step pod grant can cover.", named)
 	}
-
-	var types []string
-	if metadata.Type == db.ContainerTypeCheck {
-		resource, found, err := pipeline.Resource(metadata.StepName)
-		if err != nil {
-			return stepPodIdentity{}, fmt.Errorf("resolve step pod identity for pipeline %s: %w", named, err)
-		}
-		if found {
-			types = append(types, resource.Type())
-		}
-	}
-	resourceType, found, err := pipeline.ResourceType(metadata.StepName)
+	_, declared, err := pipeline.ResourceType(typeName)
 	if err != nil {
 		return stepPodIdentity{}, fmt.Errorf("resolve step pod identity for pipeline %s: %w", named, err)
 	}
-	if found {
-		types = append(types, resourceType.Type())
+	if !declared {
+		return refuse("%q is a base resource type, not one pipeline %s declares, so no step pod grant can cover a step that runs it.", typeName, named)
 	}
-	if len(types) == 0 {
-		return refuse("Pipeline %s declares no resource or resource type %q, so no step pod grant can cover this step.", named, metadata.StepName)
+	owner := StepPodOwner{Team: pipeline.TeamName(), Pipeline: pipeline.Name(), ResourceType: typeName}
+	identity.owner = owner.String()
+	if grant, ok := identities.grantFor(owner); ok && grant.Privileged {
+		identity.grant, identity.privileged = grant.Name, true
 	}
-
-	var grants []string
-	for _, name := range types {
-		_, declared, err := pipeline.ResourceType(name)
-		if err != nil {
-			return stepPodIdentity{}, fmt.Errorf("resolve step pod identity for pipeline %s: %w", named, err)
-		}
-		if !declared {
-			return refuse("%q is a base resource type, not one pipeline %s declares, so no step pod grant can cover a check that runs it.", name, named)
-		}
-		owner := StepPodOwner{Team: pipeline.TeamName(), Pipeline: pipeline.Name(), ResourceType: name}
-		identity.owner = owner.String()
-		grant, ok := identities.grantFor(owner)
-		if !ok || !grant.Privileged {
-			return identity, nil
-		}
-		grants = append(grants, grant.Name)
-	}
-	identity.grant = strings.Join(grants, ",")
-	identity.privileged = true
 	return identity, nil
 }
 
