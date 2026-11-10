@@ -40,7 +40,7 @@ func TestStepPodAdmissionContainment(t *testing.T) {
 		}}
 	}
 
-	if err := admitStepPod(ordinary(), roots); err != nil {
+	if err := admitStepPod(ordinary(), roots, privilegeAllowance{}); err != nil {
 		t.Fatalf("an ordinary step pod was refused: %v", err)
 	}
 
@@ -79,9 +79,75 @@ func TestStepPodAdmissionContainment(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pod := ordinary()
 			tc.mutate(pod)
-			err := admitStepPod(pod, roots)
+			err := admitStepPod(pod, roots, privilegeAllowance{})
 			if err == nil || !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("admitted, or refused for the wrong reason (%v); want %q", err, tc.reason)
+			}
+		})
+	}
+}
+
+// The privilege gate over constructed pods. Under granted, a pod holding any
+// privilege -- a privileged container or init container, an added capability,
+// a host namespace -- is refused unless its step pod identity's grant declares
+// privileged=true. Under any, the same pods pass, as they did before the gate.
+func TestStepPodAdmissionPrivilege(t *testing.T) {
+	roots := stepPodRootsFor(Config{ArtifactDaemonHostPath: "/var/lib/artifacts"}, "handle-1", "")
+	yes := true
+	unprivileged := func() *corev1.Pod {
+		return &corev1.Pod{Spec: corev1.PodSpec{
+			InitContainers: []corev1.Container{{Name: fetchInitContainerName}},
+			Containers:     []corev1.Container{{Name: "main"}, {Name: "sidecar"}},
+		}}
+	}
+	ungranted := privilegeAllowance{enforced: true, refusal: "Owner main/p/unit has no step pod grant: add one"}
+	granted := privilegeAllowance{enforced: true, privileged: true}
+
+	if err := admitStepPod(unprivileged(), roots, ungranted); err != nil {
+		t.Fatalf("an unprivileged step pod was refused under granted: %v", err)
+	}
+
+	for name, tc := range map[string]struct {
+		mutate func(*corev1.Pod)
+		reason string
+	}{
+		"a privileged main container": {func(p *corev1.Pod) {
+			p.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: &yes}
+		}, `container "main" is privileged`},
+		"a privileged sidecar": {func(p *corev1.Pod) {
+			p.Spec.Containers[1].SecurityContext = &corev1.SecurityContext{Privileged: &yes}
+		}, `container "sidecar" is privileged`},
+		"an added capability": {func(p *corev1.Pod) {
+			p.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Capabilities: &corev1.Capabilities{Add: []corev1.Capability{"SYS_ADMIN"}}}
+		}, `container "main" adds the Linux capability SYS_ADMIN`},
+		"the host network":       {func(p *corev1.Pod) { p.Spec.HostNetwork = true }, "the pod joins the host's network namespace"},
+		"the host PID namespace": {func(p *corev1.Pod) { p.Spec.HostPID = true }, "the pod joins the host's PID namespace"},
+		"the host IPC namespace": {func(p *corev1.Pod) { p.Spec.HostIPC = true }, "the pod joins the host's IPC namespace"},
+		"a privileged init container": {func(p *corev1.Pod) {
+			p.Spec.InitContainers[0].SecurityContext = &corev1.SecurityContext{Privileged: &yes}
+		}, `init container "fetch-inputs" is privileged`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pod := unprivileged()
+			tc.mutate(pod)
+			err := admitStepPod(pod, roots, ungranted)
+			if err == nil || !strings.Contains(err.Error(), tc.reason) || !strings.Contains(err.Error(), ungranted.refusal) {
+				t.Fatalf("admitted, or refused for the wrong reason (%v); want %q and %q", err, tc.reason, ungranted.refusal)
+			}
+			if !strings.Contains(err.Error(), "--kubernetes-step-privilege=granted") {
+				t.Errorf("the refusal does not name the mode: %v", err)
+			}
+
+			for allowanceName, allowance := range map[string]privilegeAllowance{
+				"under granted, inside a privileged grant": granted,
+				"under any, outside every grant":           {},
+				"under any, inside a privileged grant":     {privileged: true},
+			} {
+				pod := unprivileged()
+				tc.mutate(pod)
+				if err := admitStepPod(pod, roots, allowance); err != nil {
+					t.Errorf("%s: refused: %v", allowanceName, err)
+				}
 			}
 		})
 	}

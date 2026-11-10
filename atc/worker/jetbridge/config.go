@@ -55,6 +55,11 @@ const (
 	StepRuntimeExec = "exec"
 	StepRuntimeJob  = "job"
 
+	// StepPrivilegeAny and StepPrivilegeGranted are the two values of
+	// Config.StepPrivilege.
+	StepPrivilegeAny     = "any"
+	StepPrivilegeGranted = "granted"
+
 	// ArtifactMountPath is the mount path inside init containers where
 	// the artifact hostPath volume is attached.
 	ArtifactMountPath = "/artifacts"
@@ -139,6 +144,13 @@ type Config struct {
 	// its step pods run under (--kubernetes-step-pod-grant). A pod outside
 	// every grant runs as ServiceAccount, the default step pod identity.
 	StepPodGrants []StepPodGrant
+
+	// StepPrivilege is the privilege gate's mode (--kubernetes-step-privilege).
+	// StepPrivilegeAny, and empty, admit a step pod's privilege as its task or
+	// resource type asks, whatever step pod grants say. StepPrivilegeGranted
+	// admits privilege only under a step pod grant that declares
+	// privileged=true (step_pod_admission.go).
+	StepPrivilege string
 
 	// CacheStore selects the task cache backend explicitly. Valid values:
 	// "hostpath" (node-local directories), "emptydir" (ephemeral).

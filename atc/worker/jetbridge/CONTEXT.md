@@ -34,7 +34,8 @@ An operator-set mapping from a build's authoritative owner (an exact
 team/pipeline/job of a non-instanced pipeline, or a one-off build of team
 `main`) to the step pod identity its pods run under. A step pod grant names a
 ServiceAccount, declares `privileged=true`, or both; the step pod identity
-carries that declaration, but nothing reads it yet (see **Privilege gate**).
+carries that declaration, and the privilege gate reads it under the
+`granted` privilege mode only (see **Privilege gate**).
 Only web's configuration sets one; check builds, instanced pipelines and other
 teams' builds match none, and nothing a pipeline or API caller supplies can
 select one.
@@ -46,18 +47,37 @@ An identity allowed to read a bootstrap inventory Secret, create a pod that
 mounts one, or reach the node: the bootstrap inventory's consumers, web, the
 cluster administrators the operator lists, and every identity a step pod grant
 gives privilege or `pods create`. No pipeline can join it through a
-ServiceAccount, a capability or a host namespace, but privilege is not gated
-yet (see **Privilege gate**): a task that sets `privileged:`, or a step whose
-resource type does, runs privileged without a step pod grant.
+ServiceAccount, a capability or a host namespace. Privilege is gated only
+under the `granted` privilege mode (see **Privilege gate**); under `any`, the
+default, a task that sets `privileged:`, or a step whose resource type does,
+runs privileged without a step pod grant.
 
 **Privilege gate**:
-The rule that no step configuration can add a capability or join a host
-namespace: nothing that builds a step pod sets one, and
-`TestNoStepPodCodeSetsACapabilityOrAHostNamespace` keeps it so. Privilege
-itself is not gated today: a step pod's security context follows the task's
-`privileged:` or, for a get, put or check, its resource type's `privileged:`,
-and a step pod grant's `privileged=true` is carried on the step pod identity
-but never read.
+The rule that a step pod holds privilege only where the operator allowed it.
+No step configuration can add a capability or join a host namespace: nothing
+that builds a step pod sets one, and
+`TestNoStepPodCodeSetsACapabilityOrAHostNamespace` keeps it so. A step pod's
+security context follows the task's `privileged:` or, for a get, put or
+check, its resource type's `privileged:`, and whether that is admitted is the
+privilege mode's. Under the `granted` privilege mode the step pod admission
+refuses, at creation, a pod that is privileged, adds a capability or joins a
+host namespace in any container or init container unless its step pod
+identity's grant declares `privileged=true`; the refusal names the owner and
+the grant it lacks, and no Pod or Job is made. A check holds no step pod grant,
+so a privileged check is refused in that mode. Sidecars are never privileged.
+Reusing a live pod and resuming a step Job after a web restart do not
+re-admit privilege yet: a pod created before the mode changed keeps running.
+
+**Privilege mode**:
+The operator's choice of what the privilege gate enforces, one value per web
+(`--kubernetes-step-privilege`, `kubernetes.stepPrivilege`): `any`, the
+default, admits privilege as the task or resource type asks, whatever step pod
+grants declare, so a deployment that already set `privileged=true` on a grant
+sees no change on upgrade; `granted` admits it only under a step pod grant
+that declares `privileged=true`. The mode is set explicitly, never inferred
+from a grant. `granted` with no privileged grant is legal: nothing runs
+privileged.
+_Avoid_: privilege flag, strict mode
 
 **Default step pod identity**:
 What a step pod outside every step pod grant runs as: the configured

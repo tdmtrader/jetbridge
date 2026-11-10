@@ -40,6 +40,16 @@ func (cmd *RunCommand) jetbridgeComponents(logger lager.Logger, dbConn db.DbConn
 		}
 		k8sCfg, k8sClientset := rt.config, rt.clientset
 
+		// Once at startup: which step pods may hold privilege, and the
+		// grants that allow it, so an operator can see the gate's state.
+		var privilegedGrants []string
+		for _, grant := range k8sCfg.StepPodGrants {
+			if grant.Privileged {
+				privilegedGrants = append(privilegedGrants, grant.Name+"="+grant.Owner.String())
+			}
+		}
+		logger.Info("step-privilege-mode", lager.Data{"mode": k8sCfg.StepPrivilege, "privileged-grants": privilegedGrants})
+
 		components = append(components, RunnableComponent{
 			Component: atc.Component{
 				Name: atc.ComponentK8sWorkerRegistrar,
@@ -184,6 +194,7 @@ func (cmd *RunCommand) assembleJetbridgeConfig() (jetbridge.Config, error) {
 	k8sCfg.CacheHostPath = cmd.Kubernetes.CacheHostPath
 	k8sCfg.ArtifactHelperImage = cmd.Kubernetes.ArtifactHelperImage
 	k8sCfg.StepRuntime = cmd.Kubernetes.StepRuntime
+	k8sCfg.StepPrivilege = cmd.Kubernetes.StepPrivilege
 	k8sCfg.LauncherImage = cmd.Kubernetes.LauncherImage
 	k8sCfg.StepEnvelopeURL = cmd.Kubernetes.StepEnvelopeURL
 	k8sCfg.ArtifactDaemonPort = cmd.Kubernetes.ArtifactDaemonPort

@@ -681,7 +681,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	if err := validatePodVolumeMounts(pod); err != nil {
 		return nil, err
 	}
-	if err := admitStepPod(pod, stepPodRootsFor(c.config, c.handle, captureStepDirectory(c.containerSpec))); err != nil {
+	if err := admitStepPod(pod, stepPodRootsFor(c.config, c.handle, captureStepDirectory(c.containerSpec)), c.privilegeAllowanceFor(identity)); err != nil {
 		return nil, err
 	}
 	return pod, nil

@@ -225,8 +225,13 @@ func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*b
 		return nil, err
 	}
 	// The answer directory is a host path under the step's own directory;
-	// the same admission every step pod passes checks it.
-	if err := admitStepPod(pod, stepPodRootsFor(c.config, c.handle, captureStepDirectory(c.containerSpec))); err != nil {
+	// the same admission every step pod passes checks it, privilege gate
+	// included.
+	allowance, err := c.privilegeAllowance()
+	if err != nil {
+		return nil, err
+	}
+	if err := admitStepPod(pod, stepPodRootsFor(c.config, c.handle, captureStepDirectory(c.containerSpec)), allowance); err != nil {
 		return nil, err
 	}
 
