@@ -92,7 +92,11 @@ const captureEnvGrantLegacy = "HANGAR_CAPTURE_CAPABILITY"
 // execution is not admitted yet, and fails closed when the budget runs out.
 // Start and recovery fail closed until the hold matches current execution
 // admission: that is a refusal to start, not a hold taken on faith.
-const defaultHoldAttempts = 60
+//
+// One attempt a second for three minutes: at least as long as the admission
+// dials a restarting daemon (admitDialBudget), since both wait for the same
+// daemon, and well inside the hold warrant's window and the readiness wait.
+const defaultHoldAttempts = 180
 
 // buildCaptureControlInitContainer returns the init container that establishes
 // the provisional source hold, or nil when this execution selected no capture.
