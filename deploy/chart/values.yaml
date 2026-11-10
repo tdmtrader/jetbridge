@@ -250,7 +250,9 @@ kubernetes:
   # any other privileged step, and every privileged check no resource-type
   # grant covers (owner <team>/<pipeline>/resource-type/<type>), fails when its pod
   # is created, naming its owner and the grant it lacks. Before choosing it,
-  # run hack/step-pod-audit pods and add the grants it shows. granted with no
+  # run hack/step-pod-audit pods and add the grants it shows; under any it
+  # cannot show a check's owner, so read each pipeline's resource_types for
+  # the privileged types its checks run. granted with no
   # privileged grant is legal: nothing runs privileged. A pod reused, or a
   # step Job resumed after a web restart, is not re-checked yet.
   stepPrivilege: any
