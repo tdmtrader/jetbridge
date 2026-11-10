@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
+	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	hangaroutput "github.com/concourse/concourse/hangar/output"
 )
@@ -769,5 +771,34 @@ func TestTheControlInitDialsHTTPSWhateverTheArtifactDaemonsTLSSwitchSays(t *test
 
 	if got := outputPlaneURLScheme(); got != "https" {
 		t.Errorf("outputPlaneURLScheme is %q", got)
+	}
+}
+
+// The control init outlasts a daemon restart as long as the admission does.
+// Both wait for the same daemon on the same node; an init that gave up first
+// would fail the pod while the admission was still patiently dialling. It
+// still fits inside the readiness wait, after which nothing waits for it, and
+// inside the hold warrant's window, after which the daemon refuses it anyway.
+func TestTheControlInitWaitsForTheDaemonAsLongAsTheAdmission(t *testing.T) {
+	control := capturingContainer(t, capturePodConfig(true), false, admittedCapture()).
+		buildCaptureControlInitContainer()
+	attempts := 0
+	for _, env := range control.Env {
+		if env.Name == captureEnvHoldTries {
+			attempts, _ = strconv.Atoi(env.Value)
+		}
+	}
+	// One attempt to an unreachable daemon is a refused dial and a one-second
+	// sleep.
+	span := time.Duration(attempts) * time.Second
+	if span < admitDialBudget {
+		t.Errorf("the control init gives up after about %s; the admission dials for %s", span, admitDialBudget)
+	}
+	config := NewConfig("test-ns", "")
+	if room := managedInputReadyTimeout(config, 0); span > room {
+		t.Errorf("the control init may wait %s; the pod's readiness wait is %s", span, room)
+	}
+	if span > hangar.MaxWarrantTTL {
+		t.Errorf("the control init may wait %s, past the %s hold warrant window", span, hangar.MaxWarrantTTL)
 	}
 }
