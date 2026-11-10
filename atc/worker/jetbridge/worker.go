@@ -70,6 +70,10 @@ type WorkerDeps struct {
 	// resolve its step pod grant. Nil means every pod runs as the default
 	// step pod identity.
 	StepPodBuilds StepPodBuilds
+	// StepPodPipelines is how a check container finds its pipeline, for
+	// check eligibility under --kubernetes-step-privilege=granted. Nil means
+	// no check can be covered by a step pod grant.
+	StepPodPipelines StepPodPipelines
 	// StepEnvelopes is where the job step runtime registers each step's
 	// envelope for its pod to fetch (step_envelopes.go). Nil means a job
 	// runtime step that reads stdin is refused.
@@ -110,6 +114,7 @@ func NewWorker(dbWorker db.Worker, clientset kubernetes.Interface, config Config
 		identities: stepPodIdentities{
 			grants:         config.StepPodGrants,
 			builds:         deps.StepPodBuilds,
+			pipelines:      deps.StepPodPipelines,
 			defaultAccount: config.ServiceAccount,
 			gated:          stepPrivilegeEnforced(config.StepPrivilege),
 		},

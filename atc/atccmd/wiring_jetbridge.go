@@ -317,6 +317,7 @@ func (cmd *RunCommand) workerFactory(logger lager.Logger, dbConn db.DbConn, lock
 		factory.K8sExecutor = jetbridge.NewSPDYExecutor(k8sClientset, k8sRestConfig)
 		factory.K8sArtifactLocator = cmd.artifactLocator()
 		factory.K8sStepPodBuilds = stepPodBuilds
+		factory.K8sStepPodPipelines = jetbridge.NewStepPodPipelines(dbConn, lockFactory)
 		factory.K8sStepEnvelopes = cmd.stepEnvelopes()
 		if k8sCfg.OutputPlaneEnabled && cmd.hangarSigner != nil {
 			// Both dispatch and recovery use the same node plane.

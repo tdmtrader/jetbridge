@@ -46,6 +46,9 @@ type DefaultFactory struct {
 	// K8sStepPodBuilds is how a worker's containers find the build that owns
 	// them, to resolve their step pod grant.
 	K8sStepPodBuilds jetbridge.StepPodBuilds
+	// K8sStepPodPipelines is how a check container finds its pipeline, for
+	// check eligibility under --kubernetes-step-privilege=granted.
+	K8sStepPodPipelines jetbridge.StepPodPipelines
 	// K8sStepEnvelopes is the job step runtime's envelope store, shared with
 	// the web's step envelope handler.
 	K8sStepEnvelopes *jetbridge.StepEnvelopes
@@ -64,6 +67,7 @@ func (f DefaultFactory) newK8sWorker(dbWorker db.Worker) *jetbridge.Worker {
 		OutputControls:    f.K8sOutputControls,
 		ExecutionPreparer: f.K8sExecutionPreparer,
 		StepPodBuilds:     f.K8sStepPodBuilds,
+		StepPodPipelines:  f.K8sStepPodPipelines,
 		StepEnvelopes:     f.K8sStepEnvelopes,
 	})
 }

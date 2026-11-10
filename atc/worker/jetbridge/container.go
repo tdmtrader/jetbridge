@@ -685,7 +685,13 @@ func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string
 	if err := validatePodVolumeMounts(pod); err != nil {
 		return nil, privilegeAllowance{}, err
 	}
-	return pod, c.privilegeAllowanceFor(identity), nil
+	allowance := c.privilegeAllowanceFor(identity)
+	if allowance.enforced && identity.check && identity.privileged {
+		// A check admitted privileged under a resource-type grant says which,
+		// so hack/step-pod-audit can hold the pod to that grant from outside.
+		pod.Annotations[stepPodGrantAnnotation] = identity.grant
+	}
+	return pod, allowance, nil
 }
 
 // buildPod is composePod admitted: the exec runtime's pod, as it is created.

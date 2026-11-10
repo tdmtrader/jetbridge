@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/lock"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -34,12 +35,25 @@ type StepPodGrant struct {
 // an exact team/pipeline/job of a non-instanced pipeline, or a one-off build
 // of team main. Every other build -- a check, an instanced pipeline's job, a
 // one-off of another team -- has no owner and matches no grant.
+//
+// A check is owned instead by the resource type whose image it runs, in its
+// own non-instanced pipeline: team/pipeline/resource-type/type (ResourceType
+// set). Such an owner's grant only declares privileged=true; it names no
+// ServiceAccount, so a check pod keeps the default step pod identity.
 type StepPodOwner struct {
-	Team     string
-	Pipeline string
-	Job      string
-	OneOff   bool
+	Team         string
+	Pipeline     string
+	Job          string
+	OneOff       bool
+	ResourceType string
 }
+
+// resourceTypeOwnerSegment is the third segment of a resource-type owner.
+const resourceTypeOwnerSegment = "resource-type"
+
+// stepPodGrantAnnotation names, on a check pod admitted privileged under
+// --kubernetes-step-privilege=granted, the resource-type grant that admitted it.
+const stepPodGrantAnnotation = "concourse.dev/step-pod-grant"
 
 // oneOffTeam is the only team whose one-off builds can hold a grant.
 const oneOffTeam = "main"
@@ -48,7 +62,31 @@ func (owner StepPodOwner) String() string {
 	if owner.OneOff {
 		return owner.Team + "/one-off"
 	}
+	if owner.ResourceType != "" {
+		return owner.Team + "/" + owner.Pipeline + "/" + resourceTypeOwnerSegment + "/" + owner.ResourceType
+	}
 	return owner.Team + "/" + owner.Pipeline + "/" + owner.Job
+}
+
+// StepPodPipelines looks a pipeline up by the id the engine put in a check
+// container's metadata, which is the checked resource's own pipeline: a check
+// build runs in memory and has no builds row to read it from.
+type StepPodPipelines interface {
+	Pipeline(int) (db.Pipeline, bool, error)
+}
+
+// NewStepPodPipelines looks pipelines up by id in the database.
+func NewStepPodPipelines(conn db.DbConn, lockFactory lock.LockFactory) StepPodPipelines {
+	return stepPodPipelines{conn: conn, lockFactory: lockFactory}
+}
+
+type stepPodPipelines struct {
+	conn        db.DbConn
+	lockFactory lock.LockFactory
+}
+
+func (p stepPodPipelines) Pipeline(id int) (db.Pipeline, bool, error) {
+	return db.NewPipelineRef(id, "", nil, p.conn, p.lockFactory).Pipeline()
 }
 
 // StepPodBuilds looks a build up by the id the engine put in its container
@@ -70,6 +108,10 @@ type stepPodIdentity struct {
 	owner string
 	// buildMissing is a build lookup that found no row.
 	buildMissing bool
+	// check is a check eligibility resolution (stepPodIdentities.resolveCheck):
+	// owner is a resource-type owner, or checkRefusal says why none can be.
+	check        bool
+	checkRefusal string
 }
 
 // identifierSegment is a team, pipeline or job name as atc.ValidateIdentifier
@@ -79,8 +121,10 @@ var identifierSegment = regexp.MustCompile(`^[\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d][\p{Ll}
 // ParseStepPodGrant parses one --kubernetes-step-pod-grant value:
 //
 //	name=<grant>,owner=<team>/<pipeline>/<job>|main/one-off[,service-account=<sa>][,privileged=true|false]
+//	name=<grant>,owner=<team>/<pipeline>/resource-type/<type>,privileged=true
 //
 // A step pod grant names a ServiceAccount, declares privileged=true, or both.
+// A resource-type owner's grant declares privileged=true and nothing else.
 func ParseStepPodGrant(value string) (StepPodGrant, error) {
 	var grant StepPodGrant
 	seen := map[string]bool{}
@@ -122,6 +166,14 @@ func ParseStepPodGrant(value string) (StepPodGrant, error) {
 		return StepPodGrant{}, fmt.Errorf("step pod grant %q: %w", value, err)
 	}
 	grant.Owner = parsedOwner
+	if parsedOwner.ResourceType != "" {
+		if !grant.Privileged {
+			return StepPodGrant{}, fmt.Errorf("step pod grant %q: a resource-type owner's grant must declare privileged=true", value)
+		}
+		if grant.ServiceAccount != "" {
+			return StepPodGrant{}, fmt.Errorf("step pod grant %q: a resource-type owner's grant names no service-account: a check pod keeps the default step pod identity", value)
+		}
+	}
 	if grant.ServiceAccount == "" && !grant.Privileged {
 		return StepPodGrant{}, fmt.Errorf("step pod grant %q: a grant needs a service-account, privileged=true, or both", value)
 	}
@@ -149,8 +201,13 @@ func parseStepPodOwner(owner string) (StepPodOwner, error) {
 		return StepPodOwner{Team: segments[0], OneOff: true}, nil
 	case len(segments) == 3:
 		return StepPodOwner{Team: segments[0], Pipeline: segments[1], Job: segments[2]}, nil
+	case len(segments) == 4 && segments[2] == resourceTypeOwnerSegment:
+		if segments[1] == "one-off" {
+			return StepPodOwner{}, fmt.Errorf("owner %q: a resource-type owner names a pipeline; one-off builds hold no check grant", owner)
+		}
+		return StepPodOwner{Team: segments[0], Pipeline: segments[1], ResourceType: segments[3]}, nil
 	default:
-		return StepPodOwner{}, fmt.Errorf("owner %q: want <team>/<pipeline>/<job> or %s/one-off", owner, oneOffTeam)
+		return StepPodOwner{}, fmt.Errorf("owner %q: want <team>/<pipeline>/<job>, %s/one-off or <team>/<pipeline>/%s/<type>", owner, oneOffTeam, resourceTypeOwnerSegment)
 	}
 }
 
@@ -201,6 +258,7 @@ func stepPodOwnerOf(build db.Build) (StepPodOwner, bool) {
 type stepPodIdentities struct {
 	grants         []StepPodGrant
 	builds         StepPodBuilds
+	pipelines      StepPodPipelines
 	defaultAccount string
 	// gated is an enforced privilege mode (granted): the build is looked up
 	// even with no grant configured, so a refusal can name its owner.
@@ -255,13 +313,22 @@ func (identities stepPodIdentities) defaultIdentity() stepPodIdentity {
 // failed build lookup is a refusal: a pod is never created under an identity
 // nobody could check.
 //
-// A check container resolves to the default whatever build it runs in: no
-// step pod owner form covers a check yet. Check eligibility (an owner naming a
-// resource type) belongs here, and the privilege gate's check refusal in
-// Container.privilegeAllowanceFor goes with it.
+// A check container's ServiceAccount is always the default. Only under an
+// enforced privilege mode is its owner resolved, through check eligibility
+// (resolveCheck): every container of a check build, and a check container of
+// a job build. Under any, nothing about a check is looked up.
 func (identities stepPodIdentities) resolve(metadata db.ContainerMetadata) (stepPodIdentity, error) {
-	if (len(identities.grants) == 0 && !identities.gated) || identities.builds == nil ||
-		metadata.Type == db.ContainerTypeCheck || metadata.BuildID == 0 {
+	if (len(identities.grants) == 0 && !identities.gated) || identities.builds == nil {
+		return identities.defaultIdentity(), nil
+	}
+	inMemoryCheck := metadata.BuildName == db.CheckBuildName
+	if !identities.gated && (metadata.Type == db.ContainerTypeCheck || metadata.BuildID == 0) {
+		return identities.defaultIdentity(), nil
+	}
+	if metadata.BuildID == 0 {
+		if inMemoryCheck {
+			return identities.resolveCheck(metadata, metadata.PipelineID)
+		}
 		return identities.defaultIdentity(), nil
 	}
 	build, found, err := identities.builds.Build(metadata.BuildID)
@@ -269,8 +336,28 @@ func (identities stepPodIdentities) resolve(metadata db.ContainerMetadata) (step
 		return stepPodIdentity{}, fmt.Errorf("resolve step pod identity for build %d: %w", metadata.BuildID, err)
 	}
 	if !found {
+		// A check build runs in memory and never has a builds row; its
+		// pipeline is the checked resource's.
+		if identities.gated && inMemoryCheck {
+			return identities.resolveCheck(metadata, metadata.PipelineID)
+		}
 		identity := identities.defaultIdentity()
 		identity.buildMissing = true
+		return identity, nil
+	}
+	if identities.gated && (build.Name() == db.CheckBuildName || build.ResourceID() != 0 || build.ResourceTypeID() != 0) {
+		return identities.resolveCheck(metadata, build.PipelineID())
+	}
+	if metadata.Type == db.ContainerTypeCheck {
+		// gated here. A check in a job build is owned by its type as in a
+		// check build; a check in a one-off or Run build is ungrantable.
+		if _, ok := stepPodOwnerOf(build); ok && build.JobID() != 0 {
+			return identities.resolveCheck(metadata, build.PipelineID())
+		}
+		identity := identities.defaultIdentity()
+		identity.check = true
+		identity.checkRefusal = fmt.Sprintf("A check in build %d (a one-off, a Run's or an instanced pipeline's build) holds no "+
+			"step pod grant: only a check of a non-instanced pipeline's resource or resource type can.", metadata.BuildID)
 		return identity, nil
 	}
 	owner, ok := stepPodOwnerOf(build)
@@ -289,6 +376,97 @@ func (identities stepPodIdentities) resolve(metadata db.ContainerMetadata) (step
 	identity := identities.defaultIdentity()
 	identity.owner = owner.String()
 	return identity, nil
+}
+
+// resolveCheck is check eligibility: the owner of a check build's container,
+// or of a check container in a job build, is the resource type whose image it
+// runs, in the pipeline pipelineID names. Which type that is comes from the
+// pipeline's own rows and the step's name, as the engine plans it: a check of
+// resource R runs R's type, and a check or image fetch named after resource
+// type T (T's own check, or the fetch of T's image) runs T's type. When a name
+// is both a resource and a resource type, both types must be granted. The pod
+// keeps the default step pod identity; a privileged grant on every such type
+// makes it privileged. Anything that cannot be resolved this way -- no
+// pipeline, an instanced or Run pipeline, a name the pipeline does not
+// declare, a base type -- is ungrantable, and checkRefusal says why.
+func (identities stepPodIdentities) resolveCheck(metadata db.ContainerMetadata, pipelineID int) (stepPodIdentity, error) {
+	identity := identities.defaultIdentity()
+	identity.check = true
+	refuse := func(reason string, args ...any) (stepPodIdentity, error) {
+		identity.checkRefusal = fmt.Sprintf(reason, args...)
+		return identity, nil
+	}
+	if identities.pipelines == nil {
+		return refuse("This web cannot look up the check's pipeline, so no step pod grant can cover the check.")
+	}
+	if pipelineID == 0 {
+		return refuse("The check belongs to no pipeline, so no step pod grant can cover it: only a pipeline's resource types can be granted.")
+	}
+	pipeline, found, err := identities.pipelines.Pipeline(pipelineID)
+	if err != nil {
+		return stepPodIdentity{}, fmt.Errorf("resolve step pod identity for pipeline %d: %w", pipelineID, err)
+	}
+	if !found {
+		return refuse("Pipeline %d was not found, so no step pod grant can cover the check.", pipelineID)
+	}
+	named := pipeline.TeamName() + "/" + pipeline.Name()
+	if len(pipeline.InstanceVars()) != 0 {
+		return refuse("Pipeline %s is an instanced pipeline, whose checks no step pod grant can cover.", named)
+	}
+	if _, ok := pipeline.PipelineRunID(); ok {
+		return refuse("Pipeline %s is a Run's pipeline, whose checks no step pod grant can cover.", named)
+	}
+
+	var types []string
+	if metadata.Type == db.ContainerTypeCheck {
+		resource, found, err := pipeline.Resource(metadata.StepName)
+		if err != nil {
+			return stepPodIdentity{}, fmt.Errorf("resolve step pod identity for pipeline %s: %w", named, err)
+		}
+		if found {
+			types = append(types, resource.Type())
+		}
+	}
+	resourceType, found, err := pipeline.ResourceType(metadata.StepName)
+	if err != nil {
+		return stepPodIdentity{}, fmt.Errorf("resolve step pod identity for pipeline %s: %w", named, err)
+	}
+	if found {
+		types = append(types, resourceType.Type())
+	}
+	if len(types) == 0 {
+		return refuse("Pipeline %s declares no resource or resource type %q, so no step pod grant can cover this step.", named, metadata.StepName)
+	}
+
+	var grants []string
+	for _, name := range types {
+		_, declared, err := pipeline.ResourceType(name)
+		if err != nil {
+			return stepPodIdentity{}, fmt.Errorf("resolve step pod identity for pipeline %s: %w", named, err)
+		}
+		if !declared {
+			return refuse("%q is a base resource type, not one pipeline %s declares, so no step pod grant can cover a check that runs it.", name, named)
+		}
+		owner := StepPodOwner{Team: pipeline.TeamName(), Pipeline: pipeline.Name(), ResourceType: name}
+		identity.owner = owner.String()
+		grant, ok := identities.grantFor(owner)
+		if !ok || !grant.Privileged {
+			return identity, nil
+		}
+		grants = append(grants, grant.Name)
+	}
+	identity.grant = strings.Join(grants, ",")
+	identity.privileged = true
+	return identity, nil
+}
+
+func (identities stepPodIdentities) grantFor(owner StepPodOwner) (StepPodGrant, bool) {
+	for _, grant := range identities.grants {
+		if grant.Owner == owner {
+			return grant, true
+		}
+	}
+	return StepPodGrant{}, false
 }
 
 // ValidateStepPrivilege refuses a privilege mode other than StepPrivilegeAny,
@@ -318,12 +496,18 @@ func (c *Container) privilegeAllowanceFor(identity stepPodIdentity) privilegeAll
 	}
 	allowance := privilegeAllowance{enforced: true, privileged: identity.privileged}
 	const unprivileged = "the step must run unprivileged on this web: drop privileged: from the task, or from the resource type of the get or put"
+	const checkUnprivileged = "or the resource type must drop privileged: for its checks to run on this web"
 	switch {
+	case identity.check && identity.checkRefusal != "":
+		allowance.refusal = identity.checkRefusal
+	case identity.check:
+		allowance.refusal = fmt.Sprintf("Owner %s has no step pod grant: add one with privileged=true for it to "+
+			"kubernetes.stepPodGrants (--kubernetes-step-pod-grant, owner=%s), %s.", identity.owner, identity.owner, checkUnprivileged)
 	case c.metadata.Type == db.ContainerTypeCheck:
-		// The seam for check eligibility: no step pod owner form covers a
-		// check yet (stepPodIdentities.resolve), so none can be privileged.
-		allowance.refusal = "A check holds no step pod grant in this release, so a check whose resource type is " +
-			"privileged cannot run on this web: the resource type must drop privileged: for its checks to run."
+		// Reached only when no build lookup is wired: check eligibility
+		// (stepPodIdentities.resolveCheck) needs the build and the pipeline.
+		allowance.refusal = "This web cannot resolve the check's owner, so no step pod grant can cover it: " +
+			"the resource type must drop privileged: for its checks to run on this web."
 	case identity.grant != "":
 		allowance.refusal = fmt.Sprintf("Owner %s's step pod grant %q does not declare privileged=true: "+
 			"add privileged=true to it in kubernetes.stepPodGrants (--kubernetes-step-pod-grant), or %s.", identity.owner, identity.grant, unprivileged)
