@@ -418,7 +418,14 @@ stops the web at startup. To opt in:
    privileged check pod to the grant its `concourse.dev/step-pod-grant`
    annotation names.
 
-`granted` with no privileged grant is legal: nothing runs privileged. A pod
-already running when the mode changes, and a step Job a restarted web resumes,
-are not re-checked in this release; let running builds finish before relying
-on the gate. To back out, set `any` (or remove the value) and sync.
+`granted` with no privileged grant is legal: nothing runs privileged. A step
+pod already running when the mode changes, or when a grant is removed, is
+admitted again when a step comes back to it (a repeated check reusing its
+pod, a step a restarted web resumes, under either step runtime): one the gate
+now refuses is deleted and the step fails, naming the grant it lacks, and no
+fresh pod replaces it. A Run's exact execution is failed the same way but not
+deleted. A pod nothing comes back to keeps running until its build ends, so
+`hack/step-pod-audit pods` can still show privileged pods made before the
+switch; let running builds finish, or abort them, before reading it as the
+gate's. `fly intercept` into such a pod is not refused. To back out, set
+`any` (or remove the value) and sync.
