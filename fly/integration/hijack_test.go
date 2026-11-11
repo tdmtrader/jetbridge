@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/gorilla/websocket"
@@ -403,10 +402,15 @@ var _ = Describe("hijack", func() {
 			Eventually(sess.Out).Should(gbytes.Say("step: some-output, type: task, attempt: 1"))
 			Eventually(sess.Out).Should(gbytes.Say(`\[↑/k\] up • \[↓/j\] down • \[/\] filter • \[esc/q\] quit`))
 
+			// Each keystroke waits for the frame that shows it. bubbletea reads
+			// the pipe in one Read and reports a run of printable bytes as a
+			// single KeyMsg: two "j"s that arrive together are the key "jj",
+			// which is not "down", so the cursor stays on the first row and
+			// enter hijacks container-id-4.
 			fmt.Fprint(stdin, "j")
-			time.Sleep(time.Millisecond)
+			Eventually(sess.Out).Should(gbytes.Say(`>\s+step: some-input, type: get`))
 			fmt.Fprint(stdin, "j")
-			time.Sleep(time.Millisecond)
+			Eventually(sess.Out).Should(gbytes.Say(`>\s+step: some-output, type: put`))
 			fmt.Fprint(stdin, "\r")
 
 			Eventually(hijacked).Should(BeClosed())
