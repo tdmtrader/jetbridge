@@ -59,10 +59,12 @@ func TestTheReaperKeepsAPodlessExactStepJobWhileItsBuildRuns(t *testing.T) {
 		lookup RunningBuildLookup
 		want   string
 	}{
-		{"its build is running", startedBuilds{ids: []int{7}}, "exact-running"},
-		{"no build is running", startedBuilds{}, ""},
-		{"the running builds cannot be listed", startedBuilds{err: errors.New("database is down")}, "exact-finished,exact-running"},
-		{"there is no build lookup", nil, "exact-finished,exact-running"},
+		// A labelled Job with no build label names no build that can be
+		// shown to be over: it is kept, as an unknown build is.
+		{"its build is running", startedBuilds{ids: []int{7}}, "exact-no-build,exact-running"},
+		{"no build is running", startedBuilds{}, "exact-no-build"},
+		{"the running builds cannot be listed", startedBuilds{err: errors.New("database is down")}, "exact-finished,exact-no-build,exact-running"},
+		{"there is no build lookup", nil, "exact-finished,exact-no-build,exact-running"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -70,6 +72,7 @@ func TestTheReaperKeepsAPodlessExactStepJobWhileItsBuildRuns(t *testing.T) {
 			for _, j := range []*batchv1.Job{
 				job("exact-running", "7", true),
 				job("exact-finished", "8", true),
+				job("exact-no-build", "", true),
 				job("ordinary-running", "7", false),
 			} {
 				if _, err := clientset.BatchV1().Jobs("test-ns").Create(ctx, j, metav1.CreateOptions{}); err != nil {
