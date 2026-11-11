@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -112,6 +113,20 @@ type PodUID string
 // ProcessIdentity is the daemon's opaque handle for the exact OS process. A PID
 // alone is not one: PIDs are reused.
 type ProcessIdentity string
+
+// JobProcessIdentityPrefix starts the process identity of a start on the job
+// step runtime: job-v1:<step Job UID>. The identity is otherwise opaque to the
+// ledger; this prefix is the one thing it reads in it, because such a start is
+// replayed only to serve the step envelope its command needs, and no envelope
+// may be served once a stop has been requested.
+const JobProcessIdentityPrefix = "job-v1:"
+
+// ServedOnReplay reports whether replaying this start is what lets its command
+// begin: a job-runtime start, whose launcher is served its envelope on the
+// replay. The ledger refuses such a replay after a stop.
+func (process ProcessIdentity) ServedOnReplay() bool {
+	return strings.HasPrefix(string(process), JobProcessIdentityPrefix)
+}
 
 // ControlCapability is the opaque wire form of a control warrant for one
 // execution's control operations (hangar.PurposeControlBase or

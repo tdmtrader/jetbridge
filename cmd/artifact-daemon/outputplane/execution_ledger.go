@@ -319,6 +319,18 @@ func (ledger *ExecutionLedger) RecordStart(identity executioncontrol.Identity,
 				output.ErrConflict, identity.ExecutionID,
 				record.Start.PodUID, record.Start.ProcessIdentity, pod, process)
 		}
+		// A job-runtime start is replayed to serve its launcher the step
+		// envelope, and the envelope is what lets the command begin. After a
+		// stop no command may begin, so that replay is refused under the same
+		// lock that records the stop. The start stays readable (InspectStart)
+		// and an outcome is still accepted. Every other start replays after a
+		// stop as before: the exec runtime's stop replays its start to find
+		// the journal it writes the stop to.
+		if record.StopRequested && process.ServedOnReplay() {
+			return executioncontrol.Acknowledgement{}, fmt.Errorf(
+				"%w: execution %s was asked to stop; its job-runtime start is not replayed, so its envelope is never served",
+				output.ErrConflict, identity.ExecutionID)
+		}
 
 		return *record.Start, nil
 	}

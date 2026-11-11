@@ -48,6 +48,10 @@ type OutputControl interface {
 	Classify(ctx context.Context, id executioncontrol.Identity) (executioncontrol.ClassifyResult, error)
 	RecordStart(ctx context.Context, id executioncontrol.Identity, pod executioncontrol.PodUID,
 		process executioncontrol.ProcessIdentity) (executioncontrol.Acknowledgement, error)
+	// InspectStart reads the node's stored start and writes nothing. A
+	// job-runtime start a stop has been requested for is not replayed by
+	// RecordStart, so whoever only needs to check it reads it here.
+	InspectStart(ctx context.Context, id executioncontrol.Identity) (executioncontrol.Acknowledgement, error)
 	RecordOutcome(ctx context.Context, id executioncontrol.Identity,
 		kind executioncontrol.AcknowledgementKind,
 		outcome executioncontrol.ExitOutcome) (executioncontrol.Acknowledgement, error)

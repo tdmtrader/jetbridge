@@ -739,3 +739,75 @@ func TestTheSignedStartIsReadableAsStoredAndNothingElse(t *testing.T) {
 		t.Fatalf("the start was not readable after its outcome: %v", err)
 	}
 }
+
+// A start on the job step runtime (job-v1:<step Job UID>) is replayed only to
+// serve the step envelope, and the envelope is what lets its command run. So
+// once a stop has been requested the ledger refuses that replay: no launcher
+// asking again is served after the stop, whatever the web still remembers.
+// The stored start is still readable through InspectStart, which a recovery
+// uses instead. Every other process identity replays exactly as before: the
+// exec runtime's stop replays its start to find the journal it stops.
+func TestAJobRuntimeStartIsNotReplayedAfterAStopIsRequested(t *testing.T) {
+	for _, row := range []struct {
+		process  executioncontrol.ProcessIdentity
+		replayed bool
+	}{
+		{"job-v1:3f0c9a8e-step-job-uid", false},
+		{"supervisor-v1:/tmp/concourse-task-p-0123abcd", true},
+		{"resource-v1:/tmp/concourse-resource-x", true},
+		{"proc-1", true},
+	} {
+		t.Run(string(row.process), func(t *testing.T) {
+			fixture := newLedger(t)
+			admitted(t, fixture)
+			started, err := fixture.ledger.RecordStart(identity(1), testPod, row.process)
+			if err != nil {
+				t.Fatalf("starting: %v", err)
+			}
+			if _, err := fixture.ledger.RequestStop(identity(1)); err != nil {
+				t.Fatalf("requesting the stop: %v", err)
+			}
+			// A restart must not forget the refusal.
+			fixture.reopen(t)
+
+			replay, err := fixture.ledger.RecordStart(identity(1), testPod, row.process)
+			switch {
+			case row.replayed && err != nil:
+				t.Fatalf("the replay after a stop was refused: %v", err)
+			case row.replayed && !sameStatement(replay, started):
+				t.Errorf("the replay after a stop answered another statement:\n first: %s\nreplay: %s",
+					describeStatement(started), describeStatement(replay))
+			case !row.replayed && !errors.Is(err, output.ErrConflict):
+				t.Fatalf("a job-runtime start was replayed after its stop: %v", err)
+			}
+
+			inspected, err := fixture.ledger.InspectStart(identity(1))
+			if err != nil || !sameStatement(inspected, started) {
+				t.Errorf("the stored start is not readable after the stop: %v", err)
+			}
+			classified, err := fixture.ledger.Classify(identity(1))
+			if err != nil || classified.Classification != executioncontrol.ClassificationExecuting {
+				t.Errorf("the refusal changed the classification: %+v, %v", classified, err)
+			}
+			if _, err := fixture.ledger.RecordOutcome(identity(1), executioncontrol.AcknowledgementFinish,
+				executioncontrol.ExitOutcome{ExitCode: 143}); err != nil {
+				t.Errorf("the outcome of a stopped start was refused: %v", err)
+			}
+		})
+	}
+}
+
+// Before a stop the job-runtime replay is the idempotent replay every start
+// has: a launcher that lost its answer is served on it.
+func TestAJobRuntimeStartIsReplayedBeforeAStop(t *testing.T) {
+	fixture := newLedger(t)
+	admitted(t, fixture)
+	started, err := fixture.ledger.RecordStart(identity(1), testPod, "job-v1:uid")
+	if err != nil {
+		t.Fatalf("starting: %v", err)
+	}
+	replay, err := fixture.ledger.RecordStart(identity(1), testPod, "job-v1:uid")
+	if err != nil || !sameStatement(replay, started) {
+		t.Fatalf("the replay before any stop = %v, %v", replay, err)
+	}
+}

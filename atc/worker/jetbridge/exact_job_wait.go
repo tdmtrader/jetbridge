@@ -409,12 +409,19 @@ func (p *jobProcess) reconcileReattached(ctx context.Context) (runtime.ProcessRe
 	case classified.Classification == executioncontrol.ClassificationNeverStarted:
 		return runtime.ProcessResult{}, false, nil
 	case classified.Classification == executioncontrol.ClassificationExecuting:
-		// The ledger, not memory: its replay of the start must be this
-		// Job's pod and this Job's process identity.
+		// The ledger, not memory: its stored start must be this Job's pod
+		// and this Job's process identity. It is read, not replayed: after a
+		// stop the node refuses the replay, and the command already running
+		// is still followed to its outcome. A launcher that asks again is
+		// served only on the replay (beforeServe), so after a stop it is not.
 		process := jobProcessIdentity(e.jobUID)
-		start, err := client.RecordStart(ctx, id, control.exact.podUID, process)
+		start, err := client.InspectStart(ctx, id)
 		if err != nil {
-			return unresolved(fmt.Errorf("the execution started, and not as this Job's pod %s: %w", control.exact.podUID, err))
+			return unresolved(fmt.Errorf("reading the node's start: %w", err))
+		}
+		if start.PodUID != control.exact.podUID || start.ProcessIdentity != process {
+			return unresolved(fmt.Errorf("the execution started as %s/%s, not as this Job's pod %s and process %s",
+				start.PodUID, start.ProcessIdentity, control.exact.podUID, process))
 		}
 		if err := e.adoptStart(ctx, start, process); err != nil && !errors.Is(err, ErrStepEnvelopeNotReady) {
 			return unresolved(err)
