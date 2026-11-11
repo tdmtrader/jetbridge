@@ -1050,7 +1050,7 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		})
 
 		It("unsuspends a Job a web before it made and died before unsuspending", func() {
-			job, err := container.buildStepJob(runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "exit 3"}}, true)
+			job, _, err := container.buildStepJob(runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "exit 3"}}, true)
 			Expect(err).ToNot(HaveOccurred())
 			_, err = clientset.BatchV1().Jobs("test-ns").Create(ctx, job, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
