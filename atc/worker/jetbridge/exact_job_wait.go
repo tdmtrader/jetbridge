@@ -240,7 +240,7 @@ func (p *jobProcess) followExactJob(ctx context.Context) (runtime.ProcessResult,
 		result, recordErr := p.completeExact(ctx, podName)
 		if recordErr != nil {
 			logger.Error("exact-step-unresolved", recordErr, lager.Data{"pod-error": err.Error()})
-			return runtime.ProcessResult{}, exactNextDone, fmt.Errorf("%w: following the started step job's pod: %v (%v)",
+			return runtime.ProcessResult{}, exactNextDone, fmt.Errorf("%w: following the started step job's pod: %v (%w)",
 				ErrExactOutcomeUnresolved, err, recordErr)
 		}
 		return result, exactNextDone, nil

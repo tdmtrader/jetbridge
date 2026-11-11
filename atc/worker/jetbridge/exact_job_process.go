@@ -382,6 +382,18 @@ type launcherExitRecord struct {
 // errMainNotTerminated is a step Job's pod whose command has not ended.
 var errMainNotTerminated = errors.New("the step job's command has not terminated")
 
+// errNoLauncherRecord is a main that terminated with no launcher record: the
+// launcher was killed with its command (the cgroup's OOM group kill, the
+// kubelet's SIGKILL past the termination grace) or the node lost the status.
+// The command may have run to any point, and nothing in the pod says how it
+// ended. It is the exec runtime's supervisor that died with its command, and
+// it is left exactly as exec leaves that one: unresolved, never run again,
+// never failed (supervisor.go: the exact supervisor's refusal to relaunch a
+// claimed start with no exit, and process_outcome_recovery.go: the outcome
+// read that answers unresolved for it). A Run's cancellation over it stays
+// pending; nothing here closes it.
+var errNoLauncherRecord = errors.New("the step job's pod has no launcher record of the command's exit")
+
 // jobPodExit is the exact outcome of the command in a step Job's pod: main's
 // terminated status, corroborated by the record the launcher writes once the
 // command has exited or could not be run. A main that terminated without
@@ -410,8 +422,8 @@ func jobPodExit(pod *corev1.Pod) (int, error) {
 	}
 	var record launcherExitRecord
 	if err := json.Unmarshal([]byte(terminated.Message), &record); err != nil || record.Exit == nil {
-		return 0, fmt.Errorf("%w: pod %s terminated with exit %d and no launcher record of the command's exit (reason %q)",
-			ErrExactOutcomeUnresolved, pod.Name, terminated.ExitCode, terminated.Reason)
+		return 0, fmt.Errorf("%w: %w: pod %s terminated with exit %d (reason %q)",
+			ErrExactOutcomeUnresolved, errNoLauncherRecord, pod.Name, terminated.ExitCode, terminated.Reason)
 	}
 	if *record.Exit != int(terminated.ExitCode) {
 		return 0, fmt.Errorf("%w: pod %s terminated with exit %d and its launcher recorded exit %d",

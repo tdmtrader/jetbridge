@@ -56,7 +56,7 @@ func (s *OutputSource) recoverJobExecutionOutcome(ctx context.Context, node stri
 	}
 	exit, err := jobPodExit(pod)
 	if err != nil {
-		return executioncontrol.ClassifyResult{}, fmt.Errorf("%w: %v", output.ErrUnresolved, err)
+		return executioncontrol.ClassifyResult{}, fmt.Errorf("%w: %w", output.ErrUnresolved, err)
 	}
 	if _, err := client.RecordOutcome(ctx, start.Identity, executioncontrol.AcknowledgementFinish, executioncontrol.ExitOutcome{ExitCode: exit}); err != nil {
 		return executioncontrol.ClassifyResult{}, err

@@ -1152,6 +1152,38 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			Entry("the pod was stopped while the launcher asked", 143, true),
 		)
 
+		// The exec runtime leaves a supervisor that died with its command
+		// unresolved: its journal has a start and no exit, the outcome read
+		// answers unresolved, and nothing is run again. A launcher killed
+		// with its command (the cgroup's OOM group kill, the kubelet's SIGKILL
+		// past the grace) leaves main terminated and no record, and is left
+		// the same way, by the step and by a Run's recovery alike.
+		It("leaves a start whose launcher was killed with no record unresolved, for the step and a Run alike", func() {
+			done := start()
+			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+			start := recorded()[0]
+			pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, mainPod, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Status.Phase = corev1.PodFailed
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: mainContainerName, State: corev1.ContainerState{
+				Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "OOMKilled"},
+			}}}
+			_, err = clientset.CoreV1().Pods("test-ns").Update(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).To(MatchError(ErrExactOutcomeUnresolved))
+			Expect(finished.err).To(MatchError(errNoLauncherRecord))
+
+			_, err = outputSource().RecoverExecutionOutcome(ctx, "node-1", start)
+			Expect(err).To(MatchError(output.ErrUnresolved))
+			Expect(err).To(MatchError(errNoLauncherRecord))
+			Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
+			Expect(events.all()).ToNot(ContainElement("node-outcome"))
+			Expect(jobExists()).To(BeTrue())
+		})
+
 		It("stays unresolved when main's exit and the never-received record disagree", func() {
 			done := start()
 			witnessMu.Lock()
