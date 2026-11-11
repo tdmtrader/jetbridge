@@ -150,6 +150,14 @@ func (allowance privilegeAllowance) admit(pod *corev1.Pod) error {
 		return fmt.Errorf("refusing step pod %q: %s, and no step pod grant admits it: a step pod never adds a "+
 			"Linux capability or joins a host namespace, whatever --kubernetes-step-privilege is", pod.Name, found)
 	}
+	return allowance.admitPrivileged(pod)
+}
+
+// admitPrivileged is the privilege mode's rule alone: under an enforced mode, a
+// privileged container or init container needs a grant that declares
+// privileged=true. Creation applies it after the capability and host-namespace
+// rule; re-admission (step_pod_readmission.go) applies only it.
+func (allowance privilegeAllowance) admitPrivileged(pod *corev1.Pod) error {
 	if !allowance.enforced || allowance.privileged {
 		return nil
 	}

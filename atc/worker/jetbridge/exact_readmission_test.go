@@ -113,6 +113,46 @@ func TestAnExactExecutionTheGateNoLongerAdmitsIsLeftWhereItIs(t *testing.T) {
 			t.Error("the refused Job's envelope was registered for its pod to fetch")
 		}
 	})
+
+	// A Job already unsuspended whose pod's launcher is still asking for its
+	// envelope: the envelope route answers it 503 until the launcher's own
+	// envelope timeout ends it without running the command.
+	t.Run("a resumed step Job whose pod awaits its envelope", func(t *testing.T) {
+		clientset := fake.NewSimpleClientset()
+		deletes := countDeletes(clientset)
+		config := jobRuntimeConfig()
+		config.StepPrivilege = StepPrivilegeGranted
+		container := newContainer("exact-waiting-handle", metadata, exactSpec(), nil, clientset, config, "worker",
+			nil, nil, nil, identities, true, false)
+		container.envelopes = NewStepEnvelopes()
+		container.routeExactTasksToJobRuntime()
+		container.outputControls = staticOutputControls{}
+		running := false
+		job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: container.podName, Namespace: "test-ns", UID: "exact-waiting-job"},
+			Spec: batchv1.JobSpec{Suspend: &running, Template: corev1.PodTemplateSpec{Spec: privilegedMain}}}
+		if _, err := clientset.BatchV1().Jobs("test-ns").Create(context.Background(), job, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: container.podName + "-abcde", Namespace: "test-ns", UID: "waiting-pod",
+			Labels:          map[string]string{jobUIDLabelKey: "exact-waiting-job", runtimeLabelKey: StepRuntimeJob},
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: container.podName, UID: "exact-waiting-job"}}},
+			Spec: privilegedMain, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+		if _, err := clientset.CoreV1().Pods("test-ns").Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := container.Run(context.Background(), runtime.ProcessSpec{Path: "/bin/true"}, runtime.ProcessIO{Stdin: strings.NewReader("")})
+		expectRefusal(t, err)
+		if _, err := container.envelopes.Serve(context.Background(), container.podName, pod); err != errEnvelopeUnknown {
+			t.Errorf("the waiting pod's envelope fetch = %v, want %v (answered 503, never the envelope)", err, errEnvelopeUnknown)
+		}
+		if n := deletes.Load(); n != 0 {
+			t.Errorf("%d deletes were issued", n)
+		}
+		if _, err := clientset.CoreV1().Pods("test-ns").Get(context.Background(), pod.Name, metav1.GetOptions{}); err != nil {
+			t.Errorf("the waiting pod is gone: %v", err)
+		}
+	})
 }
 
 // absentBuilds finds no build.
