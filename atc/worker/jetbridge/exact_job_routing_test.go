@@ -3,9 +3,11 @@ package jetbridge
 import (
 	"bytes"
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -93,8 +95,6 @@ func TestNothingInProductionSetsTheExactJobRuntimeGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assignment := regexp.MustCompile(`\bexactTasksOnJobRuntime\s*(=[^=]|:[^=])`)
-	const copied = "container.exactTasksOnJobRuntime = w.exactTasksOnJobRuntime"
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {
 			continue
@@ -103,12 +103,98 @@ func TestNothingInProductionSetsTheExactJobRuntimeGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for n, line := range strings.Split(string(body), "\n") {
-			if assignment.MatchString(line) && strings.TrimSpace(line) != copied {
-				t.Errorf("%s:%d sets the exact job-runtime gate: only a test may (%s)", file, n+1, strings.TrimSpace(line))
-			}
+		writes, err := exactGateWrites(file, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, write := range writes {
+			t.Errorf("%s sets the exact job-runtime gate: only a test may", write)
 		}
 	}
+}
+
+// The search reads the syntax, not the text: every way to set the field is
+// one it finds, and the worker's copy is the one it allows.
+func TestTheExactJobRuntimeGateSearchFindsEveryWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		body  string
+		found int
+	}{
+		{"the worker's copy", `container.exactTasksOnJobRuntime = w.exactTasksOnJobRuntime`, 0},
+		{"a read", `if c.exactTasksOnJobRuntime == true { return }`, 0},
+		{"an assignment", `c.exactTasksOnJobRuntime = true`, 1},
+		{"an assignment with no space", `c.exactTasksOnJobRuntime=true`, 1},
+		{"a copy from something else", `c.exactTasksOnJobRuntime = other.gate`, 1},
+		{"its own negation", `c.exactTasksOnJobRuntime = !c.exactTasksOnJobRuntime`, 1},
+		{"a tuple assignment", `n, c.exactTasksOnJobRuntime = 1, true`, 1},
+		{"a tuple from a call", `c.exactTasksOnJobRuntime, err = parse()`, 1},
+		{"a parenthesized target", `(c.exactTasksOnJobRuntime) = true`, 1},
+		{"a pointer to it", `p := &c.exactTasksOnJobRuntime; *p = true`, 1},
+		{"a pointer through parentheses", `*(&(c.exactTasksOnJobRuntime)) = true`, 1},
+		{"a struct literal", `c := Container{exactTasksOnJobRuntime: true}`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package jetbridge\nfunc f() {\n" + tc.body + "\n}\n"
+			writes, err := exactGateWrites("synthetic.go", []byte(src))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(writes) != tc.found {
+				t.Errorf("found %d writes (%v), want %d", len(writes), writes, tc.found)
+			}
+		})
+	}
+}
+
+// exactGateWrites is every place in src that may set exactTasksOnJobRuntime:
+// an assignment to it (tuples and parentheses included), its address taken,
+// or a composite literal's key -- except the one copy of a worker's field into
+// a container's, x.exactTasksOnJobRuntime = y.exactTasksOnJobRuntime.
+func exactGateWrites(filename string, src []byte) ([]string, error) {
+	const field = "exactTasksOnJobRuntime"
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filename, src, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, err
+	}
+	isField := func(expr ast.Expr) bool {
+		for {
+			paren, ok := expr.(*ast.ParenExpr)
+			if !ok {
+				break
+			}
+			expr = paren.X
+		}
+		selector, ok := expr.(*ast.SelectorExpr)
+		return ok && selector.Sel.Name == field
+	}
+	var writes []string
+	report := func(node ast.Node) { writes = append(writes, fset.Position(node.Pos()).String()) }
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.AssignStmt:
+			for _, target := range node.Lhs {
+				if !isField(target) {
+					continue
+				}
+				copied := node.Tok == token.ASSIGN && len(node.Lhs) == 1 && len(node.Rhs) == 1 && isField(node.Rhs[0])
+				if !copied {
+					report(target)
+				}
+			}
+		case *ast.UnaryExpr:
+			if node.Op == token.AND && isField(node.X) {
+				report(node)
+			}
+		case *ast.KeyValueExpr:
+			if key, ok := node.Key.(*ast.Ident); ok && key.Name == field {
+				report(node)
+			}
+		}
+		return true
+	})
+	return writes, nil
 }
 
 // routeExactTasksToJobRuntime is the gate on one container.
