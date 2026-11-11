@@ -235,6 +235,14 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		return string(body)
 	}
 
+	// neverReceivedRecord is the launcher's record when it exits without its
+	// envelope: it gave up, was refused, or was stopped while it asked.
+	neverReceivedRecord := func(exit int) string {
+		body, err := json.Marshal(map[string]any{"exit": exit, "started_at": time.Now(), "finished_at": time.Now(), "stdout_bytes": 0, "envelope_never_received": true})
+		Expect(err).ToNot(HaveOccurred())
+		return string(body)
+	}
+
 	classify := func() executioncontrol.ClassifyResult {
 		result, err := harness.Client.Classify(ctx, identity)
 		Expect(err).ToNot(HaveOccurred())
@@ -1050,6 +1058,113 @@ var _ = Describe("An exact task on the job step runtime", func() {
 				Expect(err).ToNot(HaveOccurred())
 			}, output.ErrInvalidIdentity),
 		)
+	})
+
+	// An undelivered start: the node recorded it and the launcher never got
+	// its envelope. The exec runtime closes one as stopped in the Pod's
+	// journal (143 for a task, process_outcome_recovery.go); here the
+	// launcher's never-received record is the witness, and the same 143 is
+	// recorded.
+	Describe("an undelivered start", func() {
+		It("is closed as stopped by the step's own Wait when the launcher gave up", func() {
+			done := start()
+			// The Run could not retain the start, so the envelope was not
+			// served; the launcher gave up before its retry.
+			witnessMu.Lock()
+			failStartWitnesses = 1
+			witnessMu.Unlock()
+			Expect(fetch("tok-main")).To(Equal(http.StatusServiceUnavailable))
+			terminate(125, neverReceivedRecord(125))
+
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).ToNot(HaveOccurred())
+			Expect(finished.result.ExitStatus).To(Equal(exactTaskStoppedExit))
+			closed := classify()
+			Expect(closed.Classification).To(Equal(executioncontrol.ClassificationAuthoritativeFinish))
+			Expect(closed.Acknowledgement.Outcome.ExitCode).To(Equal(exactTaskStoppedExit))
+			Expect(events.all()).ToNot(ContainElement("envelope-served"))
+			Expect(recorded()[0].Kind).To(Equal(executioncontrol.AcknowledgementStart), "the outcome was recorded before the Run retained the start")
+		})
+
+		DescribeTable("is closed as stopped by a Run's recovery after the step gave up on it, and never served after",
+			func(launcherExit int, stopFirst bool) {
+				waitCtx, abort := context.WithCancel(ctx)
+				defer abort()
+				first, done := startWith(waitCtx)
+				loseTheStartAnswer()
+				// The step is aborted between the start and its serving: the
+				// gate shuts, and the step leaves the execution unresolved.
+				abort()
+				var finished waited
+				Eventually(done, 15*time.Second).Should(Receive(&finished))
+				Expect(finished.err).To(MatchError(ErrExactOutcomeUnresolved))
+				// The envelope went with the step, so the launcher's retries
+				// are told to wait until it gives up; the gate itself is shut.
+				Expect(fetch("tok-main")).To(Equal(http.StatusServiceUnavailable))
+				pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, mainPod, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(first.exact.beforeServe(ctx, pod)).To(MatchError(errExactJobClosed))
+
+				// The Run's cancellation reads the start the node holds.
+				source := outputSource()
+				start, err := source.ExecutionStart(ctx, "node-1", harnessNodeUID, identity)
+				Expect(err).ToNot(HaveOccurred())
+				if stopFirst {
+					// It stops the pod while the launcher is still asking.
+					Expect(source.InterruptExecution(ctx, "node-1", start)).To(Succeed())
+					Eventually(func() *int64 {
+						pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, mainPod, metav1.GetOptions{})
+						Expect(err).ToNot(HaveOccurred())
+						return pod.Spec.ActiveDeadlineSeconds
+					}, 10*time.Second, 20*time.Millisecond).ShouldNot(BeNil())
+				}
+				// The step gave up: nothing follows the pod.
+				endPod(mainPod, int32(launcherExit), neverReceivedRecord(launcherExit))
+
+				recovered, err := source.RecoverExecutionOutcome(ctx, "node-1", start)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(recovered.Classification).To(Equal(executioncontrol.ClassificationAuthoritativeFinish))
+				Expect(recovered.Acknowledgement.Outcome.ExitCode).To(Equal(exactTaskStoppedExit))
+				Expect(events.all()).ToNot(ContainElement("envelope-served"))
+
+				// A web resuming the step reports the closed start and
+				// serves nothing: the ledger refuses its replay.
+				container = newWeb()
+				process := run()
+				Expect(process.exact.reattached).To(BeTrue())
+				resumed := make(chan waited, 1)
+				go func() {
+					defer GinkgoRecover()
+					result, err := process.Wait(ctx)
+					resumed <- waited{result, err}
+				}()
+				var again waited
+				Eventually(resumed, 15*time.Second).Should(Receive(&again))
+				Expect(again.err).ToNot(HaveOccurred())
+				Expect(again.result.ExitStatus).To(Equal(exactTaskStoppedExit))
+				Expect(fetch("tok-main")).ToNot(Equal(http.StatusOK))
+				Expect(process.exact.beforeServe(ctx, runningJobPod(mainPod, "node-1"))).ToNot(Succeed())
+				Expect(events.all()).ToNot(ContainElement("envelope-served"))
+				Expect(ordered.distinctStarts()).To(Equal(1))
+			},
+			Entry("the launcher gave up retrying", 125, false),
+			Entry("the pod was stopped while the launcher asked", 143, true),
+		)
+
+		It("stays unresolved when main's exit and the never-received record disagree", func() {
+			done := start()
+			witnessMu.Lock()
+			failStartWitnesses = 1
+			witnessMu.Unlock()
+			Expect(fetch("tok-main")).To(Equal(http.StatusServiceUnavailable))
+			terminate(137, neverReceivedRecord(125))
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).To(MatchError(ErrExactOutcomeUnresolved))
+			Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
+			Expect(jobExists()).To(BeTrue())
+		})
 	})
 
 	Describe("attaching", func() {
