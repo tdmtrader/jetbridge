@@ -374,16 +374,30 @@ func controllingJob(pod *corev1.Pod) types.UID {
 // web reads: the exit it reports for the command.
 type launcherExitRecord struct {
 	Exit *int `json:"exit"`
+	// EnvelopeNeverReceived is a launcher that exited without its envelope,
+	// so without running the command.
+	EnvelopeNeverReceived bool `json:"envelope_never_received"`
 }
 
 // errMainNotTerminated is a step Job's pod whose command has not ended.
 var errMainNotTerminated = errors.New("the step job's command has not terminated")
 
-// jobPodExit is the exit of the command in a step Job's pod: main's
+// jobPodExit is the exact outcome of the command in a step Job's pod: main's
 // terminated status, corroborated by the record the launcher writes once the
 // command has exited or could not be run. A main that terminated without
 // that record (the launcher killed, out of memory, the node lost) or with a
 // record that disagrees proves nothing, and the outcome stays unresolved.
+//
+// A record saying the envelope was never received is an undelivered start:
+// the node may hold the start, and the command never ran, because the
+// launcher runs nothing without its envelope and has exited. It is closed as
+// the exec runtime closes one, as stopped with the supervisor's own stopped
+// exit (exactTaskStoppedExit, 143), whatever the launcher's own code was (125
+// when it gave up or was refused, 128 plus the signal that ended its fetch).
+// Where exec claims the journal's start in the Pod so a late delivery never
+// runs, here the fence is the launcher's exit -- main never restarts, and the
+// Job's backoffLimit 0 makes no second pod -- and, once the outcome is
+// recorded, the ledger's refusal to replay the start.
 func jobPodExit(pod *corev1.Pod) (int, error) {
 	var terminated *corev1.ContainerStateTerminated
 	for _, status := range pod.Status.ContainerStatuses {
@@ -402,6 +416,9 @@ func jobPodExit(pod *corev1.Pod) (int, error) {
 	if *record.Exit != int(terminated.ExitCode) {
 		return 0, fmt.Errorf("%w: pod %s terminated with exit %d and its launcher recorded exit %d",
 			ErrExactOutcomeUnresolved, pod.Name, terminated.ExitCode, *record.Exit)
+	}
+	if record.EnvelopeNeverReceived {
+		return exactTaskStoppedExit, nil
 	}
 	return *record.Exit, nil
 }
