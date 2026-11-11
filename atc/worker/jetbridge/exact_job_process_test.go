@@ -838,6 +838,16 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		}, 10*time.Second, 20*time.Millisecond).ShouldNot(BeNil(), "the stop never reached the pod")
 		terminatePod(name, exit, launcherRecord(int(exit)))
 	}
+	// kubeletEndsOnDeadlineUnfollowed is the same stop of a pod no step
+	// follows: only a Run's recovery reads it.
+	kubeletEndsOnDeadlineUnfollowed := func(name string, exit int32) {
+		Eventually(func() *int64 {
+			pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, name, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			return pod.Spec.ActiveDeadlineSeconds
+		}, 10*time.Second, 20*time.Millisecond).ShouldNot(BeNil(), "the stop never reached the pod")
+		endPod(name, exit, launcherRecord(int(exit)))
+	}
 
 	// outputSource is a Run's view of the node, as a web with no step in
 	// hand has it: mTLS to the node's daemon.
@@ -912,6 +922,68 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			Eventually(done, 15*time.Second).Should(Receive(&finished))
 			Expect(finished.err).ToNot(HaveOccurred())
 			Expect(finished.result.ExitStatus).To(Equal(143))
+		})
+
+		It("serves no launcher retry once the node holds a stop, though the pod is not stopped yet", func() {
+			done := start()
+			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+			// A Run's cancellation asked the node to stop and has not reached
+			// the pod: only the ledger stands between the retry and the envelope.
+			_, err := harness.Client.RequestStop(ctx, identity)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(fetch("tok-main")).To(Equal(http.StatusConflict), "a retry was served after the node accepted a stop")
+			Expect(ordered.distinctStarts()).To(Equal(1))
+
+			terminate(143, launcherRecord(143))
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).ToNot(HaveOccurred())
+			Expect(finished.result.ExitStatus).To(Equal(143))
+		})
+
+		It("recovers a Run's stopped start from its pod, the ledger refusing to replay it", func() {
+			// No step follows the pod: only the Run's recovery reads it.
+			first := run()
+			first.exact.admit(ctx, mainPod)
+			Expect(first.exact.awaitAdmission(ctx)).To(Succeed())
+			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+			start := recorded()[0]
+			source := outputSource()
+
+			Expect(source.InterruptExecution(ctx, "node-1", start)).To(Succeed())
+			// Nothing follows the pod, so the kubelet ends it directly.
+			kubeletEndsOnDeadlineUnfollowed(mainPod, 143)
+			recovered, err := source.RecoverExecutionOutcome(ctx, "node-1", start)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(recovered.Classification.Authoritative()).To(BeTrue())
+			Expect(recovered.Acknowledgement.Outcome.ExitCode).To(Equal(143))
+		})
+
+		It("follows a command a Run asked to stop after a web restart, and records how it ended", func() {
+			first := run()
+			first.exact.admit(ctx, mainPod)
+			Expect(first.exact.awaitAdmission(ctx)).To(Succeed())
+			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+			_, err := harness.Client.RequestStop(ctx, identity)
+			Expect(err).ToNot(HaveOccurred())
+
+			container = newWeb()
+			process := run()
+			Expect(process.exact.reattached).To(BeTrue())
+			done := make(chan waited, 1)
+			go func() {
+				defer GinkgoRecover()
+				result, err := process.Wait(ctx)
+				done <- waited{result, err}
+			}()
+			Consistently(done, 300*time.Millisecond).ShouldNot(Receive(), "a running command was answered without its exit")
+			Expect(fetch("tok-main")).To(Equal(http.StatusConflict), "the resumed web served a stopped start")
+			terminate(143, launcherRecord(143))
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).ToNot(HaveOccurred())
+			Expect(finished.result.ExitStatus).To(Equal(143))
+			Expect(classify().Acknowledgement.Outcome.ExitCode).To(Equal(143))
 		})
 
 		It("leaves a stopped task unresolved when its launcher leaves no record", func() {

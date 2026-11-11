@@ -47,7 +47,7 @@ import (
 
 // jobIdentityPrefix starts the process identity an exact start on the job
 // runtime names: the step Job's UID, which is one command run once.
-const jobIdentityPrefix = "job-v1:"
+const jobIdentityPrefix = executioncontrol.JobProcessIdentityPrefix
 
 // jobProcessIdentity is the process identity of an exact start in the Job
 // of this UID.
@@ -203,9 +203,11 @@ func (e *exactJobExecution) beforeServe(ctx context.Context, pod *corev1.Pod) er
 		return errExactJobClosed
 	}
 	// A pod whose deadline was cut (a stop: stopStepJobPod) or that has
-	// failed is ending; a command must not begin in it, whatever the ledger
-	// still says. The ledger's own refusal of a start after a stop is not
-	// here yet.
+	// failed is ending; a command must not begin in it. This only narrows the
+	// window: a stop the node accepted before the pod's deadline is cut is
+	// fenced by the ledger itself, which refuses to replay a job-runtime start
+	// after a stop (ExecutionLedger.RecordStart), and every retry below is
+	// served only on that replay.
 	if pod.Spec.ActiveDeadlineSeconds != nil || pod.Status.Phase == corev1.PodFailed {
 		return fmt.Errorf("pod %s has been stopped: its envelope is never served", pod.Name)
 	}

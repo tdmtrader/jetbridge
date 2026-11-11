@@ -65,8 +65,11 @@ func (s *OutputSource) recoverJobExecutionOutcome(ctx context.Context, node stri
 }
 
 // executingJobStart classifies the start's execution at its node and, while
-// it is executing, has the node replay the start: it refuses any other pod or
-// process and cannot create one.
+// it is executing, reads the node's stored start, which must be the retained
+// one: any other pod or process is refused, and nothing is written. It reads
+// rather than replays because the node refuses to replay a job-runtime start
+// once a stop is requested -- the replay is what serves an envelope -- and a
+// Run's cancellation asks for that stop before it recovers the outcome.
 func (s *OutputSource) executingJobStart(ctx context.Context, node string, start executioncontrol.Acknowledgement) (*OutputControlClient, executioncontrol.ClassifyResult, error) {
 	client, err := s.recoveryClient(ctx, node, string(start.NodeUID))
 	if err != nil {
@@ -85,7 +88,7 @@ func (s *OutputSource) executingJobStart(ctx context.Context, node string, start
 	if classified.Classification != executioncontrol.ClassificationExecuting {
 		return client, classified, nil
 	}
-	original, err := client.RecordStart(ctx, start.Identity, start.PodUID, start.ProcessIdentity)
+	original, err := client.InspectStart(ctx, start.Identity)
 	if err != nil {
 		return nil, executioncontrol.ClassifyResult{}, err
 	}
