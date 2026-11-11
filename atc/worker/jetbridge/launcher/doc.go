@@ -30,9 +30,16 @@
 // (bad usage, envelope fetch failure, exec failure). A command that could
 // not be started, or not set up once its envelope was served (stdin staged,
 // stdout file opened), still leaves the termination record, with that code
-// (it did not run); a failure before the envelope, such as bad usage, the
-// token or the fetch, leaves none. Any other code is the
-// step's.
+// (it did not run). A launcher sent for an envelope that exits without one
+// -- the fetch gave up or was refused, the token or CA could not be read,
+// the pod's termination signal ended the fetch -- leaves the record too,
+// marked envelope_never_received, with 125 or 128 plus that signal: the web
+// may have recorded the start, and the record is what says the command never
+// ran. A launcher with no envelope to fetch that fails before the command
+// (bad usage) leaves none. Any other code is the step's.
+//
+// The signal handler is installed before the fetch, so a SIGTERM during it
+// never kills the launcher by default action.
 //
 // The binary is stdlib-only and built static (CGO_ENABLED=0) because it runs
 // inside the step's image, whatever that image contains.

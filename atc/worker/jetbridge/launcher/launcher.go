@@ -49,6 +49,10 @@ type terminationMessage struct {
 	StartedAt   time.Time `json:"started_at"`
 	FinishedAt  time.Time `json:"finished_at"`
 	StdoutBytes int64     `json:"stdout_bytes"`
+	// EnvelopeNeverReceived says the launcher was sent for an envelope and
+	// exited without one, so the command never ran. Exit is then the
+	// launcher's own code: 125, or 128 plus the signal that ended the fetch.
+	EnvelopeNeverReceived bool `json:"envelope_never_received,omitempty"`
 }
 
 // run is main without the process: it parses args, fetches the envelope,
@@ -82,32 +86,63 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		}
 		return fail("%v", err)
 	}
+	setupFrom := time.Now()
+	// A launcher sent for an envelope that exits without one leaves a record
+	// saying so, whatever the reason: the web may have recorded the command's
+	// start and never served it (the gate refused a retry, the answer was
+	// lost), and this record is the only witness that the command never ran.
+	// The exit is the launcher's own: 125, or 128 plus the signal that ended
+	// the fetch.
+	neverReceived := func(code int, format string, a ...any) int {
+		fmt.Fprintf(stderr, "jb-launcher: "+format+"\n", a...)
+		writeTerminationMessage(*termPath, terminationMessage{Exit: code, StartedAt: setupFrom, FinishedAt: time.Now(), EnvelopeNeverReceived: true})
+		return code
+	}
 	command := fs.Args()
 	if len(command) == 0 {
 		fs.Usage()
+		if *envelopeURL != "" {
+			return neverReceived(exitUsage, "no command given")
+		}
 		return fail("no command given")
 	}
 
 	// Past the envelope the web has recorded the command's start, so a
 	// failure to set the command up leaves the record a command that did not
-	// run leaves, with the launcher's own code. Before it (usage, the token,
-	// the fetch) nothing was started and nothing is written.
-	setupFrom := time.Now()
+	// run leaves, with the launcher's own code. Before it, a launcher with no
+	// envelope to fetch has started nothing the web knows of and writes
+	// nothing.
 	notRun := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "jb-launcher: "+format+"\n", a...)
 		writeTerminationMessage(*termPath, terminationMessage{Exit: exitUsage, StartedAt: setupFrom, FinishedAt: time.Now()})
 		return exitUsage
 	}
 
+	// Install the handler before the fetch, and before Start, so the pod's
+	// termination signal never kills the launcher by default action: during
+	// the fetch it ends the fetch (fetchSigs) and leaves the never-received
+	// record; after it, it is queued here until the command's group exists to
+	// forward it to. Both channels are told of every signal.
+	// SIGHUP is left at its default: an ignored disposition is inherited
+	// across exec, and a command that inherits SIGHUP ignored behaves
+	// differently from one run from a shell (a test that traps SIGHUP, say).
+	// Nothing hangs up on a step pod's main container anyway.
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigs)
+
 	var childStdin io.Reader
 	if *envelopeURL != "" {
 		token, err := os.ReadFile(*tokenFile)
 		if err != nil {
-			return fail("reading token: %v", err)
+			return neverReceived(exitUsage, "reading token: %v", err)
 		}
-		stdinBytes, err := fetchEnvelope(*envelopeURL, strings.TrimSpace(string(token)), *caFile, *envelopeTimeout)
+		stdinBytes, signalled, err := fetchUnlessSignalled(*envelopeURL, strings.TrimSpace(string(token)), *caFile, *envelopeTimeout)
+		if signalled != nil {
+			return neverReceived(exitSignalBase+int(*signalled), "fetching step envelope: stopped by %v", *signalled)
+		}
 		if err != nil {
-			return fail("fetching step envelope: %v", err)
+			return neverReceived(exitUsage, "fetching step envelope: %v", err)
 		}
 		setupFrom = time.Now()
 		if len(stdinBytes) > 0 {
@@ -140,16 +175,6 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		outFile = f
 		cmd.Stdout = f
 	}
-
-	// Install the handler before Start so a signal in the window between
-	// the two is queued rather than killing the launcher by default action.
-	// SIGHUP is left at its default: an ignored disposition is inherited
-	// across exec, and a command that inherits SIGHUP ignored behaves
-	// differently from one run from a shell (a test that traps SIGHUP, say).
-	// Nothing hangs up on a step pod's main container anyway.
-	sigs := make(chan os.Signal, 2)
-	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
-	defer signal.Stop(sigs)
 
 	// The launcher is the pod's PID 1 (and, where the platform allows, the
 	// subreaper of everything below it): whatever the command leaves behind
@@ -306,15 +331,49 @@ func writeTerminationMessage(path string, msg terminationMessage) {
 	_, _ = f.Write(append(line, '\n'))
 }
 
+// fetchUnlessSignalled is fetchEnvelope ended early by the pod's termination
+// signal. It reports the signal only when the fetch did not succeed: an
+// envelope that arrived with the signal is received, the command is started,
+// and the signal (queued on the launcher's own channel too) is forwarded to it.
+func fetchUnlessSignalled(url, token, caFile string, timeout time.Duration) ([]byte, *syscall.Signal, error) {
+	fetchSigs := make(chan os.Signal, 1)
+	signal.Notify(fetchSigs, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(fetchSigs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	watched := make(chan os.Signal, 1)
+	go func() {
+		select {
+		case sig := <-fetchSigs:
+			cancel()
+			watched <- sig
+		case <-done:
+			watched <- nil
+		}
+	}()
+	stdin, err := fetchEnvelope(ctx, url, token, caFile, timeout)
+	close(done)
+	sig := <-watched
+	if err == nil {
+		return stdin, nil, nil
+	}
+	if s, ok := sig.(syscall.Signal); ok {
+		return nil, &s, err
+	}
+	return nil, nil, err
+}
+
 // fetchEnvelope POSTs to url until it answers 200, retrying connection
-// errors and 5xx with exponential backoff for up to timeout. Any other
-// status is fatal at once. It returns the decoded stdin bytes.
-func fetchEnvelope(url, token, caFile string, timeout time.Duration) ([]byte, error) {
+// errors and 5xx with exponential backoff for up to timeout, or until ctx
+// ends. Any other status is fatal at once. It returns the decoded stdin bytes.
+func fetchEnvelope(parent context.Context, url, token, caFile string, timeout time.Duration) ([]byte, error) {
 	client, err := newHTTPClient(caFile)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	backoff := retryBase

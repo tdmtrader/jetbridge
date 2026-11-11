@@ -146,9 +146,10 @@ func TestTerminationMessage(t *testing.T) {
 
 // A command that cannot be started did not run, and the launcher says so in
 // its termination message with the exit it returns, so the web can close an
-// exact execution on it. A launcher failure before that point (125: bad
-// usage, no token, no envelope) leaves no message: the web cannot tell it
-// from a launcher that never got to write one.
+// exact execution on it. A launcher with no envelope to fetch that fails
+// before that point (125: bad usage) leaves no message. One that has an
+// envelope to fetch and never received it says so instead
+// (TestTerminationMessageForAnEnvelopeNeverReceived).
 func TestTerminationMessageForAStartFailure(t *testing.T) {
 	notExec := filepath.Join(t.TempDir(), "not-executable")
 	if err := os.WriteFile(notExec, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
@@ -182,7 +183,6 @@ func TestTerminationMessageForAStartFailure(t *testing.T) {
 		args []string
 	}{
 		{"no command", []string{}},
-		{"missing token file", []string{"--envelope-url", "http://127.0.0.1:1/", "--token-file", "/nonexistent/token", "--", "true"}},
 	} {
 		t.Run(tc.name+" leaves no message", func(t *testing.T) {
 			code, _, _, termPath := runLauncher(t, tc.args...)
@@ -193,6 +193,115 @@ func TestTerminationMessageForAStartFailure(t *testing.T) {
 				t.Fatalf("a termination message was written for a launcher failure: %v", err)
 			}
 		})
+	}
+}
+
+// A launcher sent for an envelope that exits without one -- it gave up
+// retrying, the web refused it, it could not even ask, or the pod was
+// stopped while it asked -- leaves a record saying the envelope was never
+// received, with the code it exits with. The web may have recorded the start
+// and never served it; the record is what lets it close that start as
+// stopped, since the command provably never ran.
+func TestTerminationMessageForAnEnvelopeNeverReceived(t *testing.T) {
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "the exact step job is over", http.StatusConflict)
+	}))
+	t.Cleanup(refusing.Close)
+	gone := httptest.NewServer(http.NotFoundHandler())
+	goneURL := gone.URL
+	gone.Close()
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"it gave up retrying", []string{"--envelope-url", goneURL, "--envelope-timeout", "60ms", "--token-file", writeToken(t, "tok"), "--", "sh", "-c", "echo ran"}},
+		{"the web refused it", []string{"--envelope-url", refusing.URL, "--token-file", writeToken(t, "tok"), "--", "sh", "-c", "echo ran"}},
+		{"it had no token to ask with", []string{"--envelope-url", refusing.URL, "--token-file", "/nonexistent/token", "--", "sh", "-c", "echo ran"}},
+		{"it had no CA to ask with", []string{"--envelope-url", refusing.URL, "--ca-file", "/nonexistent/ca.pem", "--token-file", writeToken(t, "tok"), "--", "sh", "-c", "echo ran"}},
+		{"it had no command to run", []string{"--envelope-url", refusing.URL, "--token-file", writeToken(t, "tok")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := time.Now().Add(-time.Second)
+			code, stdout, stderr, termPath := runLauncher(t, tc.args...)
+			if code != 125 {
+				t.Fatalf("exit = %d, want 125 (stderr %q)", code, stderr)
+			}
+			if stdout != "" {
+				t.Fatalf("the command ran without its envelope: stdout %q", stdout)
+			}
+			msg := readTermination(t, termPath)
+			if msg.Exit != 125 || !msg.EnvelopeNeverReceived || msg.StdoutBytes != 0 {
+				t.Fatalf("message = %+v, want exit 125 and the envelope never received", msg)
+			}
+			if msg.StartedAt.Before(before) || msg.FinishedAt.Before(msg.StartedAt) {
+				t.Fatalf("timestamps out of order: %+v", msg)
+			}
+		})
+	}
+
+	t.Run("a received envelope is not reported as never received", func(t *testing.T) {
+		srv, _ := envelopeServer(t, "tok", "")
+		code, _, stderr, termPath := runLauncher(t,
+			"--envelope-url", srv.URL, "--token-file", writeToken(t, "tok"), "--", "sh", "-c", "exit 4")
+		if code != 4 {
+			t.Fatalf("exit = %d, want 4 (stderr %q)", code, stderr)
+		}
+		raw, err := os.ReadFile(termPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "envelope_never_received") {
+			t.Fatalf("the command's own record carries the never-received field: %s", raw)
+		}
+	})
+}
+
+// The pod's termination signal can arrive while the launcher is still
+// asking for its envelope: a stop cut the pod's deadline, or the pod is
+// being deleted. The launcher stops asking, runs nothing, and exits as a
+// command ended by that signal would, with the never-received record.
+func TestASignalDuringTheEnvelopeFetchEndsItWithTheNeverReceivedRecord(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no SIGTERM on windows")
+	}
+	asked, release := make(chan struct{}, 16), make(chan struct{})
+	hanging := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked <- struct{}{}
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(hanging.Close)
+	t.Cleanup(func() { close(release) })
+	dir := t.TempDir()
+	termPath := filepath.Join(dir, "term")
+	ran := filepath.Join(dir, "ran")
+	cmd := startHelper(t,
+		"--termination-message", termPath,
+		"--envelope-url", hanging.URL,
+		"--token-file", writeToken(t, "tok"),
+		"--", "touch", ran)
+	select {
+	case <-asked:
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("the launcher never asked for its envelope")
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if code := waitExit(t, cmd, 5*time.Second); code != 128+int(syscall.SIGTERM) {
+		t.Fatalf("launcher exit = %d, want %d", code, 128+int(syscall.SIGTERM))
+	}
+	msg := readTermination(t, termPath)
+	if msg.Exit != 128+int(syscall.SIGTERM) || !msg.EnvelopeNeverReceived {
+		t.Fatalf("message = %+v, want exit 143 and the envelope never received", msg)
+	}
+	if _, err := os.Stat(ran); !os.IsNotExist(err) {
+		t.Fatalf("the command ran after the signal: %v", err)
 	}
 }
 
