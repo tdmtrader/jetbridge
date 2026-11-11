@@ -6,6 +6,7 @@ package jetbridge_test
 import (
 	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,39 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
+
+// livePrivilegedEnv opts in to the live tests that create privileged pods.
+const livePrivilegedEnv = "JETBRIDGE_LIVE_PRIVILEGED"
+
+// liveCheckHandle is the check subtest's fixed handle. A check pod is named
+// chk-<resource>-<suffix>, which the pipeline's pre-clean of stale live-/e2e-
+// pods does not match, so the test deletes a leftover of a killed run itself
+// before it starts: the fixed handle gives it the same name every run.
+const liveCheckHandle = "live-privgate-check"
+
+// deleteAndAwaitGone deletes a pod if it is there and waits until it is gone.
+func deleteAndAwaitGone(t *testing.T, ctx context.Context, clientset kubernetes.Interface, namespace, name string) {
+	t.Helper()
+	zero := int64(0)
+	err := clientset.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{GracePeriodSeconds: &zero})
+	if apierrors.IsNotFound(err) {
+		return
+	}
+	if err != nil {
+		t.Fatalf("deleting leftover pod %s: %v", name, err)
+	}
+	for deadline := time.Now().Add(2 * time.Minute); ; time.Sleep(2 * time.Second) {
+		_, err := clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("leftover pod %s is still there two minutes after its deletion", name)
+		}
+	}
+}
 
 // TestLivePrivilegeGate holds the privilege gate to a real API server and
 // kubelet, on the exec step runtime, under --kubernetes-step-privilege=granted:
@@ -30,12 +63,22 @@ import (
 //     is admitted through check eligibility, annotated with that grant, and
 //     holds privilege;
 //   - a pod made privileged under any is not reused once the web enforces
-//     granted: the step fails naming the grant it lacks, and the pod goes.
+//     granted: the step fails naming the grant it lacks, and the pod goes;
+//   - a pod made under a privileged grant, as the API server stored and
+//     defaulted it, is re-admitted and handed back while the grant stays.
 //
-// The namespace (K8S_TEST_NAMESPACE) must admit privileged pods: a Pod
-// Security level below privileged refuses the admitted cases, and the test
-// fails saying so rather than skipping.
+// It creates privileged pods, so it is opt-in: it runs only with
+// JETBRIDGE_LIVE_PRIVILEGED=1, which the pipeline's live job does not set.
+// The namespace (K8S_TEST_NAMESPACE) must admit privileged pods; under a Pod
+// Security level below privileged the admitted cases fail saying so. Run it
+// from the repository root, on Linux, with the live tier's environment:
+//
+//	JETBRIDGE_LIVE_PRIVILEGED=1 K8S_TEST_NAMESPACE=<ns> KUBECONFIG=<file> \
+//	  go test -tags live -v -count=1 -timeout 15m -run TestLivePrivilegeGate ./atc/worker/jetbridge/
 func TestLivePrivilegeGate(t *testing.T) {
+	if os.Getenv(livePrivilegedEnv) != "1" {
+		t.Skipf("creates privileged pods; set %s=1 to run it against a namespace that admits them", livePrivilegedEnv)
+	}
 	clientset, baseCfg := kubeClient(t)
 	restConfig, err := jetbridge.RestConfig(*baseCfg)
 	if err != nil {
@@ -185,7 +228,8 @@ func TestLivePrivilegeGate(t *testing.T) {
 	})
 
 	t.Run("a check of a resource-type grant's type is admitted, annotated with the grant", func(t *testing.T) {
-		handle := "live-privgate-check-" + stamp
+		handle := liveCheckHandle
+		deleteAndAwaitGone(t, ctx, clientset, namespace, jetbridge.GeneratePodName(repoCheck, handle))
 		runs(t, worker(jetbridge.StepPrivilegeGranted, checksGrant), handle, repoCheck)
 		pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, jetbridge.GeneratePodName(repoCheck, handle), metav1.GetOptions{})
 		if err != nil {
@@ -193,6 +237,28 @@ func TestLivePrivilegeGate(t *testing.T) {
 		}
 		if got := pod.Annotations["concourse.dev/step-pod-grant"]; got != "live-privgate-checks" {
 			t.Fatalf("the check pod's grant annotation is %q, want live-privgate-checks", got)
+		}
+	})
+
+	t.Run("a pod its privileged grant still covers is re-admitted and handed back", func(t *testing.T) {
+		handle := "live-privgate-kept-" + stamp
+		metadata := jobStep(t, "dind")
+		runs(t, worker(jetbridge.StepPrivilegeGranted, dindGrant), handle, metadata)
+		podName := jetbridge.GeneratePodName(metadata, handle)
+		before, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// A second web, the same grant: the stored, server-defaulted pod is
+		// re-admitted and the step runs in it again.
+		runs(t, worker(jetbridge.StepPrivilegeGranted, dindGrant), handle, metadata)
+		after, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("the re-admitted pod is gone: %v", err)
+		}
+		if after.UID != before.UID || after.DeletionTimestamp != nil {
+			t.Fatalf("the re-admitted pod was replaced or is being deleted (UID %s -> %s)", before.UID, after.UID)
 		}
 	})
 
