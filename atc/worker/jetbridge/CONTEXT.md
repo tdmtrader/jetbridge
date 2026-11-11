@@ -77,19 +77,24 @@ Job template. A privileged check is admitted in that mode only through
 **Check eligibility**. Sidecars are never privileged.
 A step that comes back to a step pod or step Job that already exists -- a live
 pause pod reused, a step a restarted web reattaches to, a running step Job
-resumed -- has it pass the same step pod admission again, under the identity
-and the mode the web resolves now (**Re-admission**).
+resumed -- has it pass the privilege rule again, under the identity and the
+mode the web resolves now (**Re-admission**).
 
 **Re-admission**:
-The step pod admission of a step pod or step Job a step comes back to rather
-than creates, under the `granted` privilege mode: a pod made under `any`, or
-under a step pod grant since removed, is refused as it would be at creation.
-A refused pod is never handed back and never replaced by a fresh one, since
-its command may have begun: it is deleted (a step Job by its UID) and the step
-fails naming the grant it lacks. A Run-owned exact execution is refused the
-same way but neither deleted nor replaced; a resumed exact step Job gets no
-step envelope, so a pod that has not started never does. Under `any` nothing
-is re-admitted or looked up. `fly intercept` is not a step and is not
+The privilege gate applied again to a step pod or step Job a step comes back
+to rather than creates, under the `granted` privilege mode: a privileged
+container in a pod made under `any`, or under a step pod grant since removed,
+is refused as it would be at creation. It judges privilege only: the
+capability, host-namespace and host-path rules judged the composed pod at
+creation, and what a mutating webhook added to the stored one, or a host path
+moved across a restart, deletes nothing. A refused pod is never handed back
+and never replaced by a fresh one, since its command may have begun: it is
+deleted (a step Job by its UID) and the step fails naming the grant it lacks.
+A Run-owned exact execution is refused the same way but neither deleted nor
+replaced; a resumed exact step Job gets no step envelope, so its launcher
+gives up without running the command unless a later web admits it. A step
+that finished keeps its result with no admission: nothing runs. Under `any`
+nothing is re-admitted or looked up. `fly intercept` is not a step and is not
 re-admitted.
 _Avoid_: re-check (of a step pod's privilege)
 
