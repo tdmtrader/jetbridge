@@ -118,31 +118,35 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	// Install the handler before the fetch, and before Start, so the pod's
-	// termination signal never kills the launcher by default action: during
-	// the fetch it ends the fetch (fetchSigs) and leaves the never-received
-	// record; after it, it is queued here until the command's group exists to
-	// forward it to. Both channels are told of every signal.
+	// Install the handlers before anything else, so the pod's termination
+	// signal never kills the launcher by default action. Until the envelope
+	// is received a signal ends the wait for it -- the token read, the fetch,
+	// a backoff between attempts -- and leaves the never-received record
+	// (envelopeSigs); after it, the signal is queued on sigs until the
+	// command's group exists to forward it to. Both channels are told of
+	// every signal, and both are registered here, at once: a signal between
+	// two registrations would reach only one of them.
 	// SIGHUP is left at its default: an ignored disposition is inherited
 	// across exec, and a command that inherits SIGHUP ignored behaves
 	// differently from one run from a shell (a test that traps SIGHUP, say).
 	// Nothing hangs up on a step pod's main container anyway.
 	sigs := make(chan os.Signal, 2)
+	var envelopeSigs chan os.Signal
+	if *envelopeURL != "" {
+		envelopeSigs = make(chan os.Signal, 1)
+		signal.Notify(envelopeSigs, syscall.SIGTERM, syscall.SIGINT)
+	}
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigs)
 
 	var childStdin io.Reader
 	if *envelopeURL != "" {
-		token, err := os.ReadFile(*tokenFile)
-		if err != nil {
-			return neverReceived(exitUsage, "reading token: %v", err)
-		}
-		stdinBytes, signalled, err := fetchUnlessSignalled(*envelopeURL, strings.TrimSpace(string(token)), *caFile, *envelopeTimeout)
+		stdinBytes, signalled, err := receiveEnvelope(envelopeSigs, *tokenFile, *envelopeURL, *caFile, *envelopeTimeout)
 		if signalled != nil {
-			return neverReceived(exitSignalBase+int(*signalled), "fetching step envelope: stopped by %v", *signalled)
+			return neverReceived(exitSignalBase+int(*signalled), "waiting for the step envelope: stopped by %v", *signalled)
 		}
 		if err != nil {
-			return neverReceived(exitUsage, "fetching step envelope: %v", err)
+			return neverReceived(exitUsage, "%v", err)
 		}
 		setupFrom = time.Now()
 		if len(stdinBytes) > 0 {
@@ -331,14 +335,16 @@ func writeTerminationMessage(path string, msg terminationMessage) {
 	_, _ = f.Write(append(line, '\n'))
 }
 
-// fetchUnlessSignalled is fetchEnvelope ended early by the pod's termination
-// signal. It reports the signal only when the fetch did not succeed: an
-// envelope that arrived with the signal is received, the command is started,
-// and the signal (queued on the launcher's own channel too) is forwarded to it.
-func fetchUnlessSignalled(url, token, caFile string, timeout time.Duration) ([]byte, *syscall.Signal, error) {
-	fetchSigs := make(chan os.Signal, 1)
-	signal.Notify(fetchSigs, syscall.SIGTERM, syscall.SIGINT)
-	defer signal.Stop(fetchSigs)
+// receiveEnvelope reads the token and fetches the envelope, ended early by
+// the pod's termination signal, delivered on sigs (registered by the caller
+// before anything else, and stopped here once the envelope is received or
+// given up). A signal that arrived before the fetch began -- during the token
+// read -- means the fetch is never made. It reports the signal only when no
+// envelope was received: an envelope that arrived with the signal is
+// received, the command is started, and the signal (queued on the launcher's
+// own channel too) is forwarded to it.
+func receiveEnvelope(sigs chan os.Signal, tokenFile, url, caFile string, timeout time.Duration) ([]byte, *syscall.Signal, error) {
+	defer signal.Stop(sigs)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -346,14 +352,27 @@ func fetchUnlessSignalled(url, token, caFile string, timeout time.Duration) ([]b
 	watched := make(chan os.Signal, 1)
 	go func() {
 		select {
-		case sig := <-fetchSigs:
+		case sig := <-sigs:
 			cancel()
 			watched <- sig
 		case <-done:
 			watched <- nil
 		}
 	}()
-	stdin, err := fetchEnvelope(ctx, url, token, caFile, timeout)
+	stdin, err := func() ([]byte, error) {
+		token, err := os.ReadFile(tokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading token: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("fetching step envelope: %w", err)
+		}
+		stdin, err := fetchEnvelope(ctx, url, strings.TrimSpace(string(token)), caFile, timeout)
+		if err != nil {
+			return nil, fmt.Errorf("fetching step envelope: %w", err)
+		}
+		return stdin, nil
+	}()
 	close(done)
 	sig := <-watched
 	if err == nil {

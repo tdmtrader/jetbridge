@@ -38,8 +38,10 @@
 // ran. A launcher with no envelope to fetch that fails before the command
 // (bad usage) leaves none. Any other code is the step's.
 //
-// The signal handler is installed before the fetch, so a SIGTERM during it
-// never kills the launcher by default action.
+// The signal handlers are installed before the token is read, so a SIGTERM
+// at any point before the envelope arrives -- the token read, the fetch, a
+// backoff -- never kills the launcher by default action: it ends the wait
+// and leaves the never-received record.
 //
 // The binary is stdlib-only and built static (CGO_ENABLED=0) because it runs
 // inside the step's image, whatever that image contains.
