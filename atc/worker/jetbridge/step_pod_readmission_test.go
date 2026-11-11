@@ -2,7 +2,9 @@ package jetbridge_test
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -10,9 +12,12 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
@@ -43,6 +48,10 @@ var _ = Describe("Re-admission of an existing step pod", func() {
 		clientset *fake.Clientset
 		pipeline  db.Pipeline
 		deletes   *recordedDeletes
+		// configure, when set, adjusts the next web's Config; shape adjusts
+		// every step's ContainerSpec.
+		configure func(*jetbridge.Config)
+		shape     func(*runtime.ContainerSpec)
 	)
 
 	pipelineConfig := atc.Config{
@@ -69,6 +78,7 @@ var _ = Describe("Re-admission of an existing step pod", func() {
 		Expect(err).NotTo(HaveOccurred())
 		clientset = fake.NewSimpleClientset()
 		deletes = recordDeletes(clientset)
+		configure, shape = nil, nil
 
 		mainTeam, err := database.TeamFactory.CreateTeam(atc.Team{Name: "main"})
 		Expect(err).NotTo(HaveOccurred())
@@ -127,6 +137,9 @@ var _ = Describe("Re-admission of an existing step pod", func() {
 					// exec transport; idleExecutor execs nothing.
 					deps.Executor = idleExecutor{}
 				}
+				if configure != nil {
+					configure(&config)
+				}
 				return jetbridge.NewWorker(dbWorker, clientset, config, deps)
 			}
 
@@ -138,6 +151,9 @@ var _ = Describe("Re-admission of an existing step pod", func() {
 				}
 				if metadata.Type == db.ContainerTypeCheck {
 					spec.StepResourceType = "dind"
+				}
+				if shape != nil {
+					shape(&spec)
 				}
 				container, _, err := worker.FindOrCreateContainer(ctx, db.NewFixedHandleContainerOwner(handle), metadata, spec, &noopDelegate{})
 				Expect(err).NotTo(HaveOccurred())
@@ -191,6 +207,44 @@ var _ = Describe("Re-admission of an existing step pod", func() {
 				return uid
 			}
 
+			// mutate changes what the cluster holds for the step: the pod's
+			// spec, or the step Job's pod template -- what a mutating webhook
+			// does between the web's request and the stored object.
+			mutate := func(handle string, change func(*corev1.PodSpec)) {
+				GinkgoHelper()
+				switch object := existing(handle).(type) {
+				case *corev1.Pod:
+					change(&object.Spec)
+					_, err := clientset.CoreV1().Pods(namespace).Update(ctx, object, metav1.UpdateOptions{})
+					Expect(err).NotTo(HaveOccurred())
+				case *batchv1.Job:
+					change(&object.Spec.Template.Spec)
+					_, err := clientset.BatchV1().Jobs(namespace).Update(ctx, object, metav1.UpdateOptions{})
+					Expect(err).NotTo(HaveOccurred())
+				default:
+					Fail("the step has nothing in the cluster to change")
+				}
+			}
+
+			hostPaths := func(handle string) []string {
+				GinkgoHelper()
+				var spec *corev1.PodSpec
+				switch object := existing(handle).(type) {
+				case *corev1.Pod:
+					spec = &object.Spec
+				case *batchv1.Job:
+					spec = &object.Spec.Template.Spec
+				}
+				Expect(spec).NotTo(BeNil())
+				var paths []string
+				for _, volume := range spec.Volumes {
+					if volume.HostPath != nil {
+						paths = append(paths, volume.HostPath.Path)
+					}
+				}
+				return paths
+			}
+
 			expectDeleted := func(handle string, uid types.UID) {
 				GinkgoHelper()
 				Expect(existing(handle)).To(BeNil(), "the over-grant step pod is still there")
@@ -231,13 +285,119 @@ var _ = Describe("Re-admission of an existing step pod", func() {
 				// What runs is the pod that exists, not the pod the step would
 				// compose now: one whose step no longer asks for privilege is
 				// still privileged, and could have begun the command.
-				It("deletes a privileged pod even when the step now composes an unprivileged one, and makes no fresh pod", func() {
-					metadata := jobBuild("unit")
-					uid := made(web(jetbridge.StepPrivilegeAny, database.BuildFactory), "now-unprivileged", metadata)
+				DescribeTable("deletes a privileged pod even when the step now composes an unprivileged one, says the step no longer asks for privilege, and makes no fresh pod",
+					func(handle string, step func() db.ContainerMetadata) {
+						metadata := step()
+						uid := made(web(jetbridge.StepPrivilegeAny, database.BuildFactory), handle, metadata)
 
-					err := start(web(jetbridge.StepPrivilegeGranted, database.BuildFactory), "now-unprivileged", metadata, false)
+						err := start(web(jetbridge.StepPrivilegeGranted, database.BuildFactory), handle, metadata, false)
+						Expect(err).To(MatchError(ContainSubstring(`container "main" is privileged`)))
+						Expect(err).To(MatchError(ContainSubstring("privilege its step no longer asks for")))
+						Expect(err).To(MatchError(ContainSubstring("deleted")))
+						Expect(err).NotTo(MatchError(ContainSubstring("cannot resolve the check's owner")))
+						Expect(err).NotTo(MatchError(ContainSubstring("must run unprivileged")))
+						expectDeleted(handle, uid)
+					},
+					Entry("a task", "now-unprivileged-task", func() db.ContainerMetadata { return jobBuild("unit") }),
+					Entry("a repeated check", "now-unprivileged-check", inMemoryCheck),
+				)
+
+				// Re-admission judges privilege only. What a mutating webhook
+				// added (an init container that adds NET_ADMIN, a host path
+				// outside the step's directories), and host paths the web's
+				// configuration has since moved, were the API server's and the
+				// creating web's to judge; an existing object is never deleted
+				// for them.
+				It("hands back a granted pod a webhook gave a capability-adding init container and a foreign host path", func() {
+					metadata := jobBuild("dind")
+					made(web(jetbridge.StepPrivilegeGranted, database.BuildFactory, dindGrant), "injected", metadata)
+					mutate("injected", func(pod *corev1.PodSpec) {
+						pod.Volumes = append(pod.Volumes, corev1.Volume{Name: "mesh-run",
+							VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/run/mesh"}}})
+						pod.InitContainers = append(pod.InitContainers, corev1.Container{Name: "istio-init", Image: "mesh/proxy",
+							SecurityContext: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"}}},
+							VolumeMounts:    []corev1.VolumeMount{{Name: "mesh-run", MountPath: "/run/mesh"}}})
+					})
+
+					Expect(start(web(jetbridge.StepPrivilegeGranted, database.BuildFactory, dindGrant), "injected", metadata, true)).To(Succeed())
+					Expect(existing("injected")).NotTo(BeNil())
+					Expect(deletes.preconditionsOf("pods")).To(BeEmpty())
+					Expect(deletes.preconditionsOf("jobs")).To(BeEmpty())
+				})
+
+				It("still deletes an over-grant pod a webhook also changed, naming only its privilege", func() {
+					metadata := jobBuild("unit")
+					uid := made(web(jetbridge.StepPrivilegeAny, database.BuildFactory), "injected-over-grant", metadata)
+					mutate("injected-over-grant", func(pod *corev1.PodSpec) {
+						pod.InitContainers = append([]corev1.Container{{Name: "istio-init", Image: "mesh/proxy",
+							SecurityContext: &corev1.SecurityContext{Capabilities: &corev1.Capabilities{Add: []corev1.Capability{"NET_ADMIN"}}}}},
+							pod.InitContainers...)
+					})
+
+					err := start(web(jetbridge.StepPrivilegeGranted, database.BuildFactory), "injected-over-grant", metadata, true)
 					expectRefusal(err, "main/jetbridge/unit")
-					expectDeleted("now-unprivileged", uid)
+					Expect(err).NotTo(MatchError(ContainSubstring("capability")))
+					expectDeleted("injected-over-grant", uid)
+				})
+
+				It("hands back a granted pod whose cache host path the web's configuration has since moved", func() {
+					metadata := jobBuild("dind")
+					shape = func(spec *runtime.ContainerSpec) {
+						spec.TaskCacheIdentity = &atc.TaskCacheIdentity{TeamID: 1, TemplatePipelineID: pipeline.ID(), RunJobName: "dind"}
+						spec.Caches = []string{"/root/.cache"}
+					}
+					configure = func(config *jetbridge.Config) { config.CacheHostPath = "/var/lib/jetbridge-cache" }
+					made(web(jetbridge.StepPrivilegeGranted, database.BuildFactory, dindGrant), "moved-cache", metadata)
+					Expect(hostPaths("moved-cache")).To(ContainElement(HavePrefix("/var/lib/jetbridge-cache/")), "the first web made no cache host path")
+
+					configure = func(config *jetbridge.Config) {
+						config.CacheHostPath = "/srv/jetbridge-cache"
+						if config.ArtifactDaemonHostPath != "" {
+							config.ArtifactDaemonHostPath = "/srv/jetbridge-artifacts"
+						}
+					}
+					Expect(start(web(jetbridge.StepPrivilegeGranted, database.BuildFactory, dindGrant), "moved-cache", metadata, true)).To(Succeed())
+					Expect(existing("moved-cache")).NotTo(BeNil())
+					Expect(deletes.preconditionsOf("pods")).To(BeEmpty())
+					Expect(deletes.preconditionsOf("jobs")).To(BeEmpty())
+				})
+
+				It("leaves the pod in place when the step's build cannot be looked up", func() {
+					metadata := jobBuild("unit")
+					made(web(jetbridge.StepPrivilegeAny, database.BuildFactory), "lookup-fails", metadata)
+
+					broken := db.NewBuildFactory(closedJetbridgeCloneConn(), database.LockFactory, 0, time.Hour)
+					err := start(web(jetbridge.StepPrivilegeGranted, broken), "lookup-fails", metadata, true)
+					Expect(err).To(MatchError(ContainSubstring("resolve step pod identity")))
+					Expect(existing("lookup-fails")).NotTo(BeNil())
+					Expect(deletes.preconditionsOf("pods")).To(BeEmpty())
+					Expect(deletes.preconditionsOf("jobs")).To(BeEmpty())
+				})
+
+				It("fails the step, saying the delete failed, when the over-grant pod cannot be deleted", func() {
+					metadata := jobBuild("unit")
+					made(web(jetbridge.StepPrivilegeAny, database.BuildFactory), "undeletable", metadata)
+					clientset.PrependReactor("delete", "*", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+						return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "x", errors.New("the Role cannot delete"))
+					})
+
+					err := start(web(jetbridge.StepPrivilegeGranted, database.BuildFactory), "undeletable", metadata, true)
+					Expect(err).To(MatchError(ContainSubstring("deleting it failed")))
+					Expect(err).To(MatchError(ContainSubstring("the Role cannot delete")))
+					Expect(err).To(MatchError(ContainSubstring("Owner main/jetbridge/unit has no step pod grant")))
+					Expect(existing("undeletable")).NotTo(BeNil())
+				})
+
+				It("takes a UID Conflict on the delete as the over-grant pod being gone already", func() {
+					metadata := jobBuild("unit")
+					made(web(jetbridge.StepPrivilegeAny, database.BuildFactory), "replaced-since", metadata)
+					clientset.PrependReactor("delete", "*", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+						return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "pods"}, "x", errors.New("UID precondition failed"))
+					})
+
+					err := start(web(jetbridge.StepPrivilegeGranted, database.BuildFactory), "replaced-since", metadata, true)
+					expectRefusal(err, "main/jetbridge/unit")
+					Expect(err).NotTo(MatchError(ContainSubstring("deleting it failed")))
 				})
 
 				It("hands back a privileged pod a privileged grant still covers, and leaves it", func() {
@@ -270,6 +430,83 @@ var _ = Describe("Re-admission of an existing step pod", func() {
 					Expect(start(web(jetbridge.StepPrivilegeGranted, builds, dindGrant), "counted-granted", metadata, true)).To(Succeed())
 					Expect(builds.calls).To(Equal(1))
 				})
+
+				if stepRuntime == jetbridge.StepRuntimeExec {
+					// fly intercept is not a step: a looked-up container has
+					// no spec to resolve a check's owner from, so it is
+					// deliberately not re-admitted (MIGRATING.md says to delete
+					// the privileged pods hack/step-pod-audit lists instead).
+					It("still lets fly intercept into a privileged pod made under any, and deletes nothing", func() {
+						metadata := jobBuild("unit")
+						made(web(jetbridge.StepPrivilegeAny, database.BuildFactory), "intercepted", metadata)
+
+						container, found, err := web(jetbridge.StepPrivilegeGranted, database.BuildFactory).LookupContainer(ctx, "intercepted")
+						Expect(err).NotTo(HaveOccurred())
+						Expect(found).To(BeTrue())
+						_, err = container.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh"}, runtime.ProcessIO{})
+						Expect(err).NotTo(HaveOccurred())
+						Expect(existing("intercepted")).NotTo(BeNil())
+						Expect(deletes.preconditionsOf("pods")).To(BeEmpty())
+					})
+				}
+
+				if stepRuntime == jetbridge.StepRuntimeJob {
+					// finish marks the step Job complete, as its controller
+					// does once its pod exits.
+					finish := func(handle string) {
+						GinkgoHelper()
+						job := existing(handle).(*batchv1.Job)
+						job.Status.Conditions = append(job.Status.Conditions, batchv1.JobCondition{Type: batchv1.JobComplete, Status: corev1.ConditionTrue})
+						_, err := clientset.BatchV1().Jobs(namespace).Update(ctx, job, metav1.UpdateOptions{})
+						Expect(err).NotTo(HaveOccurred())
+					}
+
+					It("leaves a finished step Job when the step's own composition is refused: nothing would follow it", func() {
+						metadata := jobBuild("unit")
+						made(web(jetbridge.StepPrivilegeAny, database.BuildFactory), "finished-refused", metadata)
+						finish("finished-refused")
+
+						err := start(web(jetbridge.StepPrivilegeGranted, database.BuildFactory), "finished-refused", metadata, true)
+						Expect(err).To(MatchError(ContainSubstring("Owner main/jetbridge/unit has no step pod grant")))
+						Expect(err).NotTo(MatchError(ContainSubstring("deleted")))
+						Expect(existing("finished-refused")).NotTo(BeNil())
+						Expect(deletes.preconditionsOf("jobs")).To(BeEmpty())
+					})
+
+					// A composition that fails for a reason of its own still
+					// retires a running Job the privilege rule refuses, and
+					// leaves one it admits.
+					Describe("when the step's composition fails for a reason unrelated to privilege", func() {
+						unrelated := func(config *jetbridge.Config) { config.ArtifactDaemonHostPath = "" }
+						getStep := func(job string) db.ContainerMetadata {
+							metadata := jobBuild(job)
+							metadata.Type, metadata.StepName = db.ContainerTypeGet, "repo"
+							return metadata
+						}
+
+						It("deletes a running over-grant Job", func() {
+							metadata := getStep("unit")
+							uid := made(web(jetbridge.StepPrivilegeAny, database.BuildFactory), "unrelated-over-grant", metadata)
+
+							configure = unrelated
+							err := start(web(jetbridge.StepPrivilegeGranted, database.BuildFactory), "unrelated-over-grant", metadata, true)
+							Expect(err).To(MatchError(ContainSubstring("Owner main/jetbridge/unit has no step pod grant")))
+							Expect(err).To(MatchError(ContainSubstring("deleted")))
+							expectDeleted("unrelated-over-grant", uid)
+						})
+
+						It("leaves a running Job its grant covers, and fails with the composition's own error", func() {
+							metadata := getStep("dind")
+							made(web(jetbridge.StepPrivilegeGranted, database.BuildFactory, dindGrant), "unrelated-granted", metadata)
+
+							configure = unrelated
+							err := start(web(jetbridge.StepPrivilegeGranted, database.BuildFactory, dindGrant), "unrelated-granted", metadata, true)
+							Expect(err).To(MatchError(ContainSubstring("needs the artifact daemon host path")))
+							Expect(existing("unrelated-granted")).NotTo(BeNil())
+							Expect(deletes.preconditionsOf("jobs")).To(BeEmpty())
+						})
+					})
+				}
 			})
 
 			// The upgrade-safety pin: under any, a pod that comes back is handed
