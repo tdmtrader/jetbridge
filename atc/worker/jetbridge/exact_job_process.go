@@ -379,6 +379,13 @@ type launcherExitRecord struct {
 	EnvelopeNeverReceived bool `json:"envelope_never_received"`
 }
 
+// errEnvelopeNeverDelivered is a step whose exact start was closed as
+// stopped because its launcher never received the step envelope: the command
+// never ran. The node and the Run hold the outcome (143); the step errors
+// rather than fails, as the exec runtime's step errors over a start the Run
+// could not retain.
+var errEnvelopeNeverDelivered = errors.New("the command never ran: its step envelope was never delivered to the launcher, and its start was closed as stopped")
+
 // errMainNotTerminated is a step Job's pod whose command has not ended.
 var errMainNotTerminated = errors.New("the step job's command has not terminated")
 
@@ -409,8 +416,10 @@ var errNoLauncherRecord = errors.New("the step job's pod has no launcher record 
 // Where exec claims the journal's start in the Pod so a late delivery never
 // runs, here the fence is the launcher's exit -- main never restarts, and the
 // Job's backoffLimit 0 makes no second pod -- and, once the outcome is
-// recorded, the ledger's refusal to replay the start.
-func jobPodExit(pod *corev1.Pod) (int, error) {
+// recorded, the ledger's refusal to replay the start. undelivered says so:
+// the outcome is 143, and a step that was not aborted errors rather than
+// fails (completeExact), since its command never ran.
+func jobPodExit(pod *corev1.Pod) (exit int, undelivered bool, err error) {
 	var terminated *corev1.ContainerStateTerminated
 	for _, status := range pod.Status.ContainerStatuses {
 		if status.Name == mainContainerName {
@@ -418,19 +427,19 @@ func jobPodExit(pod *corev1.Pod) (int, error) {
 		}
 	}
 	if terminated == nil {
-		return 0, errMainNotTerminated
+		return 0, false, errMainNotTerminated
 	}
 	var record launcherExitRecord
 	if err := json.Unmarshal([]byte(terminated.Message), &record); err != nil || record.Exit == nil {
-		return 0, fmt.Errorf("%w: %w: pod %s terminated with exit %d (reason %q)",
+		return 0, false, fmt.Errorf("%w: %w: pod %s terminated with exit %d (reason %q)",
 			ErrExactOutcomeUnresolved, errNoLauncherRecord, pod.Name, terminated.ExitCode, terminated.Reason)
 	}
 	if *record.Exit != int(terminated.ExitCode) {
-		return 0, fmt.Errorf("%w: pod %s terminated with exit %d and its launcher recorded exit %d",
+		return 0, false, fmt.Errorf("%w: pod %s terminated with exit %d and its launcher recorded exit %d",
 			ErrExactOutcomeUnresolved, pod.Name, terminated.ExitCode, *record.Exit)
 	}
 	if record.EnvelopeNeverReceived {
-		return exactTaskStoppedExit, nil
+		return exactTaskStoppedExit, true, nil
 	}
-	return *record.Exit, nil
+	return *record.Exit, false, nil
 }

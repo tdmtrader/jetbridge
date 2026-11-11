@@ -253,7 +253,7 @@ func (p *jobProcess) followExactJob(ctx context.Context) (runtime.ProcessResult,
 		}
 		// The pod failed or went after the start. What it recorded, while it
 		// can still be read, is the outcome; anything less is unresolved.
-		result, recordErr := p.completeExact(ctx, podName)
+		result, recordErr := p.completeExact(ctx, podName, false)
 		if recordErr != nil {
 			logger.Error("exact-step-unresolved", recordErr, lager.Data{"pod-error": err.Error()})
 			return runtime.ProcessResult{}, exactNextDone, fmt.Errorf("%w: following the started step job's pod: %v (%w)",
@@ -262,14 +262,18 @@ func (p *jobProcess) followExactJob(ctx context.Context) (runtime.ProcessResult,
 		return result, exactNextDone, nil
 	}
 	logs.drain()
-	result, err := p.completeExact(ctx, podName)
+	result, err := p.completeExact(ctx, podName, false)
 	return result, exactNextDone, err
 }
 
 // completeExact closes the gate and records the outcome of the command in
 // the Job's pod, or, with no start, deletes the Job of a command that never
-// ran.
-func (p *jobProcess) completeExact(ctx context.Context, podName string) (runtime.ProcessResult, error) {
+// ran. A start whose envelope was never delivered is closed as stopped (143)
+// at the node and in the Run either way; a step that was not stopped then
+// errors with errEnvelopeNeverDelivered rather than reporting an exit,
+// because its command never ran. A stopped step (stopExactJob) reports the
+// 143 its stop asked for.
+func (p *jobProcess) completeExact(ctx context.Context, podName string, stopped bool) (runtime.ProcessResult, error) {
 	e := p.exact
 	if !e.closeGate() {
 		err := fmt.Errorf("the step job's pod %s ended before its exact start was recorded: "+
@@ -283,9 +287,12 @@ func (p *jobProcess) completeExact(ctx context.Context, podName string) (runtime
 		}
 		return runtime.ProcessResult{}, p.abandonUnstarted(ctx, err)
 	}
-	exit, nodeName, err := p.recordOutcomeFromPod(ctx, podName)
+	exit, nodeName, undelivered, err := p.recordOutcomeFromPod(ctx, podName)
 	if err != nil {
 		return runtime.ProcessResult{}, err
+	}
+	if undelivered && !stopped {
+		return runtime.ProcessResult{}, errEnvelopeNeverDelivered
 	}
 	if p.storageBackend != nil && p.container != nil {
 		recordCtx, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), outputRecordBudget)
@@ -298,26 +305,26 @@ func (p *jobProcess) completeExact(ctx context.Context, podName string) (runtime
 
 // recordOutcomeFromPod reads the command's exit off the pod that started it
 // and records it at the node through the exec runtime's recordExactOutcome.
-func (p *jobProcess) recordOutcomeFromPod(ctx context.Context, podName string) (int, string, error) {
+func (p *jobProcess) recordOutcomeFromPod(ctx context.Context, podName string) (int, string, bool, error) {
 	e := p.exact
 	pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
-		return 0, "", fmt.Errorf("%w: reading the step job's pod for its exit: %v", ErrExactOutcomeUnresolved, err)
+		return 0, "", false, fmt.Errorf("%w: reading the step job's pod for its exit: %v", ErrExactOutcomeUnresolved, err)
 	}
 	if executioncontrol.PodUID(pod.UID) != e.control.exact.podUID {
-		return 0, "", fmt.Errorf("%w: pod %s is not the pod the start names", ErrExactOutcomeUnresolved, podName)
+		return 0, "", false, fmt.Errorf("%w: pod %s is not the pod the start names", ErrExactOutcomeUnresolved, podName)
 	}
-	exit, err := jobPodExit(pod)
+	exit, undelivered, err := jobPodExit(pod)
 	if errors.Is(err, errMainNotTerminated) {
-		return 0, "", fmt.Errorf("%w: pod %s has no terminated status for its command", ErrExactOutcomeUnresolved, podName)
+		return 0, "", false, fmt.Errorf("%w: pod %s has no terminated status for its command", ErrExactOutcomeUnresolved, podName)
 	}
 	if err != nil {
-		return 0, "", err
+		return 0, "", false, err
 	}
 	if err := e.control.finishExactCommand(ctx, executioncontrol.ExitOutcome{ExitCode: exit}, executioncontrol.AcknowledgementFinish); err != nil {
-		return 0, "", err
+		return 0, "", false, err
 	}
-	return exit, pod.Spec.NodeName, nil
+	return exit, pod.Spec.NodeName, undelivered, nil
 }
 
 // stopExactJob stops a started command whose step was aborted or timed out,
@@ -367,7 +374,7 @@ func (p *jobProcess) stopExactJob(ctx context.Context, podName string) (runtime.
 	default:
 		return unresolved(fmt.Errorf("the node classifies the execution %s", classified.Classification))
 	}
-	result, err := p.completeExact(stopCtx, podName)
+	result, err := p.completeExact(stopCtx, podName, true)
 	if err != nil {
 		return unresolved(err)
 	}
@@ -702,7 +709,7 @@ func stopStepJobPod(ctx context.Context, clientset kubernetes.Interface, namespa
 	if pod.UID != uid {
 		return fmt.Errorf("%w: pod %s is not the pod the start names", output.ErrInvalidIdentity, podName)
 	}
-	if _, err := jobPodExit(pod); !errors.Is(err, errMainNotTerminated) {
+	if _, _, err := jobPodExit(pod); !errors.Is(err, errMainNotTerminated) {
 		return nil
 	}
 	started := pod.CreationTimestamp.Time
@@ -731,7 +738,7 @@ func awaitMainTerminated(ctx context.Context, clientset kubernetes.Interface, na
 		if err != nil {
 			return fmt.Errorf("waiting for the stopped command to end: %w", err)
 		}
-		if _, err := jobPodExit(pod); !errors.Is(err, errMainNotTerminated) {
+		if _, _, err := jobPodExit(pod); !errors.Is(err, errMainNotTerminated) {
 			return nil
 		}
 	}
