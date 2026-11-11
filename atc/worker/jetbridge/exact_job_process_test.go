@@ -591,6 +591,9 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		Eventually(done, 15*time.Second).Should(Receive(&finished))
 		Expect(finished.err).To(MatchError(ErrExactOutcomeUnresolved))
 		Expect(finished.err).To(MatchError(context.Canceled), "the step's own cancellation is not reported")
+		// The stop budget ran out waiting for the command: that deadline is
+		// not the step's timeout, and never reaches its error.
+		Expect(finished.err).ToNot(MatchError(context.DeadlineExceeded))
 		Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
 		Expect(jobExists()).To(BeTrue())
 	})
@@ -1016,6 +1019,8 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			Eventually(done, 15*time.Second).Should(Receive(&finished))
 			Expect(finished.err).To(MatchError(ErrExactOutcomeUnresolved))
 			Expect(finished.err).To(MatchError(context.Canceled))
+			Expect(finished.err).To(MatchError(errNoLauncherRecord), "the stop path lost why it is unresolved")
+			Expect(finished.err).ToNot(MatchError(context.DeadlineExceeded))
 			Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
 			Expect(jobExists()).To(BeTrue())
 		})

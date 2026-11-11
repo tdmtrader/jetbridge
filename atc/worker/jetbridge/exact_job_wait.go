@@ -254,10 +254,14 @@ func (p *jobProcess) followExactJob(ctx context.Context) (runtime.ProcessResult,
 		// The pod failed or went after the start. What it recorded, while it
 		// can still be read, is the outcome; anything less is unresolved.
 		result, recordErr := p.completeExact(ctx, podName, false)
+		if errors.Is(recordErr, errEnvelopeNeverDelivered) {
+			// Closed, not unresolved: the command never ran.
+			return runtime.ProcessResult{}, exactNextDone, recordErr
+		}
 		if recordErr != nil {
 			logger.Error("exact-step-unresolved", recordErr, lager.Data{"pod-error": err.Error()})
-			return runtime.ProcessResult{}, exactNextDone, fmt.Errorf("%w: following the started step job's pod: %v (%w)",
-				ErrExactOutcomeUnresolved, err, recordErr)
+			return runtime.ProcessResult{}, exactNextDone, unresolvedKeeping(recordErr,
+				"following the started step job's pod: %v (%v)", err, recordErr)
 		}
 		return result, exactNextDone, nil
 	}
@@ -327,6 +331,19 @@ func (p *jobProcess) recordOutcomeFromPod(ctx context.Context, podName string) (
 	return exit, pod.Spec.NodeName, undelivered, nil
 }
 
+// unresolvedKeeping is ErrExactOutcomeUnresolved with a message. Of cause
+// it keeps only why the outcome is unresolved -- errNoLauncherRecord -- as a
+// sentinel, and the rest as text: a cause may carry the stop budget's or a
+// ledger call's context.DeadlineExceeded, which is not the step's timeout and
+// must not read as one (unresolvedLedgerError).
+func unresolvedKeeping(cause error, format string, a ...any) error {
+	message := fmt.Sprintf(format, a...)
+	if errors.Is(cause, errNoLauncherRecord) {
+		return fmt.Errorf("%w: %w: %s", ErrExactOutcomeUnresolved, errNoLauncherRecord, message)
+	}
+	return fmt.Errorf("%w: %s", ErrExactOutcomeUnresolved, message)
+}
+
 // stopExactJob stops a started command whose step was aborted or timed out,
 // and records how it ended. The exec runtime's order: classify, request the
 // stop at the node, interrupt the command, read its exit, record it. The
@@ -340,7 +357,7 @@ func (p *jobProcess) stopExactJob(ctx context.Context, podName string) (runtime.
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), exactJobStopBudget)
 	defer cancel()
 	unresolved := func(err error) (runtime.ProcessResult, error) {
-		err = fmt.Errorf("%w: stopping the started step job's command: %v", ErrExactOutcomeUnresolved, err)
+		err = unresolvedKeeping(err, "stopping the started step job's command: %v", err)
 		return runtime.ProcessResult{}, errors.Join(err, ctx.Err())
 	}
 
