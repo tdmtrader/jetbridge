@@ -224,14 +224,16 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		err    error
 	}
 
-	// start runs the task and has Wait follow it, returning once the node
-	// has admitted the execution against the Job's pod.
+	// run runs the task, with nothing following it: nothing admits it.
 	run := func() *jobProcess {
 		process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "exit 3"}},
 			runtime.ProcessIO{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
 		Expect(err).ToNot(HaveOccurred())
 		return process.(*jobProcess)
 	}
+	// startWith runs the task and has Wait follow it under waitCtx,
+	// returning once the node has admitted the execution against the Job's
+	// pod.
 	startWith := func(waitCtx context.Context) (*jobProcess, <-chan waited) {
 		process := run()
 		done := make(chan waited, 1)
@@ -240,10 +242,13 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			result, err := process.Wait(waitCtx)
 			done <- waited{result, err}
 		}()
-		Eventually(func() error {
-			_, err := harness.Client.Classify(ctx, identity)
-			return err
-		}, 10*time.Second, 50*time.Millisecond).Should(Succeed(), "the execution was never admitted")
+		// Wait admits in the background. The ledger cannot be asked: it
+		// classifies an execution it never admitted never_started, as it does
+		// one it admitted, so a spec that writes to it straight after would
+		// race the admission. The admission's own end is the signal.
+		admitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		Expect(process.exact.awaitAdmission(admitCtx)).To(Succeed(), "the execution was never admitted")
 		return process, done
 	}
 	start := func() <-chan waited {
