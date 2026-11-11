@@ -1071,7 +1071,10 @@ var _ = Describe("An exact task on the job step runtime", func() {
 	// launcher's never-received record is the witness, and the same 143 is
 	// recorded.
 	Describe("an undelivered start", func() {
-		It("is closed as stopped by the step's own Wait when the launcher gave up", func() {
+		// The command never ran, so the step did not fail: it errors, as the
+		// exec runtime's step errors over a start the Run could not retain,
+		// once the outcome is the node's and the Run's.
+		It("is closed as stopped by the step's own Wait when the launcher gave up, and errors the step", func() {
 			done := start()
 			// The Run could not retain the start, so the envelope was not
 			// served; the launcher gave up before its retry.
@@ -1083,8 +1086,13 @@ var _ = Describe("An exact task on the job step runtime", func() {
 
 			var finished waited
 			Eventually(done, 15*time.Second).Should(Receive(&finished))
-			Expect(finished.err).ToNot(HaveOccurred())
-			Expect(finished.result.ExitStatus).To(Equal(exactTaskStoppedExit))
+			Expect(finished.err).To(MatchError(errEnvelopeNeverDelivered))
+			Expect(finished.err).ToNot(MatchError(ErrExactOutcomeUnresolved), "a closed outcome reported as unresolved")
+			Expect(finished.result).To(Equal(runtime.ProcessResult{}), "a command that never ran reported an exit")
+			properties, _ := container.Properties()
+			Expect(properties).ToNot(HaveKey(exitStatusPropertyName), "an exit status stands for a command that never ran")
+			Expect(recorded()).To(HaveLen(2))
+			Expect(recorded()[1].Kind).To(Equal(executioncontrol.AcknowledgementFinish), "the Run did not retain the outcome")
 			closed := classify()
 			Expect(closed.Classification).To(Equal(executioncontrol.ClassificationAuthoritativeFinish))
 			Expect(closed.Acknowledgement.Outcome.ExitCode).To(Equal(exactTaskStoppedExit))
