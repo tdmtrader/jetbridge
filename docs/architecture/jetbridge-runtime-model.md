@@ -25,7 +25,10 @@ Step pod: [control init] [cleanup init] [fetch init] [managed-input init ×N] �
 The store's container record moves `creating → created → destroying`, with
 `failed` reachable from creating. Pod phase is a separate fact the runtime
 maps onto that record: a running pod is reused, a terminal one replaced, a
-looked-up one never recreated.
+looked-up one never recreated. Under the `granted` privilege mode a running
+pod, or a running step Job, is reused only after it passes the step pod
+admission again (re-admission); one refused is deleted and its step fails,
+except an exact execution's, which is left in place.
 
 ## Pause pod and replacement
 
