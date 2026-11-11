@@ -129,6 +129,11 @@ func (p *jobProcess) startExactJob(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Labelled with its execution, so the reaper keeps it while its build
+	// runs even once it has lost its pod (reaper.go: reapPodlessStepJobs).
+	execution := string(c.containerSpec.ExecutionControl.Identity.ExecutionID)
+	job.Labels = withLabel(job.Labels, exactExecutionLabelKey, execution)
+	job.Spec.Template.Labels = withLabel(job.Spec.Template.Labels, exactExecutionLabelKey, execution)
 	e := newExactJobExecution(c, p.id, p.spec, p.processIO, "")
 	c.envelopes.RegisterWithStartGate(c.podName, StepEnvelope{Stdin: p.stdin}, e.startGate())
 	// The envelope is the start gate's, not createStepJob's to publish: a Job
@@ -152,6 +157,17 @@ func (p *jobProcess) startExactJob(ctx context.Context) error {
 	e.mu.Unlock()
 	p.exact, p.jobUID = e, uid
 	return nil
+}
+
+// withLabel is labels, copied, with key set to value. The Job's labels and
+// its template's are the same map (buildStepJob), so each gets its own copy.
+func withLabel(labels map[string]string, key, value string) map[string]string {
+	out := make(map[string]string, len(labels)+1)
+	for k, v := range labels {
+		out[k] = v
+	}
+	out[key] = value
+	return out
 }
 
 // waitExact is Wait for an exact task: each of the task's Jobs in turn, at
