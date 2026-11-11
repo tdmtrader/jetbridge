@@ -133,6 +133,14 @@ func TestTheExactJobRuntimeGateSearchFindsEveryWrite(t *testing.T) {
 		{"a pointer to it", `p := &c.exactTasksOnJobRuntime; *p = true`, 1},
 		{"a pointer through parentheses", `*(&(c.exactTasksOnJobRuntime)) = true`, 1},
 		{"a struct literal", `c := Container{exactTasksOnJobRuntime: true}`, 1},
+		{"a range target", `for _, c.exactTasksOnJobRuntime = range []bool{true} {}`, 1},
+		{"a range key target", `for c.exactTasksOnJobRuntime = range map[bool]int{true: 1} {}`, 1},
+		{"an unkeyed Container literal", `c := Container{"handle", nil}`, 1},
+		{"an unkeyed Worker literal", `w := &Worker{nil, true}`, 1},
+		{"another package's Container literal", `c := corev1.Container{Name: "main"}`, 0},
+		{"a whole Container copied over another", `*c = *other`, 1},
+		{"a struct copied through a pointer", `*(c) = *(other)`, 1},
+		{"a whole Container assigned from a literal", `*c = Container{}`, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			src := "package jetbridge\nfunc f() {\n" + tc.body + "\n}\n"
@@ -148,9 +156,27 @@ func TestTheExactJobRuntimeGateSearchFindsEveryWrite(t *testing.T) {
 }
 
 // exactGateWrites is every place in src that may set exactTasksOnJobRuntime:
-// an assignment to it (tuples and parentheses included), its address taken,
-// or a composite literal's key -- except the one copy of a worker's field into
-// a container's, x.exactTasksOnJobRuntime = y.exactTasksOnJobRuntime.
+//   - an assignment to it, tuples and parentheses included, or a range
+//     statement's key or value naming it;
+//   - its address taken;
+//   - a composite literal's key naming it;
+//   - an unkeyed literal of a type of this package that holds it (Container,
+//     Worker), which sets every field by position;
+//   - a whole struct stored through a pointer, *x = *y or *x = Container{...},
+//     which overwrites every field at once; this package stores no other
+//     struct that way. A store of another value through a pointer (*p = 30)
+//     is not one: its type is not known without type-checking, and a
+//     function returning a whole Container stored so would be missed.
+//
+// The one write allowed is the copy of a worker's field into a container's,
+// x.exactTasksOnJobRuntime = y.exactTasksOnJobRuntime.
+//
+// Out of reach of a syntax search, and why that is enough: a value copy
+// (c := *other, a struct passed or returned by value) makes a new value
+// holding a gate already set, never a gate set where none was; a write
+// through reflect or unsafe needs those packages, which no production file
+// of this package imports for it (the search would have to read types to say
+// more); and another package cannot name the unexported field at all.
 func exactGateWrites(filename string, src []byte) ([]string, error) {
 	const field = "exactTasksOnJobRuntime"
 	fset := token.NewFileSet()
@@ -171,10 +197,49 @@ func exactGateWrites(filename string, src []byte) ([]string, error) {
 	}
 	var writes []string
 	report := func(node ast.Node) { writes = append(writes, fset.Position(node.Pos()).String()) }
+	unparen := func(expr ast.Expr) ast.Expr {
+		for {
+			paren, ok := expr.(*ast.ParenExpr)
+			if !ok {
+				return expr
+			}
+			expr = paren.X
+		}
+	}
+	holders := map[string]bool{"Container": true, "Worker": true}
+	// wholeValue is a right-hand side that is a whole struct: another
+	// pointer's value, or a literal of a holder type.
+	wholeValue := func(expr ast.Expr) bool {
+		switch expr := expr.(type) {
+		case *ast.StarExpr:
+			return true
+		case *ast.CompositeLit:
+			name, ok := expr.Type.(*ast.Ident)
+			return ok && holders[name.Name]
+		}
+		return false
+	}
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch node := node.(type) {
+		case *ast.RangeStmt:
+			if node.Tok == token.ASSIGN && (isField(node.Key) || isField(node.Value)) {
+				report(node)
+			}
+		case *ast.CompositeLit:
+			if name, ok := node.Type.(*ast.Ident); ok && holders[name.Name] {
+				for _, element := range node.Elts {
+					if _, keyed := element.(*ast.KeyValueExpr); !keyed {
+						report(node)
+						break
+					}
+				}
+			}
 		case *ast.AssignStmt:
-			for _, target := range node.Lhs {
+			for i, target := range node.Lhs {
+				if _, through := unparen(target).(*ast.StarExpr); through && len(node.Rhs) == len(node.Lhs) && wholeValue(unparen(node.Rhs[i])) {
+					report(target)
+					continue
+				}
 				if !isField(target) {
 					continue
 				}
