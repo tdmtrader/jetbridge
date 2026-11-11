@@ -421,11 +421,17 @@ stops the web at startup. To opt in:
 `granted` with no privileged grant is legal: nothing runs privileged. A step
 pod already running when the mode changes, or when a grant is removed, is
 admitted again when a step comes back to it (a repeated check reusing its
-pod, a step a restarted web resumes, under either step runtime): one the gate
-now refuses is deleted and the step fails, naming the grant it lacks, and no
-fresh pod replaces it. A Run's exact execution is failed the same way but not
-deleted. A pod nothing comes back to keeps running until its build ends, so
-`hack/step-pod-audit pods` can still show privileged pods made before the
-switch; let running builds finish, or abort them, before reading it as the
-gate's. `fly intercept` into such a pod is not refused. To back out, set
-`any` (or remove the value) and sync.
+pod, a running step a restarted web resumes, under either step runtime). This
+re-admission judges privilege only: a privileged container outside a grant
+that declares `privileged: true`. What a mutating webhook added to the stored
+pod (a mesh init container's capability, a host path) and host paths moved
+across a restart are not judged again. A pod the gate now refuses is deleted
+and the step fails, naming the grant it lacks, and no fresh pod replaces it. A
+Run's exact execution is failed the same way but not deleted. A step that had
+already finished when the web came back keeps its result, read with no
+admission, since nothing runs. A pod nothing comes back to keeps running until
+its build ends, and `fly intercept` into a pod made before the switch is still
+allowed. So after switching to `granted`, run `hack/step-pod-audit pods` and
+delete the privileged pods it lists beyond a grant (or abort their builds)
+before reading the audit as the gate's. To back out, set `any` (or remove the
+value) and sync.
