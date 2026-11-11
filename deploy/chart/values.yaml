@@ -255,8 +255,8 @@ kubernetes:
   # the privileged types its checks run. granted with no
   # privileged grant is legal: nothing runs privileged. Under granted, a live
   # step pod or step Job a step comes back to (a reused pod, a step resumed
-  # after a web restart) is admitted again: one the gate now refuses is
-  # deleted and its step fails, naming the grant it lacks.
+  # after a web restart) has its privilege judged again: one the gate now
+  # refuses is deleted and its step fails, naming the grant it lacks.
   stepPrivilege: any
 
   # -- Pod startup timeout
