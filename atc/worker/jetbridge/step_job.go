@@ -69,6 +69,11 @@ const (
 	// a step pod without it was built by the exec runtime.
 	runtimeLabelKey = "concourse.ci/runtime"
 
+	// exactExecutionLabelKey names the exact execution a step Job (and its
+	// pod) runs. The reaper keeps such a Job while its build runs, as an
+	// exec runtime pause pod is kept, even once it has lost its pod.
+	exactExecutionLabelKey = "concourse.ci/exact-execution"
+
 	// jobNameLabelKey and jobUIDLabelKey are the labels the Job controller
 	// stamps on the pods it creates. The web finds a step Job's pod by the
 	// UID: a Job of the same name that went before may still have a pod the

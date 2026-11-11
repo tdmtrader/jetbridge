@@ -262,6 +262,7 @@ func (r *Reaper) reapPodlessStepJobs(ctx context.Context, logger lager.Logger, w
 		}
 		return
 	}
+	var running map[string]bool
 	for _, job := range jobs.Items {
 		if job.DeletionTimestamp != nil || time.Since(job.CreationTimestamp.Time) < podlessStepJobGrace {
 			continue
@@ -269,11 +270,47 @@ func (r *Reaper) reapPodlessStepJobs(ctx context.Context, logger lager.Logger, w
 		if _, err := findPodOfJob(ctx, r.clientset, r.cfg.Namespace, job.Name, job.UID); !errors.Is(err, errJobPodNotFound) {
 			continue
 		}
+		if job.Labels[exactExecutionLabelKey] != "" {
+			// An exact execution's Job is kept while its build runs, as its
+			// pause pod would be on the exec runtime: a Run does not finish a
+			// build over an open execution, and a web resuming the step
+			// resumes this Job under its UID rather than making another.
+			// Unknown is running: the lookup fails closed.
+			if running == nil {
+				running = r.runningBuilds(logger)
+			}
+			if build := job.Labels[buildIDLabelKey]; running[build] || running[unknownBuilds] {
+				logger.Debug("keeping-podless-exact-step-job", lager.Data{"job": job.Name, "build": build})
+				continue
+			}
+		}
 		logger.Info("deleting-podless-step-job", lager.Data{"job": job.Name, "age": time.Since(job.CreationTimestamp.Time).String()})
 		if err := deleteStepJob(ctx, r.clientset, r.cfg.Namespace, job.Name, job.UID); err != nil && !r.stepJobsForbidden(logger, err, true) {
 			logger.Error("failed-to-delete-podless-step-job", err, lager.Data{"job": job.Name})
 		}
 	}
+}
+
+// unknownBuilds is the key runningBuilds sets when it cannot say which
+// builds are running: every build is then taken to be.
+const unknownBuilds = "\x00unknown"
+
+// runningBuilds is the ids of the builds still running, or {unknownBuilds}
+// when there is no lookup or it fails.
+func (r *Reaper) runningBuilds(logger lager.Logger) map[string]bool {
+	if r.buildLookup == nil {
+		return map[string]bool{unknownBuilds: true}
+	}
+	builds, err := r.buildLookup.GetAllStartedBuilds()
+	if err != nil {
+		logger.Error("failed-to-list-started-builds", err)
+		return map[string]bool{unknownBuilds: true}
+	}
+	running := map[string]bool{}
+	for _, build := range builds {
+		running[strconv.Itoa(build.ID())] = true
+	}
+	return running
 }
 
 // cleanupDaemonSetArtifacts asks the artifact daemon to drop each destroyed

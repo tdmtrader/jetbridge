@@ -410,6 +410,11 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		Expect(starts[0].PodUID).To(Equal(executioncontrol.PodUID("uid-"+mainPod)), "the start names the token's pod")
 		Expect(starts[0].ProcessIdentity).To(Equal(executioncontrol.ProcessIdentity("job-v1:uid-" + jobName)))
 		Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
+		// The reaper keeps a pod-less exact Job by this label.
+		job, err := clientset.BatchV1().Jobs("test-ns").Get(ctx, jobName, metav1.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(job.Labels).To(HaveKeyWithValue(exactExecutionLabelKey, string(executionID)))
+		Expect(job.Spec.Template.Labels).To(HaveKeyWithValue(exactExecutionLabelKey, string(executionID)))
 
 		terminate(3, launcherRecord(3))
 		var finished waited
