@@ -599,10 +599,15 @@ func (p *jobProcess) deleteExactJob(ctx context.Context) error {
 
 // abandonUnstarted is the end of a step whose gate shut with no start this
 // web knows of. That proves nothing once the pod was admitted: the node may
-// have committed a start whose answer never reached this web, and the
-// command may be running. So the node is asked first, and the Job is deleted
-// only on its never_started; any other answer, or none, keeps the Job and
-// leaves the outcome unresolved.
+// have committed a start whose answer never reached this web. Its command is
+// not running and never will -- the gate is shut, so it refuses every
+// launcher retry, and the launcher runs nothing without its envelope -- but
+// the node holds an executing start that only the pod can close: once the
+// launcher gives up it leaves its never-received record, and a Run's recovery
+// closes the start as stopped from it (jobPodExit). So the node is asked
+// first, and the Job is deleted only on its never_started; any other answer,
+// or none, keeps the Job, and with it that witness, and leaves the outcome
+// unresolved.
 func (p *jobProcess) abandonUnstarted(ctx context.Context, err error) error {
 	e := p.exact
 	if e.isAdmitted() {
