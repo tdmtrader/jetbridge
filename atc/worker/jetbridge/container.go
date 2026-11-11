@@ -279,8 +279,10 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 					tokenState(existingPod.Spec.AutomountServiceAccountToken), identity.describe())
 			}
 			// And it may hold privilege the web no longer admits: made under
-			// any, or under a grant since removed. It passes the step pod
-			// admission again under the identity just resolved.
+			// any, or under a grant since removed. Its privilege is judged
+			// again under the identity just resolved (re-admission). A
+			// looked-up container (fly intercept) is deliberately not
+			// re-admitted: it has no spec to resolve a check's owner from.
 			if !c.lookedUp {
 				if err := c.readmitPod(ctx, existingPod, c.privilegeAllowanceFor(identity)); err != nil {
 					return nil, err
