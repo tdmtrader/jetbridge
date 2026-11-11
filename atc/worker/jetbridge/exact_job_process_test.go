@@ -947,6 +947,12 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			// the pod: only the ledger stands between the retry and the envelope.
 			_, err := harness.Client.RequestStop(ctx, identity)
 			Expect(err).ToNot(HaveOccurred())
+			// The web's own pod check has nothing to refuse on: the refusal
+			// below is the ledger's (with it removed, this retry is a 200).
+			pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, mainPod, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pod.Spec.ActiveDeadlineSeconds).To(BeNil())
+			Expect(pod.Status.Phase).To(Equal(corev1.PodRunning))
 			Expect(fetch("tok-main")).To(Equal(http.StatusConflict), "a retry was served after the node accepted a stop")
 			Expect(ordered.distinctStarts()).To(Equal(1))
 
@@ -1200,6 +1206,43 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
 			Expect(events.all()).ToNot(ContainElement("node-outcome"))
 			Expect(jobExists()).To(BeTrue())
+		})
+
+		It("stays unresolved for a Run's recovery when main's exit and the never-received record disagree", func() {
+			first := run()
+			first.exact.admit(ctx, mainPod)
+			Expect(first.exact.awaitAdmission(ctx)).To(Succeed())
+			loseTheStartAnswer()
+			source := outputSource()
+			start, err := source.ExecutionStart(ctx, "node-1", harnessNodeUID, identity)
+			Expect(err).ToNot(HaveOccurred())
+			// No step follows the pod: only the Run's recovery reads it.
+			endPod(mainPod, 137, neverReceivedRecord(125))
+
+			_, err = source.RecoverExecutionOutcome(ctx, "node-1", start)
+			Expect(err).To(MatchError(output.ErrUnresolved))
+			Expect(classify().Classification).To(Equal(executioncontrol.ClassificationExecuting))
+			Expect(events.all()).ToNot(ContainElement("node-outcome"))
+		})
+
+		// The record is forgeable from inside the container: a command
+		// served its envelope can write a never-received record and have its
+		// launcher killed before it writes its own (an OOM group kill), the
+		// pod's exit then matching the forged one. The web believes it: the
+		// start is closed as stopped, 143, and the step errors as if the
+		// command never ran. Pinned as it is; the options are in the report
+		// that introduced it (a served-envelope annotation on the pod would
+		// let the web refuse it).
+		It("believes a never-received record from a pod it served, which the command could have forged", func() {
+			done := start()
+			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+			terminate(137, neverReceivedRecord(137))
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).To(MatchError(errEnvelopeNeverDelivered))
+			closed := classify()
+			Expect(closed.Classification).To(Equal(executioncontrol.ClassificationAuthoritativeFinish))
+			Expect(closed.Acknowledgement.Outcome.ExitCode).To(Equal(exactTaskStoppedExit))
 		})
 
 		It("stays unresolved when main's exit and the never-received record disagree", func() {
