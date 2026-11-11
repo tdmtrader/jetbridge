@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -207,6 +208,13 @@ func TestTerminationMessageForAnEnvelopeNeverReceived(t *testing.T) {
 		http.Error(w, "the exact step job is over", http.StatusConflict)
 	}))
 	t.Cleanup(refusing.Close)
+	// A 200 whose body ends partway through the envelope.
+	truncated := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "64")
+		_, _ = w.Write([]byte(`{"stdin":"aGVsbG8`))
+	}))
+	t.Cleanup(truncated.Close)
 	gone := httptest.NewServer(http.NotFoundHandler())
 	goneURL := gone.URL
 	gone.Close()
@@ -220,6 +228,7 @@ func TestTerminationMessageForAnEnvelopeNeverReceived(t *testing.T) {
 		{"it had no token to ask with", []string{"--envelope-url", refusing.URL, "--token-file", "/nonexistent/token", "--", "sh", "-c", "echo ran"}},
 		{"it had no CA to ask with", []string{"--envelope-url", refusing.URL, "--ca-file", "/nonexistent/ca.pem", "--token-file", writeToken(t, "tok"), "--", "sh", "-c", "echo ran"}},
 		{"it had no command to run", []string{"--envelope-url", refusing.URL, "--token-file", writeToken(t, "tok")}},
+		{"the envelope's body was cut short", []string{"--envelope-url", truncated.URL, "--token-file", writeToken(t, "tok"), "--", "sh", "-c", "echo ran"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := time.Now().Add(-time.Second)
@@ -302,6 +311,215 @@ func TestASignalDuringTheEnvelopeFetchEndsItWithTheNeverReceivedRecord(t *testin
 	}
 	if _, err := os.Stat(ran); !os.IsNotExist(err) {
 		t.Fatalf("the command ran after the signal: %v", err)
+	}
+}
+
+// A signal that arrives before the fetch has begun -- while the launcher
+// reads its token -- ends it there: the fetch is never made, and the
+// launcher leaves the never-received record. The token file is a FIFO, so
+// the launcher is held in its read (past installing its handler) until the
+// test writes it, after the signal.
+func TestASignalBeforeTheEnvelopeFetchEndsItWithTheNeverReceivedRecord(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no SIGTERM or FIFOs on windows")
+	}
+	var asked atomic.Int32
+	release := make(chan struct{})
+	hanging := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(hanging.Close)
+	t.Cleanup(func() { close(release) })
+	dir := t.TempDir()
+	termPath := filepath.Join(dir, "term")
+	ran := filepath.Join(dir, "ran")
+	token := filepath.Join(dir, "token")
+	if err := syscall.Mkfifo(token, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := startHelper(t,
+		"--termination-message", termPath,
+		"--envelope-url", hanging.URL,
+		"--token-file", token,
+		"--", "touch", ran)
+
+	// Opening the FIFO for writing returns once the launcher has opened it
+	// to read its token.
+	opened := make(chan *os.File, 1)
+	go func() {
+		f, err := os.OpenFile(token, os.O_WRONLY, 0)
+		if err != nil {
+			t.Error(err)
+			close(opened)
+			return
+		}
+		opened <- f
+	}()
+	var writer *os.File
+	select {
+	case writer = <-opened:
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("the launcher never read its token")
+	}
+	if writer == nil {
+		t.FailNow()
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	// Let the signal land before the read can return.
+	time.Sleep(200 * time.Millisecond)
+	_, _ = writer.WriteString("tok\n")
+	_ = writer.Close()
+
+	if code := waitExit(t, cmd, 5*time.Second); code != 128+int(syscall.SIGTERM) {
+		t.Fatalf("launcher exit = %d, want %d", code, 128+int(syscall.SIGTERM))
+	}
+	msg := readTermination(t, termPath)
+	if msg.Exit != 128+int(syscall.SIGTERM) || !msg.EnvelopeNeverReceived {
+		t.Fatalf("message = %+v, want exit 143 and the envelope never received", msg)
+	}
+	if n := asked.Load(); n != 0 {
+		t.Errorf("the launcher asked for its envelope %d time(s) after the signal", n)
+	}
+	if _, err := os.Stat(ran); !os.IsNotExist(err) {
+		t.Fatalf("the command ran after the signal: %v", err)
+	}
+}
+
+// A signal while the launcher waits out its backoff between two attempts
+// ends the wait: it does not ask again, and leaves the never-received record.
+// The helper runs with the production backoff (a second), so the signal sent
+// once the first 503 is answered lands in that sleep.
+func TestASignalDuringTheFetchBackoffEndsItWithTheNeverReceivedRecord(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no SIGTERM on windows")
+	}
+	answered := make(chan struct{}, 16)
+	var asked atomic.Int32
+	busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		answered <- struct{}{}
+	}))
+	t.Cleanup(busy.Close)
+	dir := t.TempDir()
+	termPath := filepath.Join(dir, "term")
+	ran := filepath.Join(dir, "ran")
+	cmd := startHelper(t,
+		"--termination-message", termPath,
+		"--envelope-url", busy.URL,
+		"--token-file", writeToken(t, "tok"),
+		"--", "touch", ran)
+	select {
+	case <-answered:
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("the launcher never asked for its envelope")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if code := waitExit(t, cmd, 5*time.Second); code != 128+int(syscall.SIGTERM) {
+		t.Fatalf("launcher exit = %d, want %d", code, 128+int(syscall.SIGTERM))
+	}
+	msg := readTermination(t, termPath)
+	if msg.Exit != 128+int(syscall.SIGTERM) || !msg.EnvelopeNeverReceived {
+		t.Fatalf("message = %+v, want exit 143 and the envelope never received", msg)
+	}
+	if n := asked.Load(); n != 1 {
+		t.Errorf("the launcher asked %d times, want once: the signal did not end its backoff", n)
+	}
+	if _, err := os.Stat(ran); !os.IsNotExist(err) {
+		t.Fatalf("the command ran after the signal: %v", err)
+	}
+}
+
+// Once the envelope is received the command runs, and a signal is the
+// command's: it is forwarded to its group, and the record is the command's
+// own exit, not a never-received one.
+func TestASignalAfterTheEnvelopeIsForwardedToTheCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no SIGTERM on windows")
+	}
+	srv, _ := envelopeServer(t, "tok", "")
+	dir := t.TempDir()
+	termPath := filepath.Join(dir, "term")
+	ready := filepath.Join(dir, "ready")
+	cmd := startHelper(t,
+		"--termination-message", termPath,
+		"--envelope-url", srv.URL,
+		"--token-file", writeToken(t, "tok"),
+		"--kill-grace", "10s",
+		"--", "sh", "-c", `trap "exit 3" TERM; touch "$0"; sleep 30 & wait`, ready)
+	waitForFile(t, ready)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if code := waitExit(t, cmd, 5*time.Second); code != 3 {
+		t.Fatalf("launcher exit = %d, want 3 (the command's trap)", code)
+	}
+	if msg := readTermination(t, termPath); msg.Exit != 3 || msg.EnvelopeNeverReceived {
+		t.Fatalf("message = %+v, want the command's exit 3 and no never-received mark", msg)
+	}
+}
+
+// A signal racing the envelope's arrival: the server answers 200 and then
+// signals the launcher, so the signal lands as the fetch completes, on
+// either side of it. Whichever side, the record is the truth: a
+// never-received record means the command did not run, and a command that
+// ran was handed the signal and recorded its own exit.
+func TestASignalRacingTheEnvelopeLeavesATruthfulRecord(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no SIGTERM on windows")
+	}
+	for i := range 5 {
+		t.Run(fmt.Sprintf("attempt %d", i), func(t *testing.T) {
+			dir := t.TempDir()
+			termPath := filepath.Join(dir, "term")
+			ran := filepath.Join(dir, "ran")
+			var launcher atomic.Pointer[os.Process]
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(envelope{})
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				if p := launcher.Load(); p != nil {
+					_ = p.Signal(syscall.SIGTERM)
+				}
+			}))
+			t.Cleanup(srv.Close)
+			cmd := startHelper(t,
+				"--termination-message", termPath,
+				"--envelope-url", srv.URL,
+				"--token-file", writeToken(t, "tok"),
+				"--kill-grace", "10s",
+				"--", "sh", "-c", `trap "exit 3" TERM; touch "$0"; sleep 30 & wait`, ran)
+			launcher.Store(cmd.Process)
+			code := waitExit(t, cmd, 10*time.Second)
+			msg := readTermination(t, termPath)
+			_, statErr := os.Stat(ran)
+			commandRan := statErr == nil
+			switch {
+			case msg.EnvelopeNeverReceived:
+				if commandRan || code != 128+int(syscall.SIGTERM) || msg.Exit != code {
+					t.Fatalf("never-received record %+v, exit %d, command ran %v", msg, code, commandRan)
+				}
+			default:
+				// The command ran; the signal reached it, before or after its
+				// trap was set.
+				if msg.Exit != code || (code != 3 && code != 128+int(syscall.SIGTERM)) {
+					t.Fatalf("command's record %+v, exit %d", msg, code)
+				}
+			}
+		})
 	}
 }
 
