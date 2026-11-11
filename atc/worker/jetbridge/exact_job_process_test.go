@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -169,6 +170,9 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		// store, and the handler serving it. A spec calls it again for a
 		// web that restarted.
 		newWeb func() *Container
+		// podWatches is how many watches are open on each pod, by name.
+		podWatches map[string]int
+		watchesMu  sync.Mutex
 	)
 
 	executionID := executioncontrol.ExecutionID(fmt.Sprintf("%08x-bbbb-4bbb-8bbb-bbbbbbbbbbbb", os.Getpid()))
@@ -189,9 +193,22 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		return recorder.Code
 	}
 
-	// terminate is the kubelet reporting main's exit, with the launcher's
+	// followed waits for the web to be watching pod name -- Wait following
+	// it, or a stop waiting for its command to end -- so that a change the
+	// spec makes to the pod reaches it. A watcher reads the pod and then
+	// watches from what it read; a real API server replays a change made in
+	// between, the fake one does not, and Wait would never see it.
+	followed := func(name string) {
+		Eventually(func() int {
+			watchesMu.Lock()
+			defer watchesMu.Unlock()
+			return podWatches[name]
+		}, 10*time.Second, 10*time.Millisecond).Should(BeNumerically(">", 0), "nothing is watching pod %s", name)
+	}
+
+	// endPod is the kubelet reporting main's exit, with the launcher's
 	// record as its termination message when message is set.
-	terminatePod := func(name string, exit int32, message string) {
+	endPod := func(name string, exit int32, message string) {
 		pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
 		pod.Status.Phase = corev1.PodSucceeded
@@ -204,6 +221,11 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		}}
 		_, err = clientset.CoreV1().Pods("test-ns").Update(ctx, pod, metav1.UpdateOptions{})
 		Expect(err).ToNot(HaveOccurred())
+	}
+	// terminatePod is main's exit in a pod the step is following.
+	terminatePod := func(name string, exit int32, message string) {
+		followed(name)
+		endPod(name, exit, message)
 	}
 	terminate := func(exit int32, message string) { terminatePod(mainPod, exit, message) }
 
@@ -286,6 +308,27 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		clientset = fake.NewSimpleClientset(&corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{Name: "node-1", UID: types.UID(harnessNodeUID)},
 			Status:     corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "127.0.0.1"}}},
+		})
+		// The fake's own watch, counted while it is open on a pod by name.
+		podWatches = map[string]int{}
+		clientset.PrependWatchReactor("pods", func(action k8stesting.Action) (bool, watch.Interface, error) {
+			watchAction := action.(k8stesting.WatchActionImpl)
+			watcher, err := clientset.Tracker().Watch(action.GetResource(), action.GetNamespace(), watchAction.ListOptions)
+			if err != nil {
+				return false, nil, err
+			}
+			name, ok := watchAction.GetWatchRestrictions().Fields.RequiresExactMatch("metadata.name")
+			if !ok {
+				return true, watcher, nil
+			}
+			watchesMu.Lock()
+			podWatches[name]++
+			watchesMu.Unlock()
+			return true, &countedWatch{Interface: watcher, stopped: func() {
+				watchesMu.Lock()
+				podWatches[name]--
+				watchesMu.Unlock()
+			}}, nil
 		})
 
 		ordered = &orderedOutputControl{OutputControl: harness.Client, log: events}
@@ -910,7 +953,8 @@ var _ = Describe("An exact task on the job step runtime", func() {
 			first.exact.admit(ctx, mainPod)
 			Expect(first.exact.awaitAdmission(ctx)).To(Succeed())
 			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
-			terminate(7, launcherRecord(7))
+			// Nothing follows the pod: this web dies with no Wait.
+			endPod(mainPod, 7, launcherRecord(7))
 
 			// A new web: the pod has an exit and nothing acknowledged it.
 			container = newWeb()
@@ -1037,6 +1081,7 @@ var _ = Describe("An exact task on the job step runtime", func() {
 
 	Describe("a pod lost before its start", func() {
 		evict := func(name string) {
+			followed(name)
 			pod, err := clientset.CoreV1().Pods("test-ns").Get(ctx, name, metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			pod.Status.Phase, pod.Status.Reason = corev1.PodFailed, "Evicted"
@@ -1223,6 +1268,18 @@ func indexOf(values []string, value string) int {
 		}
 	}
 	return -1
+}
+
+// countedWatch is a watch that says when it is stopped.
+type countedWatch struct {
+	watch.Interface
+	once    sync.Once
+	stopped func()
+}
+
+func (counted *countedWatch) Stop() {
+	counted.once.Do(counted.stopped)
+	counted.Interface.Stop()
 }
 
 // nodeControls is one output control per node name.
