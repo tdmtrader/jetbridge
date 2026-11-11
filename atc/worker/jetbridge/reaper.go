@@ -275,11 +275,12 @@ func (r *Reaper) reapPodlessStepJobs(ctx context.Context, logger lager.Logger, w
 			// pause pod would be on the exec runtime: a Run does not finish a
 			// build over an open execution, and a web resuming the step
 			// resumes this Job under its UID rather than making another.
-			// Unknown is running: the lookup fails closed.
+			// Unknown is running: the lookup fails closed, and so does a Job
+			// that names no build, which nothing can show is over.
 			if running == nil {
 				running = r.runningBuilds(logger)
 			}
-			if build := job.Labels[buildIDLabelKey]; running[build] || running[unknownBuilds] {
+			if build := job.Labels[buildIDLabelKey]; build == "" || running[build] || running[unknownBuilds] {
 				logger.Debug("keeping-podless-exact-step-job", lager.Data{"job": job.Name, "build": build})
 				continue
 			}
