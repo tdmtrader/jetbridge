@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -215,6 +216,10 @@ type exactTaskPreparer struct {
 	control   *runtime.ExecutionControl
 	mu        sync.Mutex
 	witnesses []executioncontrol.Acknowledgement
+	// refuseStart, when set and answering true, is a Run whose database
+	// cannot retain a start: the node records it and the envelope is never
+	// served.
+	refuseStart func() bool
 }
 
 func (p *exactTaskPreparer) PrepareInputs(_ context.Context, _ db.ContainerOwner, _ string, _ []string, spec runtime.ContainerSpec) (runtime.ContainerSpec, error) {
@@ -233,6 +238,9 @@ func (p *exactTaskPreparer) CheckStart(context.Context, db.ContainerOwner, runti
 func (p *exactTaskPreparer) CheckIntercept(context.Context, string) error { return nil }
 
 func (p *exactTaskPreparer) RecordWitness(_ context.Context, _ db.ContainerOwner, witness executioncontrol.Acknowledgement) error {
+	if witness.Kind == executioncontrol.AcknowledgementStart && p.refuseStart != nil && p.refuseStart() {
+		return errors.New("the Run's database is unreachable")
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.witnesses = append(p.witnesses, witness)
@@ -508,6 +516,295 @@ func TestLiveJobRuntimeExactTaskStop(t *testing.T) {
 	}
 	if !closed.Classification.Authoritative() || closed.Acknowledgement == nil || closed.Acknowledgement.Outcome == nil || closed.Acknowledgement.Outcome.ExitCode != 143 {
 		t.Errorf("the node classifies the execution %s (%+v), want it closed with exit 143", closed.Classification, closed.Acknowledgement)
+	}
+}
+
+// liveExactJobFixture is what an exact task on the job runtime needs on a
+// live cluster: this process's node ledgers, an envelope server a step pod
+// can reach, and an execution control admitting one fresh identity.
+type liveExactJobFixture struct {
+	clientset kubernetes.Interface
+	controls  *jetbridge.LiveNodeOutputControls
+	ip        string
+	identity  executioncontrol.Identity
+	namespace string
+}
+
+func newLiveExactJobFixture(t *testing.T, ctx context.Context, marker string) *liveExactJobFixture {
+	t.Helper()
+	ip := ownPodIP(t)
+	clientset, _ := kubeClient(t)
+	controls, err := jetbridge.StartLiveNodeOutputControls(ctx, clientset)
+	if err != nil {
+		t.Fatalf("starting the node ledgers: %v", err)
+	}
+	t.Cleanup(controls.Stop)
+	return &liveExactJobFixture{
+		clientset: clientset,
+		controls:  controls,
+		identity: executioncontrol.Identity{
+			ExecutionID: executioncontrol.ExecutionID(fmt.Sprintf("%08x-%s-4%s-8%s-%012x", os.Getpid(), marker, marker[:3], marker[:3], time.Now().UnixNano()&0xffffffffffff)),
+			Fence:       1,
+		},
+		namespace: liveTestNamespace(),
+		ip:        ip,
+	}
+}
+
+// web is one web: its own envelope store and envelope server, and a worker
+// routing exact tasks to the job runtime through preparer. A Job keeps the
+// envelope URL of the web that made it; a web that resumes one serves no
+// envelope to it, the command having been served already.
+func (f *liveExactJobFixture) web(t *testing.T, preparer *exactTaskPreparer) *jetbridge.Worker {
+	t.Helper()
+	envelopes := jetbridge.NewStepEnvelopes()
+	listener, err := net.Listen("tcp", net.JoinHostPort(f.ip, "0"))
+	if err != nil {
+		t.Fatalf("listening for envelope requests: %v", err)
+	}
+	envelopeURL := "http://" + listener.Addr().String() + jetbridge.StepEnvelopePath
+	server := &http.Server{Handler: &jetbridge.StepEnvelopeHandler{
+		Logger: lagertest.NewTestLogger("envelope"), Clientset: f.clientset, Namespace: f.namespace, Envelopes: envelopes,
+	}}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+	worker, _, _, _ := newLiveWorker(t, nil, nil, func(cfg *jetbridge.Config, deps *jetbridge.WorkerDeps) {
+		cfg.StepRuntime = jetbridge.StepRuntimeJob
+		cfg.LauncherImage = deployed.webContainer.Image
+		cfg.StepEnvelopeURL = envelopeURL
+		deps.StepEnvelopes = envelopes
+		deps.OutputControls = f.controls
+		deps.ExecutionPreparer = preparer
+	})
+	worker.RouteExactTasksToJobRuntimeForTesting()
+	return worker
+}
+
+func (f *liveExactJobFixture) preparer() *exactTaskPreparer {
+	return &exactTaskPreparer{control: &runtime.ExecutionControl{
+		Version: runtime.ExecutionControlVersion, Phase: runtime.ControlPhaseAdmitted,
+		Identity: f.identity, Endpoint: f.controls.Endpoint(), Capability: "base-capability",
+	}}
+}
+
+// classifyOnPodNode classifies the execution at the node the Job's one pod
+// ran on, and returns that pod.
+func (f *liveExactJobFixture) classifyOnPodNode(t *testing.T, ctx context.Context, jobName string) (executioncontrol.ClassifyResult, corev1.Pod) {
+	t.Helper()
+	pods, err := f.clientset.CoreV1().Pods(f.namespace).List(ctx, metav1.ListOptions{LabelSelector: "batch.kubernetes.io/job-name=" + jobName})
+	if err != nil || len(pods.Items) != 1 {
+		t.Fatalf("the Job owns %d pods (%v), want 1", len(pods.Items), err)
+	}
+	pod := pods.Items[0]
+	if pod.Spec.NodeName == "" {
+		return executioncontrol.ClassifyResult{}, pod
+	}
+	ledger, err := f.controls.ForNode(ctx, pod.Spec.NodeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	classified, err := ledger.Classify(ctx, f.identity)
+	if err != nil {
+		t.Fatalf("classifying at the node: %v", err)
+	}
+	return classified, pod
+}
+
+// TestLiveJobRuntimeExactTaskUndeliveredStart is an undelivered start on a
+// real kubelet: the node records the start, the Run cannot retain it, so the
+// envelope is never served, and the step is aborted while its launcher still
+// asks. The stop cuts the pod's deadline (or the shut gate refuses the
+// launcher's next retry, whichever comes first); either way the launcher
+// exits without its envelope and leaves its never-received record, and the
+// start is closed as stopped, 143, as the exec runtime closes one. What no
+// unit tier can say: the launcher in the deployed image installs its handler
+// before the fetch, the kubelet keeps its record as main's termination
+// message, and the command never ran.
+//
+// It needs a deployed image with the launcher's never-received record.
+//
+//	K8S_TEST_NAMESPACE=<throwaway> go test -tags live \
+//	  -run '^TestLiveJobRuntimeExactTaskUndeliveredStart$' -v -count=1 -timeout 10m ./atc/worker/jetbridge/
+//
+// from a pod in the cluster (the step pod must reach this process).
+func TestLiveJobRuntimeExactTaskUndeliveredStart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	f := newLiveExactJobFixture(t, ctx, "eeee")
+	handle := "live-job-exact-undelivered-" + time.Now().Format("150405")
+	metadata := db.ContainerMetadata{Type: db.ContainerTypeTask, StepName: "job-exact-undelivered"}
+	jobName := jetbridge.GeneratePodName(metadata, handle)
+	preparer := f.preparer()
+	// The Run cannot retain the start until no envelope can be served any
+	// more: the pod's deadline is cut (the gate then refuses it) or the
+	// launcher has exited. Then the start is retained, as the outcome needs.
+	preparer.refuseStart = func() bool {
+		pods, err := f.clientset.CoreV1().Pods(f.namespace).List(context.Background(), metav1.ListOptions{LabelSelector: "batch.kubernetes.io/job-name=" + jobName})
+		if err != nil || len(pods.Items) != 1 {
+			return true
+		}
+		_, ended := mainExitStatus(pods.Items[0])
+		return pods.Items[0].Spec.ActiveDeadlineSeconds == nil && !ended
+	}
+	worker := f.web(t, preparer)
+
+	container, _, err := worker.FindOrCreateContainer(ctx, db.NewFixedHandleContainerOwner(handle), metadata,
+		runtime.ContainerSpec{TeamID: 1, Type: db.ContainerTypeTask, ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"}}, nil)
+	if err != nil {
+		t.Fatalf("FindOrCreateContainer: %v", err)
+	}
+	t.Cleanup(func() { cleanupStepJob(t, f.clientset, f.namespace, jobName) })
+
+	stepCtx, abort := context.WithCancel(ctx)
+	defer abort()
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	process, err := container.Run(stepCtx, runtime.ProcessSpec{
+		Path: "/bin/sh", Args: []string{"-c", "echo the-command-ran; exit 0"},
+	}, runtime.ProcessIO{Stdout: stdout, Stderr: stderr})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	type waited struct {
+		result runtime.ProcessResult
+		err    error
+	}
+	done := make(chan waited, 1)
+	go func() {
+		result, err := process.Wait(stepCtx)
+		done <- waited{result, err}
+	}()
+
+	// The node holds the start; the Run does not.
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		classified, _ := f.classifyOnPodNode(t, ctx, jobName)
+		if classified.Classification == executioncontrol.ClassificationExecuting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the node never recorded the start (stderr: %s)", stderr.String())
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if got := preparer.recorded(); len(got) != 0 {
+		t.Fatalf("the Run retained %+v, want nothing before the abort", got)
+	}
+	abort()
+	var finished waited
+	select {
+	case finished = <-done:
+	case <-time.After(2 * time.Minute):
+		t.Fatal("Wait did not return after the abort")
+	}
+	if finished.err != nil {
+		t.Fatalf("Wait: %v (stderr: %s)", finished.err, stderr.String())
+	}
+	if finished.result.ExitStatus != 143 {
+		t.Errorf("exit = %d, want 143: an undelivered start closed as stopped", finished.result.ExitStatus)
+	}
+	if strings.Contains(stdout.String(), "the-command-ran") {
+		t.Errorf("the command ran without its envelope: %q", stdout.String())
+	}
+
+	closed, pod := f.classifyOnPodNode(t, ctx, jobName)
+	if closed.Classification != executioncontrol.ClassificationAuthoritativeFinish || closed.Acknowledgement == nil ||
+		closed.Acknowledgement.Outcome == nil || closed.Acknowledgement.Outcome.ExitCode != 143 {
+		t.Errorf("the node classifies the execution %s (%+v), want it closed with exit 143", closed.Classification, closed.Acknowledgement)
+	}
+	var message string
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Name == "main" && status.State.Terminated != nil {
+			message = status.State.Terminated.Message
+		}
+	}
+	if !strings.Contains(message, `"envelope_never_received":true`) {
+		t.Errorf("main's termination message = %q, want the launcher's never-received record", message)
+	}
+	witnesses := preparer.recorded()
+	if len(witnesses) != 2 || witnesses[0].Kind != executioncontrol.AcknowledgementStart || witnesses[1].Kind != executioncontrol.AcknowledgementFinish {
+		t.Errorf("Run witnesses = %+v, want the start retained before the finish", witnesses)
+	}
+}
+
+// TestLiveJobRuntimeExactTaskReattach is a web restart on a real kubelet: a
+// second web, with nothing of the first in memory, finds the running step's
+// Job, admits its pod again, checks the node's start names that pod and Job,
+// and follows the command to the exit it records, without running it again.
+//
+// The first web is not killed: in-process, its Wait is left following the
+// same Job (a real restart has no such web), and the node takes the same
+// outcome from both. What it shows is the second web's reattach against a
+// real pod; the unit tier has the restart with nothing left of the first.
+//
+//	K8S_TEST_NAMESPACE=<throwaway> go test -tags live \
+//	  -run '^TestLiveJobRuntimeExactTaskReattach$' -v -count=1 -timeout 10m ./atc/worker/jetbridge/
+func TestLiveJobRuntimeExactTaskReattach(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	f := newLiveExactJobFixture(t, ctx, "ffff")
+	first := f.preparer()
+	handle := "live-job-exact-reattach-" + time.Now().Format("150405")
+	metadata := db.ContainerMetadata{Type: db.ContainerTypeTask, StepName: "job-exact-reattach"}
+	owner := db.NewFixedHandleContainerOwner(handle)
+	spec := runtime.ContainerSpec{TeamID: 1, Type: db.ContainerTypeTask, ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"}}
+	command := runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "echo started-once; sleep 30; exit 5"}}
+
+	container, _, err := f.web(t, first).FindOrCreateContainer(ctx, owner, metadata, spec, nil)
+	if err != nil {
+		t.Fatalf("FindOrCreateContainer: %v", err)
+	}
+	jobName := jetbridge.GeneratePodName(metadata, handle)
+	t.Cleanup(func() { cleanupStepJob(t, f.clientset, f.namespace, jobName) })
+	process, err := container.Run(ctx, command, runtime.ProcessIO{Stdout: io.Discard, Stderr: io.Discard})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	go func() { _, _ = process.Wait(ctx) }()
+	deadline := time.Now().Add(3 * time.Minute)
+	for len(first.recorded()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the first web never recorded the start")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	job, err := f.clientset.BatchV1().Jobs(f.namespace).Get(ctx, jobName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("reading the step's Job: %v", err)
+	}
+
+	second := f.preparer()
+	resumed, _, err := f.web(t, second).FindOrCreateContainer(ctx, owner, metadata, spec, nil)
+	if err != nil {
+		t.Fatalf("the second web's FindOrCreateContainer: %v", err)
+	}
+	stdout := &bytes.Buffer{}
+	process, err = resumed.Run(ctx, command, runtime.ProcessIO{Stdout: stdout, Stderr: io.Discard})
+	if err != nil {
+		t.Fatalf("the second web's Run: %v", err)
+	}
+	result, err := process.Wait(ctx)
+	if err != nil {
+		t.Fatalf("the second web's Wait: %v", err)
+	}
+	if result.ExitStatus != 5 {
+		t.Errorf("exit = %d, want 5 from the command the first web started", result.ExitStatus)
+	}
+
+	again, err := f.clientset.BatchV1().Jobs(f.namespace).Get(ctx, jobName, metav1.GetOptions{})
+	if err != nil || again.UID != job.UID {
+		t.Fatalf("the step's Job was replaced rather than resumed: %v", err)
+	}
+	closed, pod := f.classifyOnPodNode(t, ctx, jobName)
+	if !closed.Classification.Authoritative() || closed.Acknowledgement == nil || closed.Acknowledgement.Outcome == nil || closed.Acknowledgement.Outcome.ExitCode != 5 {
+		t.Errorf("the node classifies the execution %s (%+v), want it closed with exit 5", closed.Classification, closed.Acknowledgement)
+	}
+	started := first.recorded()[0]
+	witnesses := second.recorded()
+	if len(witnesses) == 0 || witnesses[0] != started {
+		t.Errorf("the second web's Run witnesses = %+v, want the first web's start %+v retained again", witnesses, started)
+	}
+	if started.PodUID != executioncontrol.PodUID(pod.UID) || started.ProcessIdentity != executioncontrol.ProcessIdentity("job-v1:"+string(job.UID)) {
+		t.Errorf("the start names %s/%s, not the Job's pod %s and job-v1:%s", started.PodUID, started.ProcessIdentity, pod.UID, job.UID)
 	}
 }
 
