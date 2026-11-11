@@ -83,6 +83,18 @@ func (c *Container) runExactAsJob(ctx context.Context, processID string, spec ru
 	existing, err := c.stepJob(ctx)
 	switch {
 	case err == nil:
+		// The resumed Job passes the step pod admission again before anything
+		// is done for it. A refusal deletes nothing and replaces nothing: the
+		// Job may have started its command, and it is not this path's to
+		// stop. Its envelope is not registered, so a pod that has not fetched
+		// it never starts (readmitStepJob).
+		allowance, err := c.readmissionAllowance()
+		if err != nil {
+			return nil, err
+		}
+		if err := c.readmitStepJob(ctx, existing, allowance); err != nil {
+			return nil, err
+		}
 		// A web that died between creating the Job and unsuspending it left
 		// it suspended with no pod. Unsuspending is idempotent, and the gate
 		// still decides whether its pod starts anything.
@@ -113,13 +125,13 @@ func (c *Container) runExactAsJob(ctx context.Context, processID string, spec ru
 // own, registered before the Job exists so its pod never asks for nothing.
 func (p *jobProcess) startExactJob(ctx context.Context) error {
 	c := p.container
-	job, err := c.buildStepJob(p.spec, true)
+	job, allowance, err := c.buildStepJob(p.spec, true)
 	if err != nil {
 		return err
 	}
 	e := newExactJobExecution(c, p.id, p.spec, p.processIO, "")
 	c.envelopes.RegisterWithStartGate(c.podName, StepEnvelope{Stdin: p.stdin}, e.startGate())
-	created, err := c.createStepJob(ctx, job)
+	created, err := c.createStepJob(ctx, job, allowance)
 	if err == nil && !created {
 		err = fmt.Errorf("step job %q appeared while an exact task's Job was being made", c.podName)
 	}

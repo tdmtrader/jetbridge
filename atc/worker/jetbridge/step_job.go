@@ -120,15 +120,17 @@ func stepAnswerKey(handle string) string {
 // answer directory (for a resource command) and the declared sidecars as
 // native sidecars, which end when main does. The finished template passes the
 // step pod admission once, under the allowance composePod resolved: it is the
-// job runtime's only admission.
-func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*batchv1.Job, error) {
+// job runtime's only admission at creation. The allowance is handed back, with
+// a refusal too, for the re-admission of a step Job the step comes back to
+// (step_pod_readmission.go), so the build is looked up once.
+func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*batchv1.Job, privilegeAllowance, error) {
 	if c.config.LauncherImage == "" {
-		return nil, errors.New("job step runtime: no launcher image configured")
+		return nil, privilegeAllowance{}, errors.New("job step runtime: no launcher image configured")
 	}
 	launcherArgs := []string{}
 	if hasEnvelope {
 		if c.config.StepEnvelopeURL == "" {
-			return nil, errors.New("job step runtime: no step envelope URL configured")
+			return nil, privilegeAllowance{}, errors.New("job step runtime: no step envelope URL configured")
 		}
 		launcherArgs = append(launcherArgs,
 			"--envelope-url="+c.config.StepEnvelopeURL,
@@ -144,7 +146,7 @@ func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*b
 
 	pod, allowance, err := c.composePod(spec, []string{filepath.Join(launcherMountPath, "jb-launcher")}, launcherArgs)
 	if err != nil {
-		return nil, err
+		return nil, allowance, err
 	}
 	pod.Labels[runtimeLabelKey] = StepRuntimeJob
 
@@ -201,7 +203,7 @@ func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*b
 	}
 	if resource {
 		if c.config.ArtifactDaemonHostPath == "" {
-			return nil, errors.New("job step runtime: a resource command's answer needs the artifact daemon host path")
+			return nil, allowance, errors.New("job step runtime: a resource command's answer needs the artifact daemon host path")
 		}
 		dirType := corev1.HostPathDirectoryOrCreate
 		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
@@ -234,13 +236,14 @@ func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*b
 	pod.Spec.TerminationGracePeriodSeconds = new(int64)
 	*pod.Spec.TerminationGracePeriodSeconds = stepJobTerminationGrace
 	if err := validatePodVolumeMounts(pod); err != nil {
-		return nil, err
+		return nil, allowance, err
 	}
-	// The finished template is the job runtime's one admission: the answer
-	// directory's host path and the privilege gate, under the allowance
-	// composePod resolved with the identity, so the build is looked up once.
+	// The finished template is the job runtime's one admission at creation:
+	// the answer directory's host path and the privilege gate, under the
+	// allowance composePod resolved with the identity, so the build is looked
+	// up once.
 	if err := admitStepPod(pod, c.stepPodRoots(), allowance); err != nil {
-		return nil, err
+		return nil, allowance, err
 	}
 
 	suspend := true
@@ -272,7 +275,7 @@ func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*b
 			},
 		},
 	}
-	return job, nil
+	return job, allowance, nil
 }
 
 // createStepJob creates the suspended Job, then unsuspends it, and reports
@@ -286,7 +289,11 @@ func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*b
 // previous invocation on this handle (a repeated check reuses its container)
 // or a start that never happened: the Job is deleted and a new one created,
 // as the exec runtime replaces a terminal pause pod.
-func (c *Container) createStepJob(ctx context.Context, job *batchv1.Job) (bool, error) {
+//
+// A running Job is followed only once it passes the step pod admission again,
+// under the allowance this step's own composition resolved (readmitStepJob):
+// one the privilege gate now refuses is deleted, and the step fails.
+func (c *Container) createStepJob(ctx context.Context, job *batchv1.Job, allowance privilegeAllowance) (bool, error) {
 	logger := lagerctx.FromContext(ctx).Session("create-step-job", lagerData(c))
 	for attempt := 0; ; attempt++ {
 		created, err := c.clientset.BatchV1().Jobs(c.config.Namespace).Create(ctx, job, metav1.CreateOptions{})
@@ -294,11 +301,14 @@ func (c *Container) createStepJob(ctx context.Context, job *batchv1.Job) (bool, 
 			if attempt > 0 {
 				return false, fmt.Errorf("step job %q still exists after its deletion", job.Name)
 			}
-			finished, err := c.stepJobFinished(ctx)
+			existing, finished, err := c.stepJobFinished(ctx)
 			if err != nil {
 				return false, err
 			}
 			if !finished {
+				if err := c.readmitStepJob(ctx, existing, allowance); err != nil {
+					return false, err
+				}
 				logger.Info("following-existing-step-job")
 				return false, nil
 			}
@@ -326,15 +336,21 @@ func (c *Container) createStepJob(ctx context.Context, job *batchv1.Job) (bool, 
 	}
 }
 
-// stepJobFinished reports whether the existing Job of this step's name has
-// run its course, or never started: its pod is terminal, the Job itself is
-// complete or failed, or it is still suspended with no pod, which no web is
-// about to unsuspend.
-func (c *Container) stepJobFinished(ctx context.Context) (bool, error) {
+// stepJobFinished reads the existing Job of this step's name and reports
+// whether it has run its course, or never started (stepJobDone).
+func (c *Container) stepJobFinished(ctx context.Context) (*batchv1.Job, bool, error) {
 	existing, err := c.stepJob(ctx)
 	if err != nil {
-		return false, fmt.Errorf("reading the existing step job: %w", err)
+		return nil, false, fmt.Errorf("reading the existing step job: %w", err)
 	}
+	finished, err := c.stepJobDone(ctx, existing)
+	return existing, finished, err
+}
+
+// stepJobDone reports whether a step Job has run its course, or never started:
+// its pod is terminal, the Job itself is complete or failed, or it is still
+// suspended with no pod, which no web is about to unsuspend.
+func (c *Container) stepJobDone(ctx context.Context, existing *batchv1.Job) (bool, error) {
 	pod, err := findPodOfJob(ctx, c.clientset, c.config.Namespace, c.podName, existing.UID)
 	if err == nil {
 		_, done := podExitCode(pod)
@@ -596,14 +612,20 @@ func (c *Container) runAsJob(ctx context.Context, spec runtime.ProcessSpec, pio 
 	if hasEnvelope && c.envelopes == nil {
 		return nil, errors.New("job step runtime: no step envelope store; this worker cannot run a command that reads stdin")
 	}
-	job, err := c.buildStepJob(spec, hasEnvelope)
+	job, allowance, err := c.buildStepJob(spec, hasEnvelope)
 	if err != nil {
+		// A step whose own composition is refused may come back to a Job made
+		// before the web enforced the privilege gate; that Job is not left
+		// running what the step itself could not be admitted to run.
+		if retireErr := c.retireUnadmittedStepJob(ctx, allowance); retireErr != nil {
+			return nil, retireErr
+		}
 		return nil, err
 	}
 	if hasEnvelope {
 		c.envelopes.Register(c.podName, StepEnvelope{Stdin: stdin})
 	}
-	created, err := c.createStepJob(ctx, job)
+	created, err := c.createStepJob(ctx, job, allowance)
 	if err != nil {
 		if hasEnvelope {
 			c.envelopes.Forget(c.podName)
