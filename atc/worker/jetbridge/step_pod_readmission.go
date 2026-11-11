@@ -1,13 +1,21 @@
 package jetbridge
 
-// Re-admission: the step pod admission of a step pod or step Job that already
-// exists when a step comes back to it. Under the exec step runtime that is a
-// live pause pod reused (a repeated check on its container, a step a restarted
-// web reattaches to); under the job step runtime, a running step Job resumed.
-// Such a pod was admitted when it was made, under whatever privilege mode and
-// step pod grants the web had then; it passes admitStepPod again, under the
-// allowance its step resolves to now -- the same identity resolution, the same
-// function, no second rule set -- before the step is handed it.
+// Re-admission: the privilege gate applied again to a step pod or step Job
+// that already exists when a step comes back to it. Under the exec step
+// runtime that is a live pause pod reused (a repeated check on its container,
+// a step a restarted web reattaches to); under the job step runtime, a running
+// step Job resumed. Such a pod was admitted when it was made, under whatever
+// privilege mode and step pod grants the web had then; before the step is
+// handed it, it passes the privilege mode's rule again
+// (privilegeAllowance.admitPrivileged, the rule creation applies), under the
+// allowance its step resolves to now through the same identity resolution.
+//
+// Re-admission judges privilege only. The capability, host-namespace and
+// host-path rules of admitStepPod judged the pod the web composed, at
+// creation; the object the API server holds may carry what a mutating webhook
+// added (an istio-init or linkerd-init container adding NET_ADMIN, a host path
+// of its own), and the web's host paths may have moved across a restart.
+// Neither is a reason to delete a pod that is already running a step.
 //
 // A refused pod is never handed back, and no fresh pod replaces it: the
 // command may already have begun in it, and a fresh pod would run it a second
@@ -17,7 +25,8 @@ package jetbridge
 //
 // Under the any privilege mode nothing is re-admitted: what comes back is
 // handed back as it was before the privilege gate, and nothing more is looked
-// up.
+// up. A finished step's result is read back with no admission (attachJob,
+// recoverExecProcess): nothing runs.
 
 import (
 	"context"
@@ -31,10 +40,7 @@ import (
 
 // readmitPod re-admits a live pause pod the exec runtime is about to reuse.
 func (c *Container) readmitPod(ctx context.Context, pod *corev1.Pod, allowance privilegeAllowance) error {
-	if !allowance.enforced {
-		return nil
-	}
-	refusal := admitStepPod(pod, c.stepPodRoots(), allowance)
+	refusal := c.readmissionRefusal(pod, allowance)
 	if refusal == nil {
 		return nil
 	}
@@ -47,7 +53,7 @@ func (c *Container) readmitPod(ctx context.Context, pod *corev1.Pod, allowance p
 	}
 	err := deleteStepPod(ctx, c.clientset, c.config.Namespace, pod.ObjectMeta, opts)
 	if err != nil && !apierrors.IsNotFound(err) && !(pod.UID != "" && apierrors.IsConflict(err)) {
-		return fmt.Errorf("step pod %q is not admitted now, and deleting it failed (%v): %w", pod.Name, err, refusal)
+		return fmt.Errorf("step pod %q holds privilege this web no longer admits, and deleting it failed (%v): %w", pod.Name, err, refusal)
 	}
 	return deletedRefusal("pod", pod.Name, refusal)
 }
@@ -55,15 +61,12 @@ func (c *Container) readmitPod(ctx context.Context, pod *corev1.Pod, allowance p
 // readmitStepJob re-admits a running step Job the job runtime is about to
 // follow: its pod template is what its pod runs.
 func (c *Container) readmitStepJob(ctx context.Context, job *batchv1.Job, allowance privilegeAllowance) error {
-	if !allowance.enforced {
-		return nil
-	}
 	template := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: job.Name, Namespace: job.Namespace,
 			Labels: job.Spec.Template.Labels, Annotations: job.Spec.Template.Annotations},
 		Spec: job.Spec.Template.Spec,
 	}
-	refusal := admitStepPod(template, c.stepPodRoots(), allowance)
+	refusal := c.readmissionRefusal(template, allowance)
 	if refusal == nil {
 		return nil
 	}
@@ -71,7 +74,7 @@ func (c *Container) readmitStepJob(ctx context.Context, job *batchv1.Job, allowa
 		return exactRefusal("job", job.Name, refusal)
 	}
 	if err := deleteStepJob(ctx, c.clientset, c.config.Namespace, job.Name, job.UID); err != nil {
-		return fmt.Errorf("step job %q is not admitted now, and deleting it failed (%v): %w", job.Name, err, refusal)
+		return fmt.Errorf("step job %q holds privilege this web no longer admits, and deleting it failed (%v): %w", job.Name, err, refusal)
 	}
 	c.mu.Lock()
 	c.jobUID, c.jobPodName = "", ""
@@ -79,10 +82,28 @@ func (c *Container) readmitStepJob(ctx context.Context, job *batchv1.Job, allowa
 	return deletedRefusal("job", job.Name, refusal)
 }
 
+// readmissionRefusal is the privilege mode's rule on an existing pod, or nil.
+// A pod that holds privilege its step no longer asks for is told so: the
+// allowance's own reason (a check's owner unresolved, "drop privileged:") is
+// written for a step that asks.
+func (c *Container) readmissionRefusal(pod *corev1.Pod, allowance privilegeAllowance) error {
+	if !allowance.enforced {
+		return nil
+	}
+	refusal := allowance.admitPrivileged(pod)
+	if refusal == nil || c.containerSpec.ImageSpec.Privileged {
+		return refusal
+	}
+	return fmt.Errorf("refusing step pod %q: %s, a privilege its step no longer asks for: it was made while the "+
+		"step was privileged, and this web admits privilege only under a step pod grant that declares privileged=true "+
+		"(--kubernetes-step-privilege=granted)", pod.Name, privilegedContainer(pod))
+}
+
 // retireUnadmittedStepJob is re-admission for a step whose own composition
-// was refused: a running Job of its name, made before, is re-admitted under
-// the same allowance and deleted if refused. A finished Job is left; nothing
-// would follow it.
+// failed: a running Job of its name, made before, is re-admitted under the
+// same allowance and deleted if the privilege rule refuses it. A Job the rule
+// admits is left, and the step fails with its composition's error. A finished
+// Job is left; nothing would follow it.
 func (c *Container) retireUnadmittedStepJob(ctx context.Context, allowance privilegeAllowance) error {
 	if !allowance.enforced {
 		return nil
@@ -116,11 +137,11 @@ func (c *Container) readmissionAllowance() (privilegeAllowance, error) {
 }
 
 func deletedRefusal(kind, name string, refusal error) error {
-	return fmt.Errorf("step %s %q was made before this web's privilege gate admitted what it holds, so it was deleted "+
+	return fmt.Errorf("step %s %q holds privilege this web's privilege gate no longer admits, so it was deleted "+
 		"and the step fails; no fresh one replaces it, as its command may have begun: %w", kind, name, refusal)
 }
 
 func exactRefusal(kind, name string, refusal error) error {
-	return fmt.Errorf("step %s %q is a Run's exact execution that the privilege gate no longer admits; it is not "+
-		"handed back, and, as it may have started, it is neither deleted nor replaced here: %w", kind, name, refusal)
+	return fmt.Errorf("step %s %q is a Run's exact execution holding privilege the privilege gate no longer admits; "+
+		"it is not handed back, and, as it may have started, it is neither deleted nor replaced here: %w", kind, name, refusal)
 }
