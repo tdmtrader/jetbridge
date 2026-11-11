@@ -50,7 +50,7 @@ func TestBuildStepJobShape(t *testing.T) {
 		Dir:      "/tmp/build/task",
 		Sidecars: []atc.SidecarConfig{{Name: "db", Image: "postgres:16"}},
 	})
-	job, err := container.buildStepJob(runtime.ProcessSpec{Path: "sh", Args: []string{"-c", "echo hi"}, TTY: &runtime.TTYSpec{}}, false)
+	job, _, err := container.buildStepJob(runtime.ProcessSpec{Path: "sh", Args: []string{"-c", "echo hi"}, TTY: &runtime.TTYSpec{}}, false)
 	if err != nil {
 		t.Fatalf("buildStepJob: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestBuildStepJobKeepsDollarSignsLiteral(t *testing.T) {
 		Dir: "/tmp/build/task",
 		Env: []string{"FROM_CONTAINER=a$$b$(HOME)"},
 	})
-	job, err := container.buildStepJob(runtime.ProcessSpec{
+	job, _, err := container.buildStepJob(runtime.ProcessSpec{
 		Path: "sh",
 		Args: []string{"-exc", `POD="builder-$$"; echo "$(hostname)" $(HOME) $$$`},
 		Env:  []string{"FROM_PROCESS=$(PATH)$"},
@@ -141,7 +141,7 @@ func TestBuildStepJobKeepsDollarSignsLiteral(t *testing.T) {
 
 func TestBuildStepJobForAResourceCommandCarriesTokenAndAnswer(t *testing.T) {
 	container := jobRuntimeContainer(t, fake.NewSimpleClientset(), db.ContainerTypeCheck, runtime.ContainerSpec{})
-	job, err := container.buildStepJob(runtime.ProcessSpec{Path: "/opt/resource/check"}, true)
+	job, _, err := container.buildStepJob(runtime.ProcessSpec{Path: "/opt/resource/check"}, true)
 	if err != nil {
 		t.Fatalf("buildStepJob: %v", err)
 	}
