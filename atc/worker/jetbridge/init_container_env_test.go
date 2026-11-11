@@ -156,7 +156,7 @@ func TestEveryInitContainerDefinesEveryVariableItsScriptExpands(t *testing.T) {
 						t.Fatalf("%s: composing the exec runtime's pod: %v", shape, err)
 					}
 					pods = append(pods, execPod)
-					job, err := initEnvContainer(t, plane, reused, capture, containerType).
+					job, _, err := initEnvContainer(t, plane, reused, capture, containerType).
 						buildStepJob(runtime.ProcessSpec{Path: "/bin/sh"}, true)
 					if err != nil {
 						t.Fatalf("%s: composing the job runtime's pod: %v", shape, err)

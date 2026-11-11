@@ -278,6 +278,14 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 					"and its build now resolves to %s", c.podName, podAccount(existingPod.Spec.ServiceAccountName),
 					tokenState(existingPod.Spec.AutomountServiceAccountToken), identity.describe())
 			}
+			// And it may hold privilege the web no longer admits: made under
+			// any, or under a grant since removed. It passes the step pod
+			// admission again under the identity just resolved.
+			if !c.lookedUp {
+				if err := c.readmitPod(ctx, existingPod, c.privilegeAllowanceFor(identity)); err != nil {
+					return nil, err
+				}
+			}
 		}
 
 		if getErr == nil && (existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed) {
