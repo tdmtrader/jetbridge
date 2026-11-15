@@ -403,7 +403,7 @@ func (p *jobProcess) readAnswer(ctx context.Context, nodeName string) error {
 	if !ok || backend == nil {
 		return errors.New("job step runtime: a resource command's answer needs the artifact daemon")
 	}
-	host, err := backend.nodeIPResolver.Resolve(ctx, nodeName)
+	host, err := daemonAddress(ctx, nodeName, backend.daemonClient, backend.nodeIPResolver)
 	if err != nil {
 		return fmt.Errorf("resolving the node that holds the step's answer: %w", err)
 	}

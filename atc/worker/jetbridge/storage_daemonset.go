@@ -458,7 +458,7 @@ func (b *DaemonSetBackend) CaptureClass(ctx context.Context, handle, nodeName st
 	if b.nodeIPResolver == nil || nodeName == "" {
 		return "", fmt.Errorf("no node to ask about %s", handle)
 	}
-	nodeIP, err := b.nodeIPResolver.Resolve(ctx, nodeName)
+	nodeIP, err := daemonAddress(ctx, nodeName, b.daemonClient, b.nodeIPResolver)
 	if err != nil {
 		return "", fmt.Errorf("resolving node %s: %w", nodeName, err)
 	}
@@ -684,7 +684,7 @@ func (b *DaemonSetBackend) triggerMirror(nodeName, daemonKey string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	nodeIP, err := b.nodeIPResolver.Resolve(ctx, nodeName)
+	nodeIP, err := daemonAddress(ctx, nodeName, b.daemonClient, b.nodeIPResolver)
 	if err != nil {
 		// Already logged by Resolve.
 		return
@@ -719,7 +719,7 @@ func (b *DaemonSetBackend) registerAlias(nodeName, volumeKey, diskPath string, r
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	nodeIP, err := b.nodeIPResolver.Resolve(ctx, nodeName)
+	nodeIP, err := daemonAddress(ctx, nodeName, b.daemonClient, b.nodeIPResolver)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: resolve node IP for %s: %v\n", nodeName, err)
 		return
