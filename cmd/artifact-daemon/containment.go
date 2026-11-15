@@ -918,9 +918,9 @@ func plusRX(mode os.FileMode, isDir bool) os.FileMode {
 // deliberately — a half-built tree must not be readable — and rename PRESERVES
 // the mode, so promoting one without widening it hands the consumer a
 // root-owned 0700 directory. On the resolve path that directory is the task
-// container's mount point, and images pick their own USER (the pod security
-// context sets no runAsUser), so the step fails with EACCES on its own input
-// before reading a byte. The entries INSIDE were always widened by plusRX or
+// container's mount point, and the step runs as its image's USER or as its
+// run.user, so the step fails with EACCES on its own input before reading a
+// byte. The entries INSIDE were always widened by plusRX or
 // sanitizeMode; the container just could not reach them.
 //
 // The existing mode is widened rather than replaced, so a caller that

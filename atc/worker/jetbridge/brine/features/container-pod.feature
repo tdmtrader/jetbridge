@@ -179,6 +179,19 @@ Feature: What a step's pod actually looks like
     When the container runs
     Then the step uses the "privileged" security policy
 
+  Scenario Outline: A task's user is the uid its command runs as — <user>
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "user-handle" from image "docker:///busybox"
+    And its command runs as user "<user>"
+    When the container runs
+    Then the step's command runs as uid "<uid>"
+    And the step uses the "unprivileged" security policy
+
+    Examples:
+      | user | uid  |
+      | root | 0    |
+      | 1000 | 1000 |
+
   # PE-03
   @PE-03
   Scenario: A step's pod is never restarted behind the scheduler's back

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/brine-dev/brine-go/pkg/brine"
@@ -119,6 +120,12 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 		Refine[ContainerDraft]("it runs privileged",
 			func(in ContainerDraft, _ Args) ContainerDraft {
 				in.Privileged = true
+				return in
+			}),
+
+		Refine[ContainerDraft]("its command runs as user {string}",
+			func(in ContainerDraft, a Args) ContainerDraft {
+				in.ProcessUser = a.String(0)
 				return in
 			}),
 
@@ -237,6 +244,22 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 				}
 				if len(main.Resources.Limits) != 0 {
 					return fmt.Errorf("expected no resource limits, got %v", main.Resources.Limits)
+				}
+				return nil
+			}),
+
+		brine.DefineCheck[PodCreated]("the step's command runs as uid {string}",
+			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
+				want, _ := p.GetString(0)
+				main, err := mainContainer(in.Pod)
+				if err != nil {
+					return err
+				}
+				if main.SecurityContext == nil || main.SecurityContext.RunAsUser == nil {
+					return fmt.Errorf("expected the main container to run as uid %s, got no runAsUser", want)
+				}
+				if got := strconv.FormatInt(*main.SecurityContext.RunAsUser, 10); got != want {
+					return fmt.Errorf("expected the main container to run as uid %s, got %s", want, got)
 				}
 				return nil
 			}),

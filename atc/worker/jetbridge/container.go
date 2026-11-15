@@ -578,6 +578,12 @@ func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string
 	volumes, volumeMounts := c.buildVolumeMounts()
 	resources := buildResourceRequirements(c.containerSpec.Limits)
 	privileged := c.containerSpec.ImageSpec.Privileged
+	uid, err := runAsUser(processSpec.User)
+	if err != nil {
+		return nil, privilegeAllowance{}, err
+	}
+	securityContext := buildContainerSecurityContext(privileged)
+	securityContext.RunAsUser = uid
 
 	// Add the artifact storage volume, when a backend is configured.
 	if artifactVol := c.buildArtifactStoreVolume(); artifactVol != nil {
@@ -640,7 +646,7 @@ func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string
 			Env:             env,
 			VolumeMounts:    volumeMounts,
 			Resources:       resources,
-			SecurityContext: buildContainerSecurityContext(privileged),
+			SecurityContext: securityContext,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 		},
 	}
@@ -1156,6 +1162,24 @@ func buildContainerSecurityContext(privileged bool) *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		AllowPrivilegeEscalation: &allowEscalation,
 	}
+}
+
+// runAsUser is the uid a task's run.user names. A pod can only be given a
+// number, so root is 0, a decimal uid is itself, and any other name is refused
+// rather than silently running as the image's own USER. No user leaves the
+// image's USER in place.
+func runAsUser(user string) (*int64, error) {
+	if user == "" {
+		return nil, nil
+	}
+	if user == "root" {
+		user = "0"
+	}
+	uid, err := strconv.ParseInt(user, 10, 32)
+	if err != nil || uid < 0 {
+		return nil, fmt.Errorf("unsupported task user %q: a step pod runs as root or a decimal uid", user)
+	}
+	return &uid, nil
 }
 
 // buildImagePullSecrets converts a list of secret names into K8s
