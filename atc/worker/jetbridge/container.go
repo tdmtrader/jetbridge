@@ -636,6 +636,10 @@ func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string
 	}
 	initContainers = append(initContainers, artifactInits...)
 
+	if prepare := c.buildRunUserInitContainer(uid, volumeMounts); prepare != nil {
+		initContainers = append(initContainers, *prepare)
+	}
+
 	containers := []corev1.Container{
 		{
 			Name:            mainContainerName,
@@ -1180,6 +1184,51 @@ func runAsUser(user string) (*int64, error) {
 		return nil, fmt.Errorf("unsupported task user %q: a step pod runs as root or a decimal uid", user)
 	}
 	return &uid, nil
+}
+
+// runUserInitContainerName is the init that gives a non-root task its own
+// writable directories.
+const runUserInitContainerName = "prepare-run-user"
+
+// buildRunUserInitContainer hands a non-root task its own writable mounts.
+// The kubelet creates a hostPath directory as root and fsGroup does not
+// reach hostPath, so a task running as a uid other than 0 could not write its
+// working directory, its outputs or its caches. This init runs after every
+// other writer, so what was staged into those mounts is the task's too. It
+// mounts only the main container's own writable mounts, never the node's
+// artifact root or another step's directory. It runs as root with the
+// runtime's default capabilities and adds none, as cleanup-stale does (a
+// step pod never adds a Linux capability), and -h changes a link a previous
+// run left in a cache rather than what it points at.
+func (c *Container) buildRunUserInitContainer(runAsUser *int64, mounts []corev1.VolumeMount) *corev1.Container {
+	if runAsUser == nil || *runAsUser == 0 {
+		return nil
+	}
+	var targets []string
+	var initMounts []corev1.VolumeMount
+	for _, mount := range mounts {
+		if mount.ReadOnly {
+			continue
+		}
+		targets = append(targets, shellQuote(mount.MountPath))
+		initMounts = append(initMounts, corev1.VolumeMount{Name: mount.Name, MountPath: mount.MountPath})
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	root := int64(0)
+	allowEscalation := false
+	return &corev1.Container{
+		Name:            runUserInitContainerName,
+		Image:           c.helperImage(),
+		Command:         []string{"sh", "-c", fmt.Sprintf("chown -hR %d %s", *runAsUser, strings.Join(targets, " "))},
+		VolumeMounts:    initMounts,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:                &root,
+			AllowPrivilegeEscalation: &allowEscalation,
+		},
+	}
 }
 
 // buildImagePullSecrets converts a list of secret names into K8s
