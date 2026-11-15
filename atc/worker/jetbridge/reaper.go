@@ -39,6 +39,7 @@ type Reaper struct {
 	executor            PodExecutor
 	artifactLocator     *ArtifactLocator
 	nodeIPResolver      *NodeIPResolver
+	daemonClient        *DaemonClient
 	wire                *artifactwire.Client
 	buildLookup         RunningBuildLookup
 
@@ -70,6 +71,7 @@ func NewReaper(
 		containerRepository: containerRepository,
 		destroyer:           destroyer,
 		nodeIPResolver:      NewNodeIPResolver(clientset),
+		daemonClient:        NewDaemonClientFromConfig(logger.Session("daemon-client"), clientset, cfg),
 	}
 }
 
@@ -346,7 +348,7 @@ func (r *Reaper) deleteStepDir(ctx context.Context, logger lager.Logger, handle,
 		return false
 	}
 
-	nodeIP, err := r.nodeIPResolver.Resolve(ctx, sourceNode)
+	nodeIP, err := daemonAddress(ctx, sourceNode, r.daemonClient, r.nodeIPResolver)
 	if err != nil {
 		logger.Error("failed-to-resolve-node-ip", err, lager.Data{"node": sourceNode, "handle": handle})
 		return false
