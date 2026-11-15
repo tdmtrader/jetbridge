@@ -1164,22 +1164,22 @@ func buildContainerSecurityContext(privileged bool) *corev1.SecurityContext {
 	}
 }
 
-// runAsUser is the uid a task's run.user names. A pod can only be given a
-// number, so root is 0, a decimal uid is itself, and any other name is refused
-// rather than silently running as the image's own USER. No user leaves the
-// image's USER in place.
+// runAsUser is the uid a task's run.user names: root (or 0) is 0, and no user
+// leaves the image's USER in place. Any other user is refused before a pod
+// exists, rather than silently running as the image's own USER or as a uid
+// that cannot write its own step: a step's directories and caches are
+// hostPath directories the kubelet creates as root, and a cache is shared by
+// every build of its job and step whatever user each ran as.
 func runAsUser(user string) (*int64, error) {
-	if user == "" {
+	switch user {
+	case "":
 		return nil, nil
+	case "root", "0":
+		root := int64(0)
+		return &root, nil
 	}
-	if user == "root" {
-		user = "0"
-	}
-	uid, err := strconv.ParseInt(user, 10, 32)
-	if err != nil || uid < 0 {
-		return nil, fmt.Errorf("unsupported task user %q: a step pod runs as root or a decimal uid", user)
-	}
-	return &uid, nil
+	return nil, fmt.Errorf("unsupported task user %q: non-root run.user is not supported on the Kubernetes runtime, "+
+		"because its step directories and caches are root-owned; use root or leave run.user unset", user)
 }
 
 // buildImagePullSecrets converts a list of secret names into K8s

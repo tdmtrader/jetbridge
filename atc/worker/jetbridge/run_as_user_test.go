@@ -29,7 +29,7 @@ func taskPodsFor(t *testing.T, user string) map[string]*corev1.PodSpec {
 }
 
 func TestATaskUserBecomesTheMainContainersUID(t *testing.T) {
-	for user, want := range map[string]int64{"root": 0, "0": 0, "1000": 1000, "2147483647": 2147483647} {
+	for user, want := range map[string]int64{"root": 0, "0": 0} {
 		for runtimeName, pod := range taskPodsFor(t, user) {
 			got := pod.Containers[0].SecurityContext.RunAsUser
 			if got == nil || *got != want {
@@ -49,12 +49,16 @@ func TestATaskWithNoUserKeepsTheImagesUser(t *testing.T) {
 
 func TestATaskUserThatIsNotAUIDIsRefused(t *testing.T) {
 	container := jobRuntimeContainer(t, fake.NewSimpleClientset(), db.ContainerTypeTask, runtime.ContainerSpec{Dir: "/tmp/build/task"})
-	for _, user := range []string{"concourse", "-1", "2147483648", "1000:1000"} {
+	refused := func(err error, user string) bool {
+		return err != nil && strings.Contains(err.Error(), `unsupported task user "`+user+`"`) &&
+			strings.Contains(err.Error(), "non-root run.user is not supported on the Kubernetes runtime")
+	}
+	for _, user := range []string{"1001", "1000", "2147483647", "concourse", "-1", "2147483648", "1000:1000"} {
 		spec := runtime.ProcessSpec{Path: "sh", User: user}
-		if _, err := container.buildPod(spec, []string{"sh"}, nil); err == nil || !strings.Contains(err.Error(), `unsupported task user "`+user+`"`) {
+		if _, err := container.buildPod(spec, []string{"sh"}, nil); !refused(err, user) {
 			t.Errorf("exec runtime, user %q: err = %v", user, err)
 		}
-		if _, err := container.buildStepJob(spec, false); err == nil || !strings.Contains(err.Error(), `unsupported task user "`+user+`"`) {
+		if _, err := container.buildStepJob(spec, false); !refused(err, user) {
 			t.Errorf("job runtime, user %q: err = %v", user, err)
 		}
 	}
@@ -72,12 +76,12 @@ func TestATaskUserLeavesThePrivilegePolicyAlone(t *testing.T) {
 	container := jobRuntimeContainer(t, fake.NewSimpleClientset(), db.ContainerTypeTask, runtime.ContainerSpec{
 		Dir: "/tmp/build/task", ImageSpec: runtime.ImageSpec{Privileged: true},
 	})
-	pod, err := container.buildPod(runtime.ProcessSpec{Path: "sh", User: "1000"}, []string{"sh"}, nil)
+	pod, err := container.buildPod(runtime.ProcessSpec{Path: "sh", User: "root"}, []string{"sh"}, nil)
 	if err != nil {
 		t.Fatalf("buildPod: %v", err)
 	}
 	context := pod.Spec.Containers[0].SecurityContext
-	if context.Privileged == nil || !*context.Privileged || context.RunAsUser == nil || *context.RunAsUser != 1000 {
-		t.Errorf("a privileged task's security context = %+v, want privileged as uid 1000", context)
+	if context.Privileged == nil || !*context.Privileged || context.RunAsUser == nil || *context.RunAsUser != 0 {
+		t.Errorf("a privileged task's security context = %+v, want privileged as uid 0", context)
 	}
 }

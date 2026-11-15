@@ -179,18 +179,15 @@ Feature: What a step's pod actually looks like
     When the container runs
     Then the step uses the "privileged" security policy
 
-  Scenario Outline: A task's user is the uid its command runs as — <user>
+  # Any other run.user is refused before a pod exists: a step's directories
+  # and caches are root-owned, so a non-root uid could not write them.
+  Scenario: A task that runs as root runs as uid 0
     Given a Kubernetes worker "pod-spec-worker" with a database behind it
     And the worker prepares task "user-handle" from image "docker:///busybox"
-    And its command runs as user "<user>"
+    And its command runs as user "root"
     When the container runs
-    Then the step's command runs as uid "<uid>"
+    Then the step's command runs as uid "0"
     And the step uses the "unprivileged" security policy
-
-    Examples:
-      | user | uid  |
-      | root | 0    |
-      | 1000 | 1000 |
 
   # PE-03
   @PE-03
