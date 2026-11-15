@@ -253,6 +253,17 @@ var _ = Describe("TaskStep", func() {
 		var chosenWorker *runtimetest.Worker
 		var chosenContainer *runtimetest.WorkerContainer
 
+		declareOneOutput := func() *runtimetest.Volume {
+			taskPlan.Config.Outputs = []atc.TaskOutputConfig{
+				{Name: "some-output", Path: "some-output-configured-path"},
+			}
+			volume := runtimetest.NewVolume("output")
+			chosenContainer.Mounts = []runtime.VolumeMount{
+				{Volume: volume, MountPath: "some-artifact-root/some-output-configured-path/"},
+			}
+			return volume
+		}
+
 		BeforeEach(func() {
 			taskPlan.Config = &atc.TaskConfig{
 				Platform: "some-platform",
@@ -398,6 +409,7 @@ var _ = Describe("TaskStep", func() {
 		Context("when a timeout is configured", func() {
 			BeforeEach(func() {
 				taskPlan.Timeout = "1ms"
+				declareOneOutput()
 
 				chosenContainer.ProcessDefs[0].Stub.Do = func(ctx context.Context, _ *runtimetest.Process) error {
 					select {
@@ -416,6 +428,10 @@ var _ = Describe("TaskStep", func() {
 
 			It("emits an Errored event", func() {
 				Expect(execBuildErrorMessages(fixture, dbBuild)).To(Equal([]string{exec.TimeoutLogMessage}))
+			})
+
+			It("doesn't register a artifact", func() {
+				Expect(repo.AsMap()).To(BeEmpty())
 			})
 
 			Context("when the timeout is bogus", func() {
@@ -1395,8 +1411,17 @@ var _ = Describe("TaskStep", func() {
 		})
 
 		Context("when running the task exits with a non-zero status", func() {
+			var outputVolume *runtimetest.Volume
+
 			BeforeEach(func() {
 				chosenContainer.ProcessDefs[0].Stub.ExitStatus = 1
+				outputVolume = declareOneOutput()
+			})
+
+			It("registers the outputs in the build repo", func() {
+				Expect(repo.AsMap()).To(Equal(map[build.ArtifactName]build.ArtifactEntry{
+					"some-output": {Artifact: outputVolume, FromCache: false},
+				}))
 			})
 
 			It("doesn't error", func() {
@@ -1416,7 +1441,12 @@ var _ = Describe("TaskStep", func() {
 
 		Context("when running the task fails", func() {
 			BeforeEach(func() {
+				declareOneOutput()
 				chosenContainer.ProcessDefs[0].Stub.Err = "failed to run the task"
+			})
+
+			It("doesn't register a artifact", func() {
+				Expect(repo.AsMap()).To(BeEmpty())
 			})
 
 			It("returns the error", func() {
@@ -1430,6 +1460,7 @@ var _ = Describe("TaskStep", func() {
 
 		Context("when the task step is interrupted", func() {
 			BeforeEach(func() {
+				declareOneOutput()
 				cancel()
 				chosenContainer.ProcessDefs[0].Stub.Do = func(ctx context.Context, _ *runtimetest.Process) error {
 					select {

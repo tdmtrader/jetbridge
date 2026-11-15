@@ -440,8 +440,9 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	result, runErr := process.Wait(ctx)
 
 	// A Run producer's outputs reach later steps only as its published
-	// result, through an in-Run result input; none is a build artifact.
-	if step.plan.RunResult == nil {
+	// result, through an in-Run result input; none is a build artifact. And
+	// only a run that completed, at any exit status, wrote any outputs.
+	if step.plan.RunResult == nil && runErr == nil {
 		step.registerOutputs(logger, repository, worker, config, volumeMounts, step.containerMetadata)
 	}
 
