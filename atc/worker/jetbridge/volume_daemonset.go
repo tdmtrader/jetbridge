@@ -196,7 +196,7 @@ func filterTarEntry(src io.Reader, dst io.Writer, targetPath string) error {
 	return tw.Close()
 }
 
-// SetDaemonClient configures daemon discovery for StreamIn operations.
+// SetDaemonClient configures node-address discovery and peer fallback.
 func (v *DaemonSetVolume) SetDaemonClient(client *DaemonClient) {
 	v.daemonClient = client
 }
@@ -371,7 +371,7 @@ func (v *DaemonSetVolume) daemonHost(ctx context.Context) (string, error) {
 		return "", errors.New("no node IP resolver configured")
 	}
 
-	nodeIP, err := v.nodeIPResolver.Resolve(ctx, v.sourceNode)
+	nodeIP, err := daemonAddress(ctx, v.sourceNode, v.daemonClient, v.nodeIPResolver)
 	if err != nil {
 		return "", fmt.Errorf("resolve node IP for %s: %w", v.sourceNode, err)
 	}
