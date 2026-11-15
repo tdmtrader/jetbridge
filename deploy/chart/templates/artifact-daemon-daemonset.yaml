@@ -62,6 +62,9 @@ spec:
     spec:
       serviceAccountName: {{ include "concourse.fullname" . }}-artifact-daemon
       subdomain: {{ include "concourse.artifactDaemonServiceName" . }}
+      {{- with include "concourse.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
       # Longer with the output plane mounted. On SIGTERM the daemon takes its
       # labels off, then gives in-flight requests -- a publish or a seal among
       # them -- until --shutdown-timeout (five seconds under this) to finish,

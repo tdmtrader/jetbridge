@@ -63,6 +63,9 @@ spec:
         app.kubernetes.io/component: hangar-store
     spec:
       automountServiceAccountToken: false
+      {{- with include "concourse.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
         fsGroup: 65534
       containers:
@@ -133,6 +136,9 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
+      {{- with include "concourse.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
         fsGroup: 65534
       containers:

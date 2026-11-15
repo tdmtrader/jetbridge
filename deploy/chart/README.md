@@ -183,7 +183,7 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `image.repository` | `""` | **Required.** Image repository, e.g. `concourse-local` for a locally loaded image. |
 | `image.tag` | `""` (appVersion) | Image tag. |
 | `image.pullPolicy` | `IfNotPresent` | Pull policy. Use `Never` for local images on k3s/kind. |
-| `image.pullSecrets` | `[]` | Image pull secrets for the web pod. |
+| `image.pullSecrets` | `[]` | Image pull secrets for every pod that runs the chart's image: web, the artifact daemon, the Hangar disk store and its initialization Job, and the Hangar bootstrap Job. |
 
 ### Web
 
