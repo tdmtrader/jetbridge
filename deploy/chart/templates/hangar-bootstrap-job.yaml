@@ -150,6 +150,9 @@ spec:
         app.kubernetes.io/component: hangar-bootstrap
     spec:
       serviceAccountName: {{ $name }}
+      {{- with include "concourse.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
       restartPolicy: Never
       securityContext:
         runAsNonRoot: true
