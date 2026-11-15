@@ -32,11 +32,8 @@ spec:
         {{- include "concourse.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "concourse.serviceAccountName" . }}
-      {{- with .Values.image.pullSecrets }}
-      imagePullSecrets:
-        {{- range . }}
-        - name: {{ . }}
-        {{- end }}
+      {{- with include "concourse.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
       {{- end }}
       {{- with .Values.web.podSecurityContext }}
       securityContext:

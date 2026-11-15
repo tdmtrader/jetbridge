@@ -77,6 +77,18 @@ Container image reference.
 {{- end }}
 
 {{/*
+Pull secrets for a pod that runs the chart's image.
+*/}}
+{{- define "concourse.imagePullSecrets" -}}
+{{- with .Values.image.pullSecrets -}}
+imagePullSecrets:
+  {{- range . }}
+  - name: {{ . }}
+  {{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 Kubernetes namespace for task pods. Defaults to release namespace.
 */}}
 {{- define "concourse.kubernetesNamespace" -}}
