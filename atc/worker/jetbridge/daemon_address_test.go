@@ -242,7 +242,7 @@ func TestWebDaemonAddress_StalledDiscoveryStillRegistersOnNode(t *testing.T) {
 	}
 	discovery := f.stallDiscovery(t)
 
-	f.backend.registerAlias(addressNode, "output-volume", "steps/step/result", true)
+	f.backend.registerAlias(context.Background(), addressNode, "output-volume", "steps/step/result", true)
 
 	if discovery.lists > 1 {
 		t.Fatalf("stalled EndpointSlice LIST calls=%d, want at most 1", discovery.lists)
