@@ -138,6 +138,7 @@ var _ = Describe("TaskStep", func() {
 
 		taskStep        exec.Step
 		taskStepOptions []exec.TaskStepOption
+		wrapTask        func(exec.Step) exec.Step
 		stepOk          bool
 		stepErr         error
 
@@ -196,6 +197,7 @@ var _ = Describe("TaskStep", func() {
 		})
 
 		taskStepOptions = nil
+		wrapTask = func(step exec.Step) exec.Step { return step }
 
 		imageStepper = new(imageFetchStepper)
 		stepper = noopStepper
@@ -240,7 +242,7 @@ var _ = Describe("TaskStep", func() {
 			taskStepOptions...,
 		)
 
-		stepOk, stepErr = taskStep.Run(ctx, state)
+		stepOk, stepErr = wrapTask(taskStep).Run(ctx, state)
 	})
 
 	expectWorkerSpecTeamIDSet := func() {
@@ -430,9 +432,43 @@ var _ = Describe("TaskStep", func() {
 				Expect(execBuildErrorMessages(fixture, dbBuild)).To(Equal([]string{exec.TimeoutLogMessage}))
 			})
 
-			It("doesn't register a artifact", func() {
-				Expect(repo.AsMap()).To(BeEmpty())
+			It("registers the partial output in the build repo", func() {
+				Expect(repo.AsMap()).To(HaveKey(build.ArtifactName("some-output")))
 			})
+
+			for _, hook := range []struct {
+				name string
+				wrap func(exec.Step, exec.Step) exec.Step
+			}{
+				{"ensure", func(step, hook exec.Step) exec.Step { return exec.Ensure(step, hook) }},
+				{"on_failure", func(step, hook exec.Step) exec.Step { return exec.OnFailure(step, hook) }},
+			} {
+				Context("with an "+hook.name+" hook", func() {
+					var hookCalls int
+					BeforeEach(func() {
+						hookCalls = 0
+						output := declareOneOutput().WithContent(runtimetest.VolumeContent{
+							"partial.log": {Data: []byte("before timeout")},
+						})
+						wrapTask = func(step exec.Step) exec.Step {
+							return hook.wrap(step, &scriptedStep{RunStub: func(hookCtx context.Context, hookState exec.RunState) (bool, error) {
+								hookCalls++
+								Expect(hookCtx.Err()).NotTo(HaveOccurred())
+								Expect(hookState.ArtifactRepository()).To(BeIdenticalTo(repo))
+								artifact, _, found := hookState.ArtifactRepository().ArtifactFor("some-output")
+								Expect(found).To(BeTrue(), "the timeout hook must see the partial output")
+								Expect(artifact).To(BeIdenticalTo(output))
+								return true, nil
+							}})
+						}
+					})
+					It("reads the timed-out task's artifact from the same repository", func() {
+						Expect(hookCalls).To(Equal(1))
+						Expect(stepOk).To(BeFalse())
+						Expect(stepErr).NotTo(HaveOccurred())
+					})
+				})
+			}
 
 			Context("when the timeout is bogus", func() {
 				BeforeEach(func() {
@@ -1445,8 +1481,8 @@ var _ = Describe("TaskStep", func() {
 				chosenContainer.ProcessDefs[0].Stub.Err = "failed to run the task"
 			})
 
-			It("doesn't register a artifact", func() {
-				Expect(repo.AsMap()).To(BeEmpty())
+			It("registers the partial output in the build repo", func() {
+				Expect(repo.AsMap()).To(HaveKey(build.ArtifactName("some-output")))
 			})
 
 			It("returns the error", func() {
@@ -1481,8 +1517,8 @@ var _ = Describe("TaskStep", func() {
 				Expect(stepOk).To(BeFalse())
 			})
 
-			It("doesn't register a artifact", func() {
-				Expect(repo.AsMap()).To(BeEmpty())
+			It("registers the partial output in the build repo", func() {
+				Expect(repo.AsMap()).To(HaveKey(build.ArtifactName("some-output")))
 			})
 		})
 
