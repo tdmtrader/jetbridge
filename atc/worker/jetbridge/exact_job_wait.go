@@ -255,7 +255,9 @@ func (p *jobProcess) completeExact(ctx context.Context, podName string) (runtime
 		return runtime.ProcessResult{}, err
 	}
 	if p.storageBackend != nil && p.container != nil {
-		p.storageBackend.RecordOutputs(ctx, p.container.handle, nodeName, p.container.volumes, p.container.containerSpec)
+		recordCtx, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), outputRecordBudget)
+		defer cancelRecord()
+		p.storageBackend.RecordOutputs(recordCtx, p.container.handle, nodeName, p.container.volumes, p.container.containerSpec)
 	}
 	p.container.SetProperty(exitStatusPropertyName, strconv.Itoa(exit))
 	return runtime.ProcessResult{ExitStatus: exit}, nil
