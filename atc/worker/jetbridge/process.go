@@ -816,10 +816,10 @@ func (p *execProcess) supervised() bool {
 		p.processIO.Stdin == nil
 }
 
-// abandonedOutputRecordBudget bounds the attempt to file partial outputs after
-// the step context has ended. Storage failures are best-effort and logged by
-// the backend; they must never replace the step's timeout or abort.
-const abandonedOutputRecordBudget = 10 * time.Second
+// outputRecordBudget bounds output recording independently of the step's
+// deadline: cancellation before or during recording must not drop later
+// aliases. Storage failures remain best-effort and are logged by the backend.
+const outputRecordBudget = 10 * time.Second
 
 // Wait waits for the pause Pod to reach Running state, streams input
 // artifacts into the pod, then exec-s the actual command with ProcessIO
@@ -867,7 +867,7 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 			p.deleteAbandonedPod(logger)
 		}
 		if recordAbandonedOutputs && p.runningNodeName != "" && p.container != nil && !p.container.lookedUp && p.storageBackend != nil {
-			recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abandonedOutputRecordBudget)
+			recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), outputRecordBudget)
 			defer cancel()
 			// Resource commands have already joined their stop defer; a
 			// supervised task has had its pause Pod deleted above. Pod deletion
@@ -1484,13 +1484,10 @@ func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
 		return nil
 	}
 
-	// The transport may have delivered the command's real exit at the same
-	// instant as cancellation. That exit still owns its outputs.
-	if ctx.Err() != nil {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), abandonedOutputRecordBudget)
-		defer cancel()
-	}
+	// A completed command owns its outputs even if cancellation arrives
+	// between alias registrations rather than before recording starts.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), outputRecordBudget)
+	defer cancel()
 	nodeName := p.fetchPodNodeName(ctx)
 	logger := lagerctx.FromContext(ctx).Session("record-output-locations", lager.Data{
 		"handle":  p.container.handle,

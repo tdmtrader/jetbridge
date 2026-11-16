@@ -116,12 +116,13 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		if finished {
 			return
 		}
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abandonedOutputRecordBudget)
-		defer cancel()
 		if ctx.Err() != nil && pod != nil && p.storageBackend != nil {
 			// The first observation may have been Pending. Ask once more
 			// before deleting the Job to learn whether main actually started.
-			latest, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(cleanupCtx, pod.Name, metav1.GetOptions{})
+			// Observation must not consume the budget that stops the command.
+			observeCtx, cancelObserve := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			latest, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(observeCtx, pod.Name, metav1.GetOptions{})
+			cancelObserve()
 			if err != nil {
 				logger.Error("failed-to-read-abandoned-step-pod", err)
 			} else if latest.UID == pod.UID {
@@ -131,9 +132,11 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		// This step's Job, by the UID it had when this process was made: a
 		// Job of the same name made since by another invocation is not this
 		// step's to delete.
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		if err := deleteStepJob(cleanupCtx, p.clientset, p.config.Namespace, p.jobName, p.jobUID); err != nil {
 			logger.Error("failed-to-delete-unfinished-step-job", err)
 		}
+		cancelCleanup()
 		if ctx.Err() != nil && pod != nil && pod.Spec.NodeName != "" && mainStarted(pod) && p.storageBackend != nil {
 			// Deleting the Job stops its writer without letting the controller
 			// replace it. Garbage collection may still be ending the Pod;
@@ -141,7 +144,9 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 			// execProcess.Wait: no snapshot is taken and the directory survives
 			// the Pod, including any final writes during termination.
 			// The backend logs recording failures, never replacing ctx.Err().
-			p.storageBackend.RecordOutputs(cleanupCtx, p.container.handle, pod.Spec.NodeName, p.container.volumes, p.container.containerSpec)
+			recordCtx, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), outputRecordBudget)
+			defer cancelRecord()
+			p.storageBackend.RecordOutputs(recordCtx, p.container.handle, pod.Spec.NodeName, p.container.volumes, p.container.containerSpec)
 		}
 	}()
 
@@ -211,13 +216,9 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	}
 
 	if p.storageBackend != nil && p.container != nil {
-		// A terminal pod observation can race the step's cancellation too.
-		recordCtx := ctx
-		if ctx.Err() != nil {
-			var cancel context.CancelFunc
-			recordCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), abandonedOutputRecordBudget)
-			defer cancel()
-		}
+		// Cancellation can arrive before or during terminal output recording.
+		recordCtx, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), outputRecordBudget)
+		defer cancelRecord()
 		lagerctx.FromContext(ctx).Session("record-output-locations", lager.Data{
 			"handle": p.container.handle, "pod": podName, "node": state.nodeName,
 		}).Info("recording-daemonset-artifacts")

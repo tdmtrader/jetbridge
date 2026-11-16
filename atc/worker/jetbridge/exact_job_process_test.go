@@ -673,6 +673,39 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		Expect(err).ToNot(HaveOccurred(), "the Job of a started execution with no outcome was deleted")
 	})
 
+	for _, cancellation := range []string{"first alias", "outcome acknowledgement"} {
+		It("preserves both aliases when cancellation arrives during exact Job "+cancellation, func() {
+			waitCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			backend, transport := cancellingAliasBackend(clientset, cancel)
+			volumes, spec := twoOutputVolumes()
+			if cancellation == "outcome acknowledgement" {
+				witness := container.recordWitness
+				container.recordWitness = func(witnessCtx context.Context, ack executioncontrol.Acknowledgement) error {
+					err := witness(witnessCtx, ack)
+					if ack.Kind == executioncontrol.AcknowledgementFinish {
+						cancel()
+					}
+					return err
+				}
+			}
+			process, done := startWith(waitCtx)
+			// Keep the admitted pod fixture; attach the output recorder before
+			// the launcher can start or report its terminal status.
+			process.storageBackend = backend
+			container.volumes = volumes
+			container.containerSpec.Outputs = spec.Outputs
+			Expect(fetch("tok-main")).To(Equal(http.StatusOK))
+			terminate(3, launcherRecord(3))
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).NotTo(HaveOccurred())
+			Expect(finished.result.ExitStatus).To(Equal(3))
+			Expect(waitCtx.Err()).To(MatchError(context.Canceled))
+			Expect(transport.aliases).To(Equal([]string{"report-volume", "result-volume"}))
+		})
+	}
+
 	It("closes the execution from main's terminated status, with ledger and Run rows shaped as the exec runtime's", func() {
 		done := start()
 		Expect(fetch("tok-main")).To(Equal(http.StatusOK))
