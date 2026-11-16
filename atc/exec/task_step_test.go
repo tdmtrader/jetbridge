@@ -447,9 +447,10 @@ var _ = Describe("TaskStep", func() {
 					var hookCalls int
 					BeforeEach(func() {
 						hookCalls = 0
-						output := declareOneOutput().WithContent(runtimetest.VolumeContent{
+						output := declareOneOutput()
+						output.Content = runtimetest.VolumeContent{
 							"partial.log": {Data: []byte("before timeout")},
-						})
+						}
 						wrapTask = func(step exec.Step) exec.Step {
 							return hook.wrap(step, &scriptedStep{RunStub: func(hookCtx context.Context, hookState exec.RunState) (bool, error) {
 								hookCalls++
@@ -458,6 +459,7 @@ var _ = Describe("TaskStep", func() {
 								artifact, _, found := hookState.ArtifactRepository().ArtifactFor("some-output")
 								Expect(found).To(BeTrue(), "the timeout hook must see the partial output")
 								Expect(artifact).To(BeIdenticalTo(output))
+								Expect(artifact.(*runtimetest.Volume).Content["partial.log"].Data).To(Equal([]byte("before timeout")))
 								return true, nil
 							}})
 						}

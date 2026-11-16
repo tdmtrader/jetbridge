@@ -655,12 +655,12 @@ func (b *DaemonSetBackend) RecordOutputs(ctx context.Context, handle, nodeName s
 
 		if nodeName != "" {
 			diskPath := filepath.Join(b.config.ArtifactDaemonHostPath, "steps", daemonKey)
-			b.registerAlias(nodeName, key, diskPath, readOnly)
+			b.registerAlias(ctx, nodeName, key, diskPath, readOnly)
 			// Trigger an outbound mirror on the producer's daemon so the
 			// step output survives loss of this node. Best-effort: if the
 			// trigger fails, the build still succeeds — node loss just
 			// reverts to today's behavior (rerun required).
-			b.triggerMirror(nodeName, daemonKey)
+			b.triggerMirror(ctx, nodeName, daemonKey)
 		}
 
 		recorded++
@@ -676,12 +676,12 @@ func (b *DaemonSetBackend) RecordOutputs(ctx context.Context, handle, nodeName s
 // All errors are swallowed — the build's outputs are already persisted on
 // the producer; absence of mirror is not a step failure, just lost
 // resilience.
-func (b *DaemonSetBackend) triggerMirror(nodeName, daemonKey string) {
+func (b *DaemonSetBackend) triggerMirror(ctx context.Context, nodeName, daemonKey string) {
 	if b.daemonClient == nil || b.nodeIPResolver == nil {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	nodeIP, err := b.nodeIPResolver.Resolve(ctx, nodeName)
@@ -703,20 +703,20 @@ func (b *DaemonSetBackend) triggerMirror(nodeName, daemonKey string) {
 // output that downstream steps resolve in the ordinary way, and the alias says
 // which of the two it is.
 func (b *DaemonSetBackend) registerReadOnlyDaemonAlias(nodeName, volumeKey, diskPath string) {
-	b.registerAlias(nodeName, volumeKey, diskPath, true)
+	b.registerAlias(context.Background(), nodeName, volumeKey, diskPath, true)
 }
 
 func (b *DaemonSetBackend) registerDaemonAlias(nodeName, volumeKey, diskPath string) {
-	b.registerAlias(nodeName, volumeKey, diskPath, false)
+	b.registerAlias(context.Background(), nodeName, volumeKey, diskPath, false)
 }
 
-func (b *DaemonSetBackend) registerAlias(nodeName, volumeKey, diskPath string, readOnly bool) {
+func (b *DaemonSetBackend) registerAlias(ctx context.Context, nodeName, volumeKey, diskPath string, readOnly bool) {
 	if b.nodeIPResolver == nil {
 		fmt.Fprintf(os.Stderr, "WARNING: registerDaemonAlias: no node IP resolver configured\n")
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	nodeIP, err := b.nodeIPResolver.Resolve(ctx, nodeName)
@@ -806,7 +806,7 @@ func (b *DaemonSetBackend) RegisterResourceCache(ctx context.Context, cacheKey, 
 	// underlying step output by the time RegisterAlias requires the path
 	// to exist on disk. The daemonKey is the path under steps/ on disk.
 	if daemonKey, ok := stepKeyFromHostPath(b.config.ArtifactDaemonHostPath, diskPath); ok {
-		b.triggerMirror(nodeName, daemonKey)
+		b.triggerMirror(ctx, nodeName, daemonKey)
 	}
 
 	// Find a daemon pod IP to register with. On the same node as the get
