@@ -1,13 +1,19 @@
 package jetbridge
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 // Both runtimes compose their pod through composePod, so a task's run.user
@@ -29,11 +35,60 @@ func taskPodsFor(t *testing.T, user string) map[string]*corev1.PodSpec {
 }
 
 func TestATaskUserBecomesTheMainContainersUID(t *testing.T) {
-	for user, want := range map[string]int64{"root": 0, "0": 0} {
-		for runtimeName, pod := range taskPodsFor(t, user) {
-			got := pod.Containers[0].SecurityContext.RunAsUser
-			if got == nil || *got != want {
-				t.Errorf("%s runtime, user %q: RunAsUser = %v, want %d", runtimeName, user, got, want)
+	for user, want := range map[string]int64{"root": 0, "0": 0, "1001": 1001, "2147483647": 2147483647, "2147483648": 2147483648, "9223372036854775807": 9223372036854775807, "001001": 1001} {
+		t.Run(user, func(t *testing.T) {
+			for runtimeName, build := range taskPodBuilders(t, user) {
+				t.Run(runtimeName, func(t *testing.T) {
+					pod, err := build()
+					if err != nil {
+						t.Fatal(err)
+					}
+					got := pod.Containers[0].SecurityContext.RunAsUser
+					if got == nil || *got != want {
+						t.Errorf("RunAsUser = %v, want %d", got, want)
+					}
+					if pod.Containers[0].SecurityContext.RunAsNonRoot != nil || pod.SecurityContext.RunAsNonRoot != nil {
+						t.Error("RunAsNonRoot must remain unset")
+					}
+					assertTaskPodMounts(t, pod)
+				})
+			}
+		})
+	}
+}
+
+func taskPodBuilders(t *testing.T, user string) map[string]func() (*corev1.PodSpec, error) {
+	t.Helper()
+	container := jobRuntimeContainer(t, fake.NewSimpleClientset(), db.ContainerTypeTask, runtime.ContainerSpec{Dir: "/tmp/build/task"})
+	spec := runtime.ProcessSpec{Path: "sh", User: user}
+	return map[string]func() (*corev1.PodSpec, error){
+		"exec": func() (*corev1.PodSpec, error) {
+			pod, err := container.buildPod(spec, []string{"sh", "-c", pauseCommand}, nil)
+			if err != nil {
+				return nil, err
+			}
+			return &pod.Spec, nil
+		},
+		"job": func() (*corev1.PodSpec, error) {
+			job, err := container.buildStepJob(spec, false)
+			if err != nil {
+				return nil, err
+			}
+			return &job.Spec.Template.Spec, nil
+		},
+	}
+}
+
+func assertTaskPodMounts(t *testing.T, pod *corev1.PodSpec) {
+	t.Helper()
+	volumes := map[string]int{}
+	for _, volume := range pod.Volumes {
+		volumes[volume.Name]++
+	}
+	for _, container := range append(append([]corev1.Container{}, pod.Containers...), pod.InitContainers...) {
+		for _, mount := range container.VolumeMounts {
+			if volumes[mount.Name] != 1 {
+				t.Errorf("container %s mount %s resolves to %d volumes", container.Name, mount.Name, volumes[mount.Name])
 			}
 		}
 	}
@@ -47,20 +102,61 @@ func TestATaskWithNoUserKeepsTheImagesUser(t *testing.T) {
 	}
 }
 
-func TestATaskUserThatIsNotAUIDIsRefused(t *testing.T) {
-	container := jobRuntimeContainer(t, fake.NewSimpleClientset(), db.ContainerTypeTask, runtime.ContainerSpec{Dir: "/tmp/build/task"})
-	refused := func(err error, user string) bool {
-		return err != nil && strings.Contains(err.Error(), `unsupported task user "`+user+`"`) &&
-			strings.Contains(err.Error(), "non-root run.user is not supported on the Kubernetes runtime")
+func TestANamedTaskUserKeepsTheImagesUser(t *testing.T) {
+	for _, user := range []string{"concourse", "nobody", "1000:1000"} {
+		for runtimeName, build := range taskPodBuilders(t, user) {
+			t.Run(user+"/"+runtimeName, func(t *testing.T) {
+				pod, err := build()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := pod.Containers[0].SecurityContext.RunAsUser; got != nil {
+					t.Errorf("RunAsUser = %d, want unset", *got)
+				}
+			})
+		}
 	}
-	for _, user := range []string{"1001", "1000", "2147483647", "concourse", "-1", "2147483648", "1000:1000"} {
-		spec := runtime.ProcessSpec{Path: "sh", User: user}
-		if _, err := container.buildPod(spec, []string{"sh"}, nil); !refused(err, user) {
-			t.Errorf("exec runtime, user %q: err = %v", user, err)
+}
+
+func TestAnInvalidTaskUIDIsRefused(t *testing.T) {
+	for _, user := range []string{"-1", "99999999999999999999", "9223372036854775808", "+1001"} {
+		for runtimeName, build := range taskPodBuilders(t, user) {
+			t.Run(user+"/"+runtimeName, func(t *testing.T) {
+				_, err := build()
+				if err == nil || !strings.Contains(err.Error(), `unsupported task user "`+user+`"`) || !strings.Contains(err.Error(), "a uid must be a non-negative decimal integer that fits int64") {
+					t.Errorf("expected invalid uid %q and reason, got %v", user, err)
+				}
+			})
 		}
-		if _, err := container.buildStepJob(spec, false); !refused(err, user) {
-			t.Errorf("job runtime, user %q: err = %v", user, err)
-		}
+	}
+}
+
+func TestANamedTaskUserProducesAWarningOnBothRuntimes(t *testing.T) {
+	for _, runtimeName := range []string{StepRuntimeExec, StepRuntimeJob} {
+		t.Run(runtimeName, func(t *testing.T) {
+			client := fake.NewSimpleClientset()
+			// Stop at submission: exercising Run's real routing needs no running pod.
+			stop := errors.New("stop before creating a pod or Job")
+			client.PrependReactor("create", "*", func(k8stesting.Action) (bool, k8sruntime.Object, error) { return true, nil, stop })
+			container := jobRuntimeContainer(t, client, db.ContainerTypeTask, runtime.ContainerSpec{Dir: "/tmp/build/task"})
+			container.config.StepRuntime = runtimeName
+			container.executor = &controlExecutor{}
+			logger := lagertest.NewTestLogger("run-user")
+			_, err := container.Run(lagerctx.NewContext(context.Background(), logger), runtime.ProcessSpec{Path: "sh", User: "concourse"}, runtime.ProcessIO{})
+			if !errors.Is(err, stop) {
+				t.Errorf("expected pod/Job submission, got %v", err)
+			}
+			found := false
+			for _, entry := range logger.Logs() {
+				if strings.HasSuffix(entry.Message, ".warning-ignored-task-user") && entry.Data["user"] == "concourse" && entry.Data["severity"] == "warning" {
+					reason, _ := entry.Data["reason"].(string)
+					found = strings.Contains(reason, "Kubernetes runAsUser takes only a numeric uid") && strings.Contains(reason, "image's USER")
+				}
+			}
+			if !found {
+				t.Errorf("expected warning naming concourse and explaining the image USER fallback; logs: %s", logger.Buffer().Contents())
+			}
+		})
 	}
 }
 

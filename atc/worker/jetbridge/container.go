@@ -198,6 +198,18 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		"handle": c.handle,
 	})
 
+	if _, ignoredName, err := runAsUser(spec.User); err != nil {
+		return nil, err
+	} else if ignoredName {
+		// Lager has no warning level. Keep the warning explicit in both
+		// the event name and structured data, before either runtime branches.
+		logger.Info("warning-ignored-task-user", lager.Data{
+			"severity": "warning",
+			"user":     spec.User,
+			"reason":   "Kubernetes runAsUser takes only a numeric uid, so the step runs as its image's USER",
+		})
+	}
+
 	execMode := c.executor != nil
 	ctx, span := tracing.StartSpan(ctx, "k8s.container.run", tracing.Attrs{
 		"handle":    c.handle,
@@ -578,7 +590,7 @@ func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string
 	volumes, volumeMounts := c.buildVolumeMounts()
 	resources := buildResourceRequirements(c.containerSpec.Limits)
 	privileged := c.containerSpec.ImageSpec.Privileged
-	uid, err := runAsUser(processSpec.User)
+	uid, _, err := runAsUser(processSpec.User)
 	if err != nil {
 		return nil, privilegeAllowance{}, err
 	}
@@ -1164,22 +1176,42 @@ func buildContainerSecurityContext(privileged bool) *corev1.SecurityContext {
 	}
 }
 
-// runAsUser is the uid a task's run.user names: root (or 0) is 0, and no user
-// leaves the image's USER in place. Any other user is refused before a pod
-// exists, rather than silently running as the image's own USER or as a uid
-// that cannot write its own step: a step's directories and caches are
-// hostPath directories the kubelet creates as root, and a cache is shared by
-// every build of its job and step whatever user each ran as.
-func runAsUser(user string) (*int64, error) {
+// runAsUser maps root to 0 and non-negative decimal uids to Kubernetes' int64
+// runAsUser. An empty user keeps the image's USER. Names also keep the image's
+// USER for compatibility, with ignoredName telling Run to warn on both runtimes.
+// Only all-decimal strings (optionally signed) are treated as uid attempts;
+// signed or overflowing uids are refused. Other values, including user:group,
+// are treated as names because Kubernetes cannot resolve them.
+//
+// Step directories are hostPath DirectoryOrCreate: the kubelet creates them
+// root-owned 0755. A non-root uid may not write its outputs unless the image or
+// task makes them writable. Directory permissions are a separate problem and
+// are not changed here.
+func runAsUser(user string) (uid *int64, ignoredName bool, err error) {
 	switch user {
 	case "":
-		return nil, nil
-	case "root", "0":
+		return nil, false, nil
+	case "root":
 		root := int64(0)
-		return &root, nil
+		return &root, false, nil
 	}
-	return nil, fmt.Errorf("unsupported task user %q: non-root run.user is not supported on the Kubernetes runtime, "+
-		"because its step directories and caches are root-owned; use root or leave run.user unset", user)
+	digits := user
+	if user[0] == '+' || user[0] == '-' {
+		digits = user[1:]
+	}
+	if digits == "" {
+		return nil, true, nil
+	}
+	for _, digit := range digits {
+		if digit < '0' || digit > '9' {
+			return nil, true, nil
+		}
+	}
+	parsed, parseErr := strconv.ParseInt(user, 10, 64)
+	if parseErr != nil || parsed < 0 || user[0] == '+' || user[0] == '-' {
+		return nil, false, fmt.Errorf("unsupported task user %q: a uid must be a non-negative decimal integer that fits int64", user)
+	}
+	return &parsed, false, nil
 }
 
 // buildImagePullSecrets converts a list of secret names into K8s

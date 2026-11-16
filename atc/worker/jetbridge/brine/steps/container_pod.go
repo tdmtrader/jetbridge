@@ -264,6 +264,18 @@ func ContainerPodDefinitions() []brine.StepDefinition {
 				return nil
 			}),
 
+		CheckThat[PodCreated]("the step's command runs as the image's user",
+			func(in PodCreated) error {
+				main, err := mainContainer(in.Pod)
+				if err != nil {
+					return err
+				}
+				if main.SecurityContext != nil && main.SecurityContext.RunAsUser != nil {
+					return fmt.Errorf("expected the image's USER, got runAsUser %d", *main.SecurityContext.RunAsUser)
+				}
+				return nil
+			}),
+
 		// PE-04: both privilege modes retain the pod-level hardening policy.
 		brine.DefineCheck[PodCreated]("the step uses the {string} security policy",
 			func(in PodCreated, p brine.Params, _ *brine.Recorder) error {
