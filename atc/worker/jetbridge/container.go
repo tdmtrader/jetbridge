@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -1176,17 +1177,20 @@ func buildContainerSecurityContext(privileged bool) *corev1.SecurityContext {
 	}
 }
 
-// runAsUser maps root to 0 and non-negative decimal uids to Kubernetes' int64
-// runAsUser. An empty user keeps the image's USER. Names also keep the image's
+// runAsUser maps root to 0 and unsigned decimal uids from 0 to 2147483647
+// to Kubernetes' runAsUser, as validated by validation.IsValidUserID.
+// An empty user keeps the image's USER. Names also keep the image's
 // USER for compatibility, with ignoredName telling Run to warn on both runtimes.
 // Only all-decimal strings (optionally signed) are treated as uid attempts;
-// signed or overflowing uids are refused. Other values, including user:group,
+// signed or out-of-range uids are refused. Other values, including user:group,
 // are treated as names because Kubernetes cannot resolve them.
 //
-// Step directories are hostPath DirectoryOrCreate: the kubelet creates them
-// root-owned 0755. A non-root uid may not write its outputs unless the image or
-// task makes them writable. Directory permissions are a separate problem and
-// are not changed here.
+// Step directories and caches are hostPath DirectoryOrCreate: the kubelet
+// creates them root-owned 0755, so a non-root uid cannot write a fresh output
+// or cache directory. The mount hides image permissions, and an unprivileged
+// uid cannot chmod a root-owned directory. Caches are shared across builds
+// regardless of each build's uid, so a per-uid chown is not a generic fix.
+// These directory permissions are not changed here.
 func runAsUser(user string) (uid *int64, ignoredName bool, err error) {
 	switch user {
 	case "":
@@ -1208,8 +1212,8 @@ func runAsUser(user string) (uid *int64, ignoredName bool, err error) {
 		}
 	}
 	parsed, parseErr := strconv.ParseInt(user, 10, 64)
-	if parseErr != nil || parsed < 0 || user[0] == '+' || user[0] == '-' {
-		return nil, false, fmt.Errorf("unsupported task user %q: a uid must be a non-negative decimal integer that fits int64", user)
+	if parseErr != nil || len(validation.IsValidUserID(parsed)) != 0 || user[0] == '+' || user[0] == '-' {
+		return nil, false, fmt.Errorf("unsupported task user %q: a numeric uid must be unsigned decimal digits from 0 to 2147483647, the range Kubernetes runAsUser accepts", user)
 	}
 	return &parsed, false, nil
 }

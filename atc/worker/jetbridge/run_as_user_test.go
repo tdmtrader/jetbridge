@@ -3,6 +3,7 @@ package jetbridge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -35,7 +36,7 @@ func taskPodsFor(t *testing.T, user string) map[string]*corev1.PodSpec {
 }
 
 func TestATaskUserBecomesTheMainContainersUID(t *testing.T) {
-	for user, want := range map[string]int64{"root": 0, "0": 0, "1001": 1001, "2147483647": 2147483647, "2147483648": 2147483648, "9223372036854775807": 9223372036854775807, "001001": 1001} {
+	for user, want := range map[string]int64{"root": 0, "0": 0, "1001": 1001, "2147483647": 2147483647, "001001": 1001} {
 		t.Run(user, func(t *testing.T) {
 			for runtimeName, build := range taskPodBuilders(t, user) {
 				t.Run(runtimeName, func(t *testing.T) {
@@ -119,12 +120,13 @@ func TestANamedTaskUserKeepsTheImagesUser(t *testing.T) {
 }
 
 func TestAnInvalidTaskUIDIsRefused(t *testing.T) {
-	for _, user := range []string{"-1", "99999999999999999999", "9223372036854775808", "+1001"} {
+	for _, user := range []string{"-1", "2147483648", "4294967296", "9223372036854775807", "99999999999999999999", "9223372036854775808", "+1001"} {
 		for runtimeName, build := range taskPodBuilders(t, user) {
 			t.Run(user+"/"+runtimeName, func(t *testing.T) {
 				_, err := build()
-				if err == nil || !strings.Contains(err.Error(), `unsupported task user "`+user+`"`) || !strings.Contains(err.Error(), "a uid must be a non-negative decimal integer that fits int64") {
-					t.Errorf("expected invalid uid %q and reason, got %v", user, err)
+				want := fmt.Sprintf("unsupported task user %q: a numeric uid must be unsigned decimal digits from 0 to 2147483647, the range Kubernetes runAsUser accepts", user)
+				if err == nil || err.Error() != want {
+					t.Errorf("expected %s, got %v", want, err)
 				}
 			})
 		}
