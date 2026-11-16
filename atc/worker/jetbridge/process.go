@@ -734,6 +734,10 @@ type execProcess struct {
 	// second time, whatever happens to the pod.
 	execTransportLive atomic.Bool
 
+	// runningNodeName is retained from readiness, before teardown can remove
+	// the Pod whose hostPath holds a cancelled command's partial outputs.
+	runningNodeName string
+
 	// control is the optional exact-execution envelope this step was admitted
 	// under, and exact is the live control state once the daemon has admitted
 	// it. Both are nil on the ordinary path, which is every step that opted
@@ -812,6 +816,11 @@ func (p *execProcess) supervised() bool {
 		p.processIO.Stdin == nil
 }
 
+// abandonedOutputRecordBudget bounds the attempt to file partial outputs after
+// the step context has ended. Storage failures are best-effort and logged by
+// the backend; they must never replace the step's timeout or abort.
+const abandonedOutputRecordBudget = 10 * time.Second
+
 // Wait waits for the pause Pod to reach Running state, streams input
 // artifacts into the pod, then exec-s the actual command with ProcessIO
 // piped through.
@@ -852,9 +861,22 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 	// the pod for fly hijack into an aborted build's resource containers.
 	// And never for a looked-up Container — that is a fly hijack session on somebody else's
 	// pod, ending when the operator closes the window.
+	recordAbandonedOutputs := false
 	defer func() {
 		if ctx.Err() != nil && p.supervised() && !p.container.lookedUp {
 			p.deleteAbandonedPod(logger)
+		}
+		if recordAbandonedOutputs && p.runningNodeName != "" && p.container != nil && !p.container.lookedUp && p.storageBackend != nil {
+			recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abandonedOutputRecordBudget)
+			defer cancel()
+			// Resource commands have already joined their stop defer; a
+			// supervised task has had its pause Pod deleted above. Pod deletion
+			// can still be reaching the kubelet. Recording is safe during that
+			// interval: it files an alias to the live hostPath, not a snapshot
+			// of its bytes. The path survives deletion and includes any final
+			// writes; consumers of a cancelled task expect partial output.
+			// RecordOutputs has no error result: the backend logs failures.
+			p.storageBackend.RecordOutputs(recordCtx, p.container.handle, p.runningNodeName, p.container.volumes, p.container.containerSpec)
 		}
 	}()
 
@@ -1256,6 +1278,7 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 			return p.reportExactOutcomeWithoutRerunning(commandCtx)
 		}
 
+		recordAbandonedOutputs = ctx.Err() != nil
 		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
 		spanErr = err
 		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("exec in pod: %w", err))
@@ -1461,6 +1484,13 @@ func (p *execProcess) uploadOutputsToArtifactStore(ctx context.Context) error {
 		return nil
 	}
 
+	// The transport may have delivered the command's real exit at the same
+	// instant as cancellation. That exit still owns its outputs.
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), abandonedOutputRecordBudget)
+		defer cancel()
+	}
 	nodeName := p.fetchPodNodeName(ctx)
 	logger := lagerctx.FromContext(ctx).Session("record-output-locations", lager.Data{
 		"handle":  p.container.handle,
@@ -1828,6 +1858,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		}
 
 		if pod.Status.Phase == corev1.PodRunning {
+			p.runningNodeName = pod.Spec.NodeName
 			metric.Metrics.K8sPodStartupDuration.Set(time.Since(startTime).Milliseconds())
 			return nil
 		}
