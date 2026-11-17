@@ -25,13 +25,13 @@ var _ = Describe("A custom resource type's image changing", func() {
 	// The resource config of a resource on a custom type is keyed on the
 	// resource cache of the type's image, so a new image version is a new
 	// resource cache, a new config and a new global scope.
-	configOnTypeImage := func(imageVersion string, source atc.Source) db.ResourceConfig {
+	configOnType := func(typeSource atc.Source, typeParams atc.Params, imageVersion string, source atc.Source) db.ResourceConfig {
 		imageCache, err := resourceCacheFactory.FindOrCreateResourceCache(
 			db.ForBuild(upstreamBuild.ID()),
 			dbtest.BaseResourceType,
 			atc.Version{"custom-type": imageVersion},
 			typeSource,
-			nil,
+			typeParams,
 			nil,
 		)
 		Expect(err).ToNot(HaveOccurred())
@@ -40,6 +40,10 @@ var _ = Describe("A custom resource type's image changing", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		return config
+	}
+
+	configOnTypeImage := func(imageVersion string, source atc.Source) db.ResourceConfig {
+		return configOnType(typeSource, nil, imageVersion, source)
 	}
 
 	moveTo := func(resourceName string, config db.ResourceConfig) db.ResourceConfigScope {
@@ -309,6 +313,170 @@ var _ = Describe("A custom resource type's image changing", func() {
 
 			Expect(versionsOf(newScope.ID())).To(BeEmpty())
 			Expect(deprecated(oldScopeID)).To(BeFalse())
+		})
+	})
+
+	Context("when the type's own source changes", func() {
+		It("carries nothing into the scope another type image already holds", func() {
+			// Another pipeline's type, on an image this pipeline does not
+			// control, checks the same resource source into a global scope.
+			otherConfig := configOnType(atc.Source{"some": "other-type-source"}, nil, "other", resourceSource)
+			otherScope, err := otherConfig.FindOrCreateScope(nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(otherScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "b1"}, {"ref": "b2"}})).To(Succeed())
+
+			oldScopeID := scenario.Resource("some-resource").ResourceConfigScopeID()
+			Expect(versionsOf(oldScopeID)).To(Equal([]string{"v1", "v2", "v3"}))
+
+			Expect(moveTo("some-resource", otherConfig).ID()).To(Equal(otherScope.ID()))
+
+			Expect(versionsOf(otherScope.ID())).To(Equal([]string{"b1", "b2"}))
+			Expect(deprecated(oldScopeID)).To(BeFalse())
+		})
+	})
+
+	Context("when the type's params change", func() {
+		It("starts a new history and leaves the old scope alone", func() {
+			oldScopeID := scenario.Resource("some-resource").ResourceConfigScopeID()
+
+			newScope := moveTo("some-resource", configOnType(typeSource, atc.Params{"some": "param"}, "version", resourceSource))
+			Expect(newScope.ID()).ToNot(Equal(oldScopeID))
+
+			Expect(versionsOf(newScope.ID())).To(BeEmpty())
+			Expect(deprecated(oldScopeID)).To(BeFalse())
+		})
+	})
+
+	Context("when the resource has a pinned and a disabled version", func() {
+		BeforeEach(func() {
+			resource := scenario.Resource("some-resource")
+
+			v1, found, err := resource.FindVersion(atc.Version{"ref": "v1"})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(resource.DisableVersion(v1.ID())).To(Succeed())
+
+			v2, found, err := resource.FindVersion(atc.Version{"ref": "v2"})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			pinned, err := resource.PinVersion(v2.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pinned).To(BeTrue())
+
+			moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+		})
+
+		It("still resolves the pinned version and still holds the disabled one back", func() {
+			resource := scenario.Resource("some-resource")
+
+			Expect(resource.CurrentPinnedVersion()).To(Equal(atc.Version{"ref": "v2"}))
+			_, found, err := resource.FindVersion(resource.CurrentPinnedVersion())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			versions, _, found, err := resource.Versions(db.Page{Limit: 10}, nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			enabled := map[string]bool{}
+			for _, v := range versions {
+				enabled[v.Version["ref"]] = v.Enabled
+			}
+			Expect(enabled).To(Equal(map[string]bool{"v1": false, "v2": true, "v3": true}))
+		})
+	})
+
+	Context("when a version: every job has used a version", func() {
+		It("offers the version after it once the history is carried", func() {
+			versionsDB := db.NewVersionsDB(dbConn, 100, gocache.New(10*time.Second, 10*time.Second))
+			jobID := scenario.Job("upstream-job").ID()
+			resourceID := scenario.Resource("some-resource").ID()
+
+			before, _, found, err := versionsDB.NextEveryVersion(context.TODO(), jobID, resourceID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+
+			newScope := moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+
+			after, hasNext, found, err := versionsDB.NextEveryVersion(context.TODO(), jobID, resourceID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(hasNext).To(BeFalse())
+			Expect(after).To(Equal(before))
+
+			var ref string
+			Expect(dbConn.QueryRow(`
+				SELECT version->>'ref' FROM resource_config_versions
+				WHERE resource_config_scope_id = $1 AND $2 IN (version_md5, version_sha256)
+			`, newScope.ID(), string(after)).Scan(&ref)).To(Succeed())
+			Expect(ref).To(Equal("v3"))
+		})
+	})
+
+	Context("when a put saves its output against the new image", func() {
+		It("carries the history below the put's version", func() {
+			oldScopeID := scenario.Resource("some-resource").ResourceConfigScopeID()
+
+			imageCache, err := resourceCacheFactory.FindOrCreateResourceCache(
+				db.ForBuild(upstreamBuild.ID()),
+				dbtest.BaseResourceType,
+				atc.Version{"custom-type": "bumped"},
+				typeSource,
+				nil,
+				nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(upstreamBuild.SaveOutput("some-custom-type", imageCache, resourceSource, atc.Version{"ref": "put"}, nil, "some-output", "some-resource")).To(Succeed())
+
+			resource := scenario.Resource("some-resource")
+			Expect(resource.ResourceConfigScopeID()).ToNot(Equal(oldScopeID))
+			Expect(versionsOf(resource.ResourceConfigScopeID())).To(Equal([]string{"v1", "v2", "v3", "put"}))
+			Expect(deprecated(oldScopeID)).To(BeTrue())
+		})
+	})
+
+	Context("when a check of the new scope is saving versions as the resource moves", func() {
+		It("waits for the check, and carries the history below what it saved", func() {
+			resource := scenario.Resource("some-resource")
+
+			newScope, err := configOnTypeImage("bumped", resourceSource).FindOrCreateScope(intptr(resource.ID()))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(newScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "n1"}})).To(Succeed())
+
+			// A check's SaveVersions, part way through on its own connection:
+			// its new version is inserted and ranked, and it has not
+			// committed.
+			checkConn := postgresRunner.OpenConn()
+			defer checkConn.Close()
+			check, err := checkConn.Begin()
+			Expect(err).ToNot(HaveOccurred())
+			defer check.Rollback()
+			_, err = check.Exec(`
+				INSERT INTO resource_config_versions (resource_config_scope_id, version, version_sha256, check_order)
+				SELECT $1, '{"ref":"n2"}', encode(digest('{"ref":"n2"}', 'sha256'), 'hex'), max(check_order) + 1
+				FROM resource_config_versions WHERE resource_config_scope_id = $1
+			`, newScope.ID())
+			Expect(err).ToNot(HaveOccurred())
+
+			moved := make(chan error, 1)
+			go func() {
+				defer GinkgoRecover()
+				moved <- resource.SetResourceConfigScope(newScope)
+			}()
+
+			Consistently(moved, time.Second).ShouldNot(Receive())
+			Expect(check.Commit()).To(Succeed())
+			Eventually(moved, 10*time.Second).Should(Receive(BeNil()))
+
+			Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3", "n1", "n2"}))
+
+			var distinct, total int
+			Expect(dbConn.QueryRow(`
+				SELECT count(DISTINCT check_order), count(*) FROM resource_config_versions
+				WHERE resource_config_scope_id = $1
+			`, newScope.ID()).Scan(&distinct, &total)).To(Succeed())
+			Expect(distinct).To(Equal(total))
 		})
 	})
 })

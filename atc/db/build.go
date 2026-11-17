@@ -1477,6 +1477,30 @@ func (b *build) SaveOutput(
 		return err
 	}
 
+	// A put that moves its resource to another scope locks the resource and
+	// then both scopes in id order, as a check's move does (see lockScopes),
+	// before finding or creating the new scope takes that one alone.
+	var currentConfigID, currentScopeID sql.NullInt64
+	err = tx.QueryRow(`
+		SELECT resource_config_id, resource_config_scope_id FROM resources WHERE id = $1 FOR UPDATE
+	`, theResource.ID()).Scan(&currentConfigID, &currentScopeID)
+	if err != nil {
+		return err
+	}
+
+	if currentScopeID.Valid && (!currentConfigID.Valid || int(currentConfigID.Int64) != rc.ID()) {
+		_, err = tx.Exec(`
+			SELECT id FROM resource_config_scopes
+			WHERE id = $1
+			OR (resource_config_id = $2 AND deprecated_at IS NULL AND (resource_id IS NULL OR resource_id = $3))
+			ORDER BY id
+			FOR UPDATE
+		`, currentScopeID.Int64, rc.ID(), theResource.ID())
+		if err != nil {
+			return err
+		}
+	}
+
 	resourceConfigScope, err := findOrCreateResourceConfigScope(tx, b.conn, b.lockFactory, rc, NewIntPtr(theResource.ID()))
 	if err != nil {
 		return err

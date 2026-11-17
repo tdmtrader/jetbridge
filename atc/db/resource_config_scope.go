@@ -307,9 +307,42 @@ func copyVersionsIntoScope(conn DbConn, toScopeID, fromScopeID int) (int, error)
 	return copied, nil
 }
 
+// lockScopes takes two scopes FOR UPDATE, in id order, so that two
+// transactions moving versions between the same scopes in opposite directions
+// cannot each hold one and wait for the other. Every path that locks more
+// than one scope goes through here, after locking any resource it moves.
+//
+// A writer that adds a version to a scope (SaveVersions, a put's SaveOutput)
+// takes the scope row FOR KEY SHARE through the foreign key when it inserts,
+// before it ranks anything, and holds it until it commits. FOR UPDATE
+// conflicts with that, so a copy waits for any such writer in flight and
+// such a writer waits for the copy: neither renumbers under the other.
+func lockScopes(tx Tx, scopeID, otherScopeID int) error {
+	rows, err := tx.Query(`
+		SELECT id FROM resource_config_scopes
+		WHERE id IN ($1, $2)
+		ORDER BY id
+		FOR UPDATE
+	`, scopeID, otherScopeID)
+	if err != nil {
+		return err
+	}
+
+	return rows.Close()
+}
+
 func copyVersionsIntoScopeTx(tx Tx, toScopeID, fromScopeID int) (int, error) {
+	if toScopeID == fromScopeID {
+		return 0, nil
+	}
+
+	err := lockScopes(tx, toScopeID, fromScopeID)
+	if err != nil {
+		return 0, err
+	}
+
 	var missing int
-	err := tx.QueryRow(`
+	err = tx.QueryRow(`
 		SELECT COUNT(*)
 		FROM resource_config_versions s
 		WHERE s.resource_config_scope_id = $2
@@ -330,13 +363,20 @@ func copyVersionsIntoScopeTx(tx Tx, toScopeID, fromScopeID int) (int, error) {
 	// The destination is renumbered 1..N in the merged order: each of its
 	// versions keeps its place, and each copied version is ranked by its
 	// anchor, the destination's place for the newest version both scopes hold
-	// that the source ranks below it (0 when there is none), then by its
-	// source order.
+	// that the source ranks strictly below it (0 when there is none), then by
+	// its source order. The anchor is a running max over the source in one
+	// pass. Its frame ends at check_order - 1, so it leaves out the row itself
+	// and any the source ranks level with it (an excluding frame would
+	// recompute the max for every row).
 	result, err := tx.Exec(`
-		WITH shared AS (
-			SELECT s.check_order AS source_order, d.check_order AS dest_order
+		WITH source AS (
+			SELECT s.id, s.check_order, d.id AS dest_id,
+				max(d.check_order) OVER (
+					ORDER BY s.check_order
+					RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+				) AS anchor
 			FROM resource_config_versions s
-			JOIN resource_config_versions d
+			LEFT JOIN resource_config_versions d
 				ON d.resource_config_scope_id = $1
 				AND d.version_sha256 = s.version_sha256
 			WHERE s.resource_config_scope_id = $2
@@ -346,16 +386,9 @@ func copyVersionsIntoScopeTx(tx Tx, toScopeID, fromScopeID int) (int, error) {
 			FROM resource_config_versions d
 			WHERE d.resource_config_scope_id = $1
 			UNION ALL
-			SELECT NULL, s.id,
-				COALESCE((SELECT max(sh.dest_order) FROM shared sh WHERE sh.source_order < s.check_order), 0),
-				1, s.check_order
-			FROM resource_config_versions s
-			WHERE s.resource_config_scope_id = $2
-			AND NOT EXISTS (
-				SELECT 1 FROM resource_config_versions d
-				WHERE d.resource_config_scope_id = $1
-				AND d.version_sha256 = s.version_sha256
-			)
+			SELECT NULL, s.id, COALESCE(s.anchor, 0), 1, s.check_order
+			FROM source s
+			WHERE s.dest_id IS NULL
 		), ranked AS (
 			SELECT dest_id, source_id,
 				row_number() OVER (ORDER BY anchor, copied, tiebreak, source_id) AS check_order
