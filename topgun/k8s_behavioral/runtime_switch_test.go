@@ -3,6 +3,8 @@ package behavioral_test
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,8 +102,12 @@ var _ = Describe("0.4.6 step runtime and privilege mode, through the chart", Ord
 	BeforeAll(func() {
 		privPipeline = randomPipelineName()
 		deployed = deployedBase
+		expectLauncherInImage(envOr("CONCOURSE_IMAGE", "concourse-local:latest"))
 		ensureDeployed(deployedJobGranted)
 	})
+
+	// Before AfterAll, which replaces the web pod whose log tells why.
+	JustAfterEach(dumpWebPodLogsOnFailure)
 
 	AfterAll(func() {
 		removeHoldPolicy()
@@ -111,6 +117,11 @@ var _ = Describe("0.4.6 step runtime and privilege mode, through the chart", Ord
 		}
 		if holdPipeline != "" {
 			deleteStepJobsOfPipeline(holdPipeline)
+		}
+		if privPipeline != "" {
+			// The suite's AfterEach deletes pods only; a Job of the job
+			// runtime outlives its pod.
+			deleteStepJobsOfPipeline(privPipeline)
 		}
 		ensureDeployed(deployedBase)
 	})
@@ -246,13 +257,15 @@ run:
 	})
 
 	It("collects under exec the step Jobs a job deployment left, and reports a Role without batch/jobs once", func() {
-		// A retried attempt starts where the first did.
-		ensureDeployed(deployedJobGranted)
-		removeHoldPolicy()
+		// A retried attempt starts where the first did. The Role goes back
+		// first: an attempt that failed after the switch saved the exec rules,
+		// and the upgrade below must be what sets the job rules.
 		if savedRoleRules != nil {
 			restorePodManagerRules(savedRoleRules)
 			savedRoleRules = nil
 		}
+		removeHoldPolicy()
+		ensureDeployed(deployedJobGranted)
 		holdPipeline = pipelineName
 		serviceAccount := webServiceAccount()
 
@@ -275,9 +288,16 @@ jobs:
       platform: linux
       image_resource: {type: registry-image, source: {repository: busybox}}
       run: {path: sleep, args: ["1800"]}
-- name: freed
+- name: freed-before
   plan:
-  - task: free
+  - task: free-before
+    config:
+      platform: linux
+      image_resource: {type: registry-image, source: {repository: busybox}}
+      run: {path: sleep, args: ["1800"]}
+- name: freed-after
+  plan:
+  - task: free-after
     config:
       platform: linux
       image_resource: {type: registry-image, source: {repository: busybox}}
@@ -285,13 +305,16 @@ jobs:
 `)
 		setAndUnpausePipeline(pipelineFile)
 
-		By("under job, a finished step and two aborted ones leave their Jobs")
+		By("under job, a finished step and three aborted ones leave their Jobs")
 		triggerJob("leave")
 		session := waitForBuildAndWatch("leave")
 		Expect(session).To(gexec.Exit(0))
 		Expect(session.Out).To(gbytes.Say("left-behind"))
 
-		for _, job := range []string{"held", "freed"} {
+		// The held step is created between two freed ones, so a pass that
+		// walks them in creation order, or its reverse, meets a freed one
+		// after the held one: a pass that stopped there would leave it.
+		for _, job := range []string{"freed-before", "held", "freed-after"} {
 			triggerJob(job)
 			waitForPodWithLabel(fmt.Sprintf("concourse.ci/pipeline=%s,concourse.ci/job=%s,concourse.ci/type=task", pipelineName, job), corev1.PodRunning)
 			fly.Run("abort-build", "-j", inPipeline(job), "-b", "1")
@@ -313,15 +336,15 @@ jobs:
 		}
 		Expect(left).To(HaveKey("first"))
 		Expect(left).To(HaveKey("hold"))
-		Expect(left).To(HaveKey("free"))
-		leftUIDs := func() []types.UID {
-			var uids []types.UID
-			for _, job := range stepJobsOfPipeline(pipelineName) {
-				uids = append(uids, job.UID)
-			}
+		Expect(left).To(HaveKey("free-before"))
+		Expect(left).To(HaveKey("free-after"))
+		allLeft := []types.UID{left["first"], left["free-before"], left["hold"], left["free-after"]}
+		leftUIDs := func(g Gomega) []types.UID {
+			uids, err := stepJobUIDsOfPipeline(pipelineName)
+			g.Expect(err).ToNot(HaveOccurred())
 			return uids
 		}
-		Consistently(leftUIDs, 25*time.Second, time.Second).Should(ContainElements(left["first"], left["hold"], left["free"]),
+		Consistently(leftUIDs, 25*time.Second, time.Second).Should(ContainElements(allLeft),
 			"the job runtime's web collected a held step Job")
 		holdPods := getPods(fmt.Sprintf("concourse.ci/worker,concourse.ci/pipeline=%s,concourse.ci/job=held,concourse.ci/type=task", pipelineName))
 		Expect(holdPods).To(HaveLen(1), "the held step's pod")
@@ -329,7 +352,7 @@ jobs:
 
 		By("switching the step runtime back to exec")
 		ensureDeployed(deployedBase)
-		Expect(leftUIDs()).To(ContainElements(left["first"], left["hold"], left["free"]))
+		Expect(leftUIDs(Default)).To(ContainElements(allLeft))
 
 		By("the chart's exec Role lets the web list and delete step Jobs, and nothing more")
 		for _, verb := range []string{"list", "delete"} {
@@ -340,32 +363,39 @@ jobs:
 		}
 
 		By("one step Job the web cannot delete does not stop the pass: the others are collected")
+		// Only what the web logs once the hold is narrowed is evidence about
+		// the narrowed passes; earlier passes refused every Job.
+		narrowedAt := len(currentWebPodLog())
 		applyHoldPolicy(serviceAccount, pipelineName, "hold")
-		Eventually(leftUIDs, 3*time.Minute, time.Second).ShouldNot(ContainElement(left["first"]))
-		Eventually(leftUIDs, 3*time.Minute, time.Second).ShouldNot(ContainElement(left["free"]))
-		for _, job := range []string{"leave", "freed"} {
-			Eventually(func() []corev1.Pod {
-				return getPods(fmt.Sprintf("concourse.ci/worker,concourse.ci/pipeline=%s,concourse.ci/job=%s", pipelineName, job))
+		for _, step := range []string{"first", "free-before", "free-after"} {
+			Eventually(leftUIDs, 3*time.Minute, time.Second).ShouldNot(ContainElement(left[step]), "step Job %s", step)
+		}
+		for _, job := range []string{"leave", "freed-before", "freed-after"} {
+			Eventually(func(g Gomega) []corev1.Pod {
+				pods, err := podsWithLabel(fmt.Sprintf("concourse.ci/worker,concourse.ci/pipeline=%s,concourse.ci/job=%s", pipelineName, job))
+				g.Expect(err).ToNot(HaveOccurred())
+				return pods
 			}, 3*time.Minute, time.Second).Should(BeEmpty(), "pods of %s", job)
 		}
 		Consistently(leftUIDs, 25*time.Second, time.Second).Should(ContainElement(left["hold"]))
-		Expect(currentWebPodLog()).To(MatchRegexp(`failed-to-delete-pod"[^\n]*"pod":"`+holdPod+`"`),
+		Eventually(func(g Gomega) string {
+			return webPodLogSince(g, narrowedAt)
+		}, time.Minute, time.Second).Should(MatchRegexp(`failed-to-delete-pod"[^\n]*"pod":"`+holdPod+`"`),
 			"the refused delete is logged and left for the next pass")
 
 		By("an older chart's Role, with no batch/jobs at all, is reported once at info")
 		Expect(currentWebPodLog()).ToNot(ContainSubstring(`step-jobs-not-collected"`))
 		savedRoleRules = stripStepJobRules()
-		Eventually(func() bool {
-			return serviceAccountMay(serviceAccount, "list", "batch", "jobs")
+		Eventually(func(g Gomega) bool {
+			return serviceAccountMayG(g, serviceAccount, "list", "batch", "jobs")
 		}, time.Minute, time.Second).Should(BeFalse())
-		Eventually(func() int {
-			return strings.Count(currentWebPodLog(), `step-jobs-not-collected"`)
-		}, time.Minute, time.Second).Should(Equal(1))
+		notes := func(g Gomega) int {
+			return strings.Count(webPodLogSince(g, 0), `step-jobs-not-collected"`)
+		}
+		Eventually(notes, time.Minute, time.Second).Should(Equal(1))
 		// Three passes or more: the note is not repeated, and no pass errors on
 		// the step Jobs it can no longer list or delete.
-		Consistently(func() int {
-			return strings.Count(currentWebPodLog(), `step-jobs-not-collected"`)
-		}, 35*time.Second, time.Second).Should(Equal(1))
+		Consistently(notes, 35*time.Second, time.Second).Should(Equal(1))
 		webLog := currentWebPodLog()
 		Expect(webLog).To(MatchRegexp(`"level":"info"[^\n]*step-jobs-not-collected"`))
 		Expect(webLog).ToNot(ContainSubstring(`failed-to-list-step-jobs"`))
@@ -373,13 +403,13 @@ jobs:
 		afterNote = afterNote[strings.Index(afterNote, "\n")+1:]
 		Expect(afterNote).ToNot(ContainSubstring(`failed-to-delete-pod"`))
 		Expect(afterNote).ToNot(ContainSubstring(`failed-to-cleanup-completed-pod"`))
-		Expect(leftUIDs()).To(ContainElement(left["hold"]))
+		Expect(leftUIDs(Default)).To(ContainElement(left["hold"]))
 
 		By("restoring the chart's Role and lifting the hold")
 		restorePodManagerRules(savedRoleRules)
 		savedRoleRules = nil
-		Eventually(func() bool {
-			return serviceAccountMay(serviceAccount, "delete", "batch", "jobs")
+		Eventually(func(g Gomega) bool {
+			return serviceAccountMayG(g, serviceAccount, "delete", "batch", "jobs")
 		}, time.Minute, time.Second).Should(BeTrue())
 		removeHoldPolicy()
 
@@ -423,10 +453,53 @@ func waitForWebRollout() {
 			g.Expect(deployment.Status.UpdatedReplicas).To(Equal(want))
 			g.Expect(deployment.Status.AvailableReplicas).To(Equal(want))
 			g.Expect(deployment.Status.Replicas).To(Equal(want))
-			g.Expect(getPods("app.kubernetes.io/component=web")).To(HaveLen(int(want)))
+			pods, err := podsWithLabel("app.kubernetes.io/component=web")
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(pods).To(HaveLen(int(want)))
 		}
 		g.Expect(found).To(Equal(1), "web Deployments")
 	}, 6*time.Minute, 2*time.Second).Should(Succeed())
+}
+
+// podsWithLabel lists the namespace's pods matching labelSelector, answering
+// an API error rather than failing the spec, for polled closures.
+func podsWithLabel(labelSelector string) ([]corev1.Pod, error) {
+	pods, err := kubeClient.CoreV1().Pods(config.Namespace).List(context.Background(),
+		metav1.ListOptions{LabelSelector: labelSelector})
+	if err != nil {
+		return nil, err
+	}
+	return pods.Items, nil
+}
+
+// webPodLogOf is one web pod's web container log since its process started.
+func webPodLogOf(podName string) (string, error) {
+	raw, err := kubeClient.CoreV1().Pods(config.Namespace).GetLogs(podName, &corev1.PodLogOptions{
+		Container: "concourse-web",
+	}).DoRaw(context.Background())
+	return string(raw), err
+}
+
+// webPodLog is the one web pod's whole log. Specs here run after
+// waitForWebRollout, so a second web pod is an error.
+func webPodLog() (string, error) {
+	pods, err := podsWithLabel("app.kubernetes.io/component=web")
+	if err != nil {
+		return "", err
+	}
+	if len(pods) != 1 {
+		return "", fmt.Errorf("want one web pod, found %d", len(pods))
+	}
+	return webPodLogOf(pods[0].Name)
+}
+
+// webPodLogSince is the web pod's log from byte offset on, for polled
+// closures: an error fails only this poll.
+func webPodLogSince(g Gomega, offset int) string {
+	webLog, err := webPodLog()
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(len(webLog)).To(BeNumerically(">=", offset), "the web log is shorter than before: another web process?")
+	return webLog[offset:]
 }
 
 // currentWebPod is the one web pod. Specs here run after waitForWebRollout.
@@ -440,20 +513,17 @@ func currentWebPod() corev1.Pod {
 // currentWebPodLog is the web container's whole log since its process started.
 func currentWebPodLog() string {
 	GinkgoHelper()
-	pod := currentWebPod()
-	raw, err := kubeClient.CoreV1().Pods(config.Namespace).GetLogs(pod.Name, &corev1.PodLogOptions{
-		Container: "concourse-web",
-	}).DoRaw(context.Background())
+	webLog, err := webPodLog()
 	Expect(err).ToNot(HaveOccurred())
-	return string(raw)
+	return webLog
 }
 
 // webLogLine is the web's first log line holding message.
 func webLogLine(message string) string {
 	GinkgoHelper()
 	var line string
-	Eventually(func() string {
-		for _, l := range strings.Split(currentWebPodLog(), "\n") {
+	Eventually(func(g Gomega) string {
+		for _, l := range strings.Split(webPodLogSince(g, 0), "\n") {
 			if strings.Contains(l, message+`"`) {
 				line = l
 				return line
@@ -462,6 +532,55 @@ func webLogLine(message string) string {
 		return ""
 	}, time.Minute, time.Second).ShouldNot(BeEmpty(), "the web never logged %s", message)
 	return line
+}
+
+// dumpWebPodLogsOnFailure prints every web pod's whole log when the current
+// spec failed. It runs as this container's JustAfterEach: the suite's
+// AfterEach dump comes after AfterAll, which replaces the web pod.
+func dumpWebPodLogsOnFailure() {
+	if !CurrentSpecReport().Failed() || config.Kubeconfig == "" {
+		return
+	}
+	pods, err := podsWithLabel("app.kubernetes.io/component=web")
+	if err != nil {
+		log.Printf("dumpWebPodLogsOnFailure: listing web pods: %v", err)
+		return
+	}
+	for _, pod := range pods {
+		webLog, err := webPodLogOf(pod.Name)
+		if err != nil {
+			log.Printf("dumpWebPodLogsOnFailure: log of %s: %v", pod.Name, err)
+			continue
+		}
+		log.Printf("=== web pod %s full log for FAILED spec %q ===\n%s=== end web pod %s log ===",
+			pod.Name, CurrentSpecReport().FullText(), webLog, pod.Name)
+	}
+}
+
+// launcherPath is where the job step runtime's launcher init copies
+// jb-launcher from, in the web's own image.
+const launcherPath = "/usr/local/concourse/bin/jb-launcher"
+
+// expectLauncherInImage fails, saying why, unless image holds jb-launcher.
+// Without it every step of a stepRuntime=job deployment dies in its launcher
+// init, and the specs fail far from the cause.
+func expectLauncherInImage(image string) {
+	GinkgoHelper()
+	out, err := exec.Command("docker", "create", image).Output()
+	Expect(err).ToNot(HaveOccurred(), "docker create %s", image)
+	id := strings.TrimSpace(string(out))
+	defer exec.Command("docker", "rm", id).Run()
+
+	copyOut := exec.Command("docker", "cp", id+":"+launcherPath, "-")
+	copyOut.Stdout = io.Discard
+	var stderr strings.Builder
+	copyOut.Stderr = &stderr
+	if err := copyOut.Run(); err != nil {
+		Fail(fmt.Sprintf("image %s has no %s, which a stepRuntime=job web copies into every step pod (%v: %s). "+
+			"In CI the k8s-e2e/k8s-behavioral-tests task builds this image: the k8s-e2e pipeline must be re-set "+
+			"from deploy/k8s-e2e-pipeline.yml, whose task copies jb-launcher in. Locally, rebuild the image "+
+			"from Dockerfile.build (CONCOURSE_REBUILD_IMAGE=1).", image, launcherPath, err, strings.TrimSpace(stderr.String())))
+	}
 }
 
 // webServiceAccount is the ServiceAccount the web pod runs as.
@@ -480,6 +599,12 @@ func serviceAccountUser(serviceAccount string) string {
 // resource in the suite's namespace.
 func serviceAccountMay(serviceAccount, verb, group, resource string) bool {
 	GinkgoHelper()
+	return serviceAccountMayG(Default, serviceAccount, verb, group, resource)
+}
+
+// serviceAccountMayG is serviceAccountMay asserting through g, so a polled
+// closure retries an API error.
+func serviceAccountMayG(g Gomega, serviceAccount, verb, group, resource string) bool {
 	review, err := kubeClient.AuthorizationV1().SubjectAccessReviews().Create(context.Background(), &authorizationv1.SubjectAccessReview{
 		Spec: authorizationv1.SubjectAccessReviewSpec{
 			User:   serviceAccountUser(serviceAccount),
@@ -492,23 +617,37 @@ func serviceAccountMay(serviceAccount, verb, group, resource string) bool {
 			},
 		},
 	}, metav1.CreateOptions{})
-	Expect(err).ToNot(HaveOccurred())
+	g.Expect(err).ToNot(HaveOccurred())
+	if err != nil {
+		return false
+	}
 	return review.Status.Allowed
 }
 
 // podManagerRole is the chart's pod-manager Role, the web's namespaced grant.
 func podManagerRole() *rbacv1.Role {
 	GinkgoHelper()
-	roles, err := kubeClient.RbacV1().Roles(config.Namespace).List(context.Background(), metav1.ListOptions{})
+	role, err := findPodManagerRole()
 	Expect(err).ToNot(HaveOccurred())
+	return role
+}
+
+// findPodManagerRole is podManagerRole answering an error, for polled closures.
+func findPodManagerRole() (*rbacv1.Role, error) {
+	roles, err := kubeClient.RbacV1().Roles(config.Namespace).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
 	var found []rbacv1.Role
 	for _, role := range roles.Items {
 		if strings.HasSuffix(role.Name, "-pod-manager") {
 			found = append(found, role)
 		}
 	}
-	Expect(found).To(HaveLen(1), "pod-manager Roles")
-	return &found[0]
+	if len(found) != 1 {
+		return nil, fmt.Errorf("want one pod-manager Role, found %d", len(found))
+	}
+	return &found[0], nil
 }
 
 func isStepJobRule(rule rbacv1.PolicyRule) bool {
@@ -532,9 +671,12 @@ func stripStepJobRules() []rbacv1.PolicyRule {
 func restorePodManagerRules(rules []rbacv1.PolicyRule) {
 	GinkgoHelper()
 	Eventually(func() error {
-		role := podManagerRole()
+		role, err := findPodManagerRole()
+		if err != nil {
+			return err
+		}
 		role.Rules = rules
-		_, err := kubeClient.RbacV1().Roles(config.Namespace).Update(context.Background(), role, metav1.UpdateOptions{})
+		_, err = kubeClient.RbacV1().Roles(config.Namespace).Update(context.Background(), role, metav1.UpdateOptions{})
 		return err
 	}, time.Minute, time.Second).Should(Succeed())
 }
@@ -548,6 +690,22 @@ func stepJobsOfPipeline(pipeline string) []batchv1.Job {
 	})
 	Expect(err).ToNot(HaveOccurred())
 	return jobs.Items
+}
+
+// stepJobUIDsOfPipeline is the UIDs of stepJobsOfPipeline, answering an API
+// error rather than failing the spec, for polled closures.
+func stepJobUIDsOfPipeline(pipeline string) ([]types.UID, error) {
+	jobs, err := kubeClient.BatchV1().Jobs(config.Namespace).List(context.Background(), metav1.ListOptions{
+		LabelSelector: "concourse.ci/worker,concourse.ci/pipeline=" + pipeline,
+	})
+	if err != nil {
+		return nil, err
+	}
+	uids := []types.UID{}
+	for _, job := range jobs.Items {
+		uids = append(uids, job.UID)
+	}
+	return uids, nil
 }
 
 // deleteStepJobsOfPipeline deletes, as the suite's admin, the Jobs a failed
