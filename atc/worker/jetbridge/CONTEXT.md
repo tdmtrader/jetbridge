@@ -90,12 +90,14 @@ creation, and what a mutating webhook added to the stored one, or a host path
 moved across a restart, deletes nothing. A refused pod is never handed back
 and never replaced by a fresh one, since its command may have begun: it is
 deleted (a step Job by its UID) and the step fails naming the grant it lacks.
-A Run-owned exact execution is refused the same way but neither deleted nor
-replaced; a resumed exact step Job gets no step envelope, so its launcher
-gives up without running the command unless a later web admits it. A step
-that finished keeps its result with no admission: nothing runs. Under `any`
-nothing is re-admitted or looked up. `fly intercept` is not a step and is not
-re-admitted.
+A step Job the step comes back to gets its step envelope only once it has
+passed, so a pod waiting for one starts nothing before re-admission decides; a
+new step Job gets it before it is unsuspended. A Run-owned exact execution
+is refused the same way but neither deleted nor replaced; a resumed exact
+step Job gets no step envelope, so its launcher gives up without running the
+command unless a later web admits it. A step that finished keeps its result
+with no admission: nothing runs. Under `any` nothing is re-admitted or looked
+up. `fly intercept` is not a step and is not re-admitted.
 _Avoid_: re-check (of a step pod's privilege)
 
 **Check eligibility**:
