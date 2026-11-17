@@ -106,7 +106,7 @@ func observeArtifactLookup(in ArtifactCluster, key, location, discovery string) 
 		out.readErr = errors.Join(out.readErr, err, reader.Close())
 	}
 	if in.live != nil && location == "recorded" {
-		out.readErr = errors.Join(out.readErr, in.nodeReads.requireNodeRead(in.NodeName))
+		out.readErr = errors.Join(out.readErr, in.nodeReads.requireDaemonResolution(in.Ctx, in.live.store.cluster.Clientset, in.Namespace, in.daemonService(), in.NodeName))
 	}
 	return out, nil
 }

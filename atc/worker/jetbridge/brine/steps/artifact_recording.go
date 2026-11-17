@@ -679,7 +679,7 @@ func artifactRecordDefinitions() []brine.StepDefinition {
 					return "", fmt.Errorf("draining %q: %w", handle, err)
 				}
 				if in.live != nil {
-					if err := in.nodeReads.requireNodeRead(in.NodeName); err != nil {
+					if err := in.nodeReads.requireDaemonResolution(in.Ctx, in.live.store.cluster.Clientset, in.Namespace, in.daemonService(), in.NodeName); err != nil {
 						return "", err
 					}
 				}

@@ -195,7 +195,7 @@ func (r *RemoteArtifact) daemon(rec *brine.Recorder) (*jetbridge.DaemonSetVolume
 	}
 	if r.Fallback {
 		volume.SetDaemonClient(jetbridge.NewDaemonClient(lagertest.NewTestLogger("brine-remote-artifact"),
-			d.store.cluster.Clientset, cfg.Namespace, livePeerService, int(d.port), nil))
+			d.store.cluster.Clientset, cfg.Namespace, livePeerWebService, int(d.port), nil))
 	}
 	return volume, nil
 }
