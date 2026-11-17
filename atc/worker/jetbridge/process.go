@@ -734,6 +734,13 @@ type execProcess struct {
 	// second time, whatever happens to the pod.
 	execTransportLive atomic.Bool
 
+	// execAccepted records that the kubelet accepted the step command's
+	// exec, after which it starts the command. It is the exec runtime's
+	// evidence that a cancelled command started, as main's container status
+	// is the job runtime's; execTransportLive is the other, for a command
+	// that has talked.
+	execAccepted atomic.Bool
+
 	// runningNodeName is retained from readiness, before teardown can remove
 	// the Pod whose hostPath holds a cancelled command's partial outputs.
 	runningNodeName string
@@ -1121,7 +1128,7 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 			execStdout,
 			execStderr,
 			p.processSpec.TTY != nil,
-			ExecAttrs{Purpose: "step-command"},
+			ExecAttrs{Purpose: "step-command", Accepted: func() { p.execAccepted.Store(true) }},
 		)
 		tracing.End(execSpan, err)
 		// A cancelled step reports its cancellation, whatever the torn-down
@@ -1281,7 +1288,9 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 			return p.reportExactOutcomeWithoutRerunning(commandCtx)
 		}
 
-		recordAbandonedOutputs = ctx.Err() != nil
+		// Only a command with evidence it started has outputs to file: an exec
+		// still dialling when the step was cancelled ran nothing.
+		recordAbandonedOutputs = ctx.Err() != nil && (p.execAccepted.Load() || p.execTransportLive.Load())
 		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
 		spanErr = err
 		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("exec in pod: %w", err))

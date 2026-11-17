@@ -109,7 +109,7 @@ func (e *SPDYExecutor) ExecInPod(
 	}
 	// The upgrader is wrapped so that an error stream closed with no status
 	// on it is an error, not the exit 0 client-go would otherwise report.
-	exec, err := remotecommand.NewSPDYExecutorForTransports(transport, statusCheckingUpgrader{upgrader}, http.MethodPost, req.URL())
+	exec, err := remotecommand.NewSPDYExecutorForTransports(transport, statusCheckingUpgrader{Upgrader: upgrader, accepted: attrs.Accepted}, http.MethodPost, req.URL())
 	if err != nil {
 		logger.Error("failed-to-create-spdy-executor", err)
 		spanErr = err
