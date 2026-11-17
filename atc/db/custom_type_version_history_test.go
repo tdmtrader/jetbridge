@@ -436,6 +436,98 @@ var _ = Describe("A custom resource type's image changing", func() {
 		})
 	})
 
+	Describe("copying a deprecated scope's versions with copy-resource-versions", func() {
+		var (
+			oldScopeID  int
+			sharedScope db.ResourceConfigScope
+		)
+
+		baseConfig := func(baseType string, source atc.Source) db.ResourceConfig {
+			config, err := resourceConfigFactory.FindOrCreateResourceConfig(baseType, source, nil)
+			Expect(err).ToNot(HaveOccurred())
+			return config
+		}
+
+		BeforeEach(func() {
+			oldScopeID = scenario.Resource("some-resource").ResourceConfigScopeID()
+
+			// Another team's resource on the base type, with the same source,
+			// shares a global scope.
+			var err error
+			sharedScope, err = baseConfig(dbtest.BaseResourceType, resourceSource).FindOrCreateScope(nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(sharedScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "b1"}, {"ref": "b2"}, {"ref": "b3"}})).To(Succeed())
+		})
+
+		It("refuses a custom type's carried-from scope into a scope other resources share", func() {
+			oldScope, err := configOnTypeImage("version", resourceSource).FindOrCreateScope(intptr(scenario.Resource("some-resource").ID()))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(oldScope.ID()).To(Equal(oldScopeID))
+			Expect(oldScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "b3"}, {"ref": "EVIL"}})).To(Succeed())
+
+			moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+			Expect(deprecated(oldScopeID)).To(BeTrue())
+
+			Expect(moveTo("some-resource", baseConfig(dbtest.BaseResourceType, resourceSource)).ID()).To(Equal(sharedScope.ID()))
+
+			resource := scenario.Resource("some-resource")
+			listed, err := resource.DeprecatedScopes()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(listed).ToNot(BeEmpty())
+			Expect(listed[0].ID).To(Equal(oldScopeID))
+
+			_, err = resource.CopyVersionsFromScope(oldScopeID)
+			Expect(err).To(MatchError(db.ErrCopyIntoSharedScope))
+			Expect(versionsOf(sharedScope.ID())).To(Equal([]string{"b1", "b2", "b3"}))
+		})
+
+		It("refuses a unique history's scope into a scope other resources share", func() {
+			resource := scenario.Resource("some-resource")
+
+			uniqueScope := moveTo("some-resource", baseConfig("some-unique-base-resource-type", atc.Source{"some": "fork"}))
+			Expect(uniqueScope.ResourceID()).ToNot(BeNil())
+			Expect(uniqueScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "b3"}, {"ref": "EVIL"}})).To(Succeed())
+			moveTo("some-resource", baseConfig("some-unique-base-resource-type", atc.Source{"some": "other-fork"}))
+			Expect(deprecated(uniqueScope.ID())).To(BeTrue())
+
+			Expect(moveTo("some-resource", baseConfig(dbtest.BaseResourceType, resourceSource)).ID()).To(Equal(sharedScope.ID()))
+
+			resource = scenario.Resource("some-resource")
+			_, err := resource.CopyVersionsFromScope(uniqueScope.ID())
+			Expect(err).To(MatchError(db.ErrCopyIntoSharedScope))
+			Expect(versionsOf(sharedScope.ID())).To(Equal([]string{"b1", "b2", "b3"}))
+		})
+
+		It("copies another version of the same type image's history into the shared scope", func() {
+			newScope := moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+			_, err := dbConn.Exec(`DELETE FROM resource_config_versions WHERE resource_config_scope_id = $1`, newScope.ID())
+			Expect(err).ToNot(HaveOccurred())
+
+			copied, err := scenario.Resource("some-resource").CopyVersionsFromScope(oldScopeID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(copied).To(Equal(3))
+			Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
+		})
+
+		It("copies a history of the same resource config into the shared scope", func() {
+			newScope := moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+			Expect(newScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v4"}})).To(Succeed())
+
+			revivedScope := moveTo("some-resource", configOnTypeImage("version", resourceSource))
+			var oldConfigID int
+			Expect(dbConn.QueryRow(`SELECT resource_config_id FROM resource_config_scopes WHERE id = $1`, oldScopeID).Scan(&oldConfigID)).To(Succeed())
+			Expect(revivedScope.ID()).ToNot(Equal(oldScopeID))
+			Expect(revivedScope.ResourceConfig().ID()).To(Equal(oldConfigID))
+			_, err := dbConn.Exec(`DELETE FROM resource_config_versions WHERE resource_config_scope_id = $1`, revivedScope.ID())
+			Expect(err).ToNot(HaveOccurred())
+
+			copied, err := scenario.Resource("some-resource").CopyVersionsFromScope(oldScopeID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(copied).To(Equal(3))
+			Expect(versionsOf(revivedScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
+		})
+	})
+
 	Context("while a move of the resource waits for a scope", func() {
 		var (
 			resource   db.Resource

@@ -331,24 +331,23 @@ func carryVersionHistoryForward(tx Tx, resourceID int, oldScopeID int, newScope 
 
 	var oldConfigID int
 	err := tx.QueryRow(`
-		SELECT old_config.id
-		FROM resource_config_scopes old_scope
-		JOIN resource_configs old_config ON old_config.id = old_scope.resource_config_id
-		JOIN resource_configs new_config ON new_config.id = $2
-		JOIN resource_caches old_image ON old_image.id = old_config.resource_cache_id
-		JOIN resource_caches new_image ON new_image.id = new_config.resource_cache_id
-		WHERE old_scope.id = $1
-		AND old_scope.resource_id IS NULL
-		AND old_config.id <> new_config.id
-		AND old_config.source_hash = new_config.source_hash
-		AND old_image.resource_config_id = new_image.resource_config_id
-		AND old_image.params_hash = new_image.params_hash
-	`, oldScopeID, newScope.ResourceConfig().ID()).Scan(&oldConfigID)
+		SELECT resource_config_id FROM resource_config_scopes
+		WHERE id = $1 AND resource_id IS NULL
+	`, oldScopeID).Scan(&oldConfigID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil
 		}
 		return err
+	}
+
+	sameImage, err := onlyTypeImageVersionDiffers(tx, oldConfigID, newScope.ResourceConfig().ID())
+	if err != nil {
+		return err
+	}
+
+	if !sameImage {
+		return nil
 	}
 
 	_, err = copyVersionsIntoScopeTx(tx, newScope.ID(), oldScopeID)
@@ -371,6 +370,30 @@ func carryVersionHistoryForward(tx Tx, resourceID int, oldScopeID int, newScope 
 		)
 	`, oldScopeID, resourceID, oldConfigID)
 	return err
+}
+
+// onlyTypeImageVersionDiffers says whether two resource configs are the same
+// resource on two versions of one custom type image: different configs with
+// the same source, each on a resource cache of the same type-image config
+// (base type, or parent type image, and type source) with the same params.
+// Only then is one's version history the other's.
+func onlyTypeImageVersionDiffers(tx Tx, configID, otherConfigID int) (bool, error) {
+	var differs bool
+	err := tx.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM resource_configs config
+			JOIN resource_configs other_config ON other_config.id = $2
+			JOIN resource_caches image ON image.id = config.resource_cache_id
+			JOIN resource_caches other_image ON other_image.id = other_config.resource_cache_id
+			WHERE config.id = $1
+			AND config.id <> other_config.id
+			AND config.source_hash = other_config.source_hash
+			AND image.resource_config_id = other_image.resource_config_id
+			AND image.params_hash = other_image.params_hash
+		)
+	`, configID, otherConfigID).Scan(&differs)
+	return differs, err
 }
 
 func (r *resource) CheckPlan(planFactory atc.PlanFactory, imagePlanner atc.ImagePlanner, from atc.Version, interval atc.CheckEvery, sourceDefaults atc.Source, skipInterval bool, skipIntervalRecursively bool) atc.Plan {
@@ -592,15 +615,74 @@ func (r *resource) DeprecatedScopes() ([]DeprecatedScope, error) {
 	return scopes, nil
 }
 
+// ErrCopyIntoSharedScope refuses a copy into a version history that other
+// resources share, from a history that is not theirs.
+var ErrCopyIntoSharedScope = errors.New("the resource's current version history is shared with other resources, and the source scope's history is not one of the same resource config or of another version of the same type image (same type source and params); copying it would write into their history")
+
 // CopyVersionsFromScope copies the given source scope's versions into this
 // resource's current scope, merged into its order as copyVersionsIntoScope
 // describes. Returns count of versions copied.
+//
+// A current scope that belongs to this resource alone (a base type with a
+// unique version history) takes any history. A current scope other resources
+// share, possibly other teams', takes only a history of the same resource
+// config or of another version of the same type image: anything else could
+// write versions its own checks never found into their history.
 func (r *resource) CopyVersionsFromScope(fromScopeID int) (int, error) {
-	if r.resourceConfigScopeID == 0 {
-		return 0, errors.New("resource does not have a current scope")
+	tx, err := r.conn.Begin()
+	if err != nil {
+		return 0, err
 	}
 
-	return copyVersionsIntoScope(r.conn, r.resourceConfigScopeID, fromScopeID)
+	defer Rollback(tx)
+
+	var scopeID, configID int
+	var scopeResourceID sql.NullInt64
+	err = tx.QueryRow(`
+		SELECT s.id, s.resource_id, s.resource_config_id
+		FROM resources r
+		JOIN resource_config_scopes s ON s.id = r.resource_config_scope_id
+		WHERE r.id = $1
+	`, r.id).Scan(&scopeID, &scopeResourceID, &configID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, errors.New("resource does not have a current scope")
+		}
+		return 0, err
+	}
+
+	if !scopeResourceID.Valid || int(scopeResourceID.Int64) != r.id {
+		var fromConfigID int
+		err = tx.QueryRow(`
+			SELECT resource_config_id FROM resource_config_scopes WHERE id = $1
+		`, fromScopeID).Scan(&fromConfigID)
+		if err != nil {
+			return 0, err
+		}
+
+		if fromConfigID != configID {
+			sameImage, err := onlyTypeImageVersionDiffers(tx, fromConfigID, configID)
+			if err != nil {
+				return 0, err
+			}
+
+			if !sameImage {
+				return 0, ErrCopyIntoSharedScope
+			}
+		}
+	}
+
+	copied, err := copyVersionsIntoScopeTx(tx, scopeID, fromScopeID)
+	if err != nil {
+		return 0, err
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return 0, err
+	}
+
+	return copied, nil
 }
 
 func (r *resource) ClearVersions() (int64, error) {
