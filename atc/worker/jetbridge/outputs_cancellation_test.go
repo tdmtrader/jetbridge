@@ -48,7 +48,11 @@ func signalStarted(started chan struct{}) {
 	}
 }
 
-func (e cancelledOutputExecutor) ExecInPod(ctx context.Context, _, _, _ string, _ []string, _ io.Reader, _, _ io.Writer, _ bool, _ ExecAttrs) error {
+func (e cancelledOutputExecutor) ExecInPod(ctx context.Context, _, _, _ string, _ []string, _ io.Reader, _, _ io.Writer, _ bool, attrs ExecAttrs) error {
+	// The kubelet accepted the exec: the command started.
+	if attrs.Accepted != nil {
+		attrs.Accepted()
+	}
 	signalStarted(e.started)
 	<-ctx.Done()
 	return errors.New("exec stream closed on cancellation")
@@ -237,6 +241,48 @@ var _ = Describe("An exit racing task cancellation", func() {
 			Expect(recorded).To(Equal(1))
 		})
 	}
+})
+
+// undeliveredExecutor is an exec that is still dialling when its step is
+// cancelled: the kubelet never accepted it, so the command never started.
+type undeliveredExecutor struct{ entered chan struct{} }
+
+func (e undeliveredExecutor) ExecInPod(ctx context.Context, _, _, _ string, _ []string, _ io.Reader, _, _ io.Writer, _ bool, _ ExecAttrs) error {
+	signalStarted(e.entered)
+	<-ctx.Done()
+	return errors.New("dial pod exec: " + ctx.Err().Error())
+}
+
+var _ = Describe("A task cancelled while its exec is dialling", func() {
+	It("records nothing: the pause pod was Running, but the command never started", func() {
+		pod := runningJobPod("task-pod", "node-1")
+		pod.Namespace = "test-ns"
+		clientset := fake.NewSimpleClientset(pod)
+		volumes := []*Volume{NewStubVolume("task-output-report", "worker", "/work/report")}
+		spec := runtime.ContainerSpec{Type: db.ContainerTypeTask, Outputs: runtime.OutputPaths{"report": "/work/report"}}
+		recorded := 0
+		backend := cancelledOutputBackend{record: func(context.Context, string, string, []*Volume, runtime.ContainerSpec) {
+			recorded++
+		}}
+		container := &Container{handle: "task-handle", podName: pod.Name, clientset: clientset,
+			config: Config{Namespace: "test-ns"}, metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
+			containerSpec: spec, volumes: volumes, storageBackend: backend}
+		entered := make(chan struct{}, 1)
+		process := newExecProcess("task", pod.Name, clientset, container.config, container,
+			undeliveredExecutor{entered: entered}, runtime.ProcessSpec{Path: "write-report"}, runtime.ProcessIO{}, backend)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			select {
+			case <-entered:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		_, err := process.Wait(ctx)
+		Expect(errors.Is(err, context.Canceled)).To(BeTrue(), "original cancellation lost: %v", err)
+		Expect(recorded).To(BeZero(), "an exec the kubelet never accepted started no command, and has no outputs to file")
+	})
 })
 
 // Only a task's outputs are the step's to file on cancellation. A get or put

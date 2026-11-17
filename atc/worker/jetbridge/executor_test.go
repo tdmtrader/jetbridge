@@ -190,3 +190,47 @@ func TestSPDYExecutorRefusesAnExecThatDeliveredNoExitStatus(t *testing.T) {
 		}
 	})
 }
+
+// The exec runtime's evidence that a cancelled command started is that the
+// kubelet accepted its exec. ExecInPod reports the upgrade, and only it.
+func TestSPDYExecutorReportsTheKubeletAcceptingTheExec(t *testing.T) {
+	exec := func(t *testing.T, server *httptest.Server) (bool, error) {
+		t.Helper()
+		config := &rest.Config{Host: server.URL}
+		clientset, err := kubernetes.NewForConfig(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		accepted := false
+		err = NewSPDYExecutor(clientset, config).ExecInPod(ctx, "ns", "pod", mainContainerName,
+			[]string{"true"}, nil, io.Discard, nil, false,
+			ExecAttrs{Purpose: "step-command", Accepted: func() { accepted = true }})
+		return accepted, err
+	}
+
+	t.Run("an upgraded exec is accepted", func(t *testing.T) {
+		accepted, err := exec(t, execStatusStubServer(t, true))
+		if err != nil {
+			t.Fatalf("ExecInPod = %v, want no error", err)
+		}
+		if !accepted {
+			t.Fatal("the kubelet upgraded the exec, but Accepted was not called")
+		}
+	})
+
+	t.Run("a refused exec is not", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "container not found", http.StatusNotFound)
+		}))
+		t.Cleanup(server.Close)
+		accepted, err := exec(t, server)
+		if err == nil {
+			t.Fatal("ExecInPod = nil against a kubelet that refused the exec")
+		}
+		if accepted {
+			t.Fatalf("Accepted was called for an exec the kubelet refused (%v)", err)
+		}
+	})
+}

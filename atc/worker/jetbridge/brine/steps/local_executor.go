@@ -35,7 +35,7 @@ type localExecutor struct {
 
 func (l localExecutor) ExecInPod(
 	ctx context.Context, namespace, podName string, container string, command []string,
-	stdin io.Reader, stdout, stderr io.Writer, tty bool, _ jetbridge.ExecAttrs,
+	stdin io.Reader, stdout, stderr io.Writer, tty bool, attrs jetbridge.ExecAttrs,
 ) error {
 	if l.failure != "" {
 		return errors.New(l.failure)
@@ -110,6 +110,11 @@ func (l localExecutor) ExecInPod(
 	}
 	cmd.Cancel = cleanup
 	defer func() { _ = cleanup() }()
+	// Past here the command is started, as a kubelet starts it once it has
+	// accepted the exec.
+	if attrs.Accepted != nil {
+		attrs.Accepted()
+	}
 	if tty {
 		// pty.Start establishes the session and controlling terminal itself.
 		terminal, err := pty.Start(cmd)

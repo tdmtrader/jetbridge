@@ -16,7 +16,13 @@ import (
 // underlying socket disappears. Protocols v4/v5 require an explicit Status
 // even for exit zero. Check the real stream, leaving decoding and nonzero
 // exit handling to client-go. Older protocols legitimately use empty success.
-type statusCheckingUpgrader struct{ spdy.Upgrader }
+//
+// accepted, when set, is called once the upgrade succeeded: the kubelet has
+// accepted the exec, and the command's start follows.
+type statusCheckingUpgrader struct {
+	spdy.Upgrader
+	accepted func()
+}
 
 // errExecStatusMissing is the sentinel the error stream returns when it
 // closed with nothing on it. client-go wraps it with %w ("error reading from
@@ -37,6 +43,9 @@ func (u statusCheckingUpgrader) NewConnection(resp *http.Response) (httpstream.C
 	conn, err := u.Upgrader.NewConnection(resp)
 	if err != nil {
 		return nil, err
+	}
+	if u.accepted != nil {
+		u.accepted()
 	}
 	switch resp.Header.Get(httpstream.HeaderProtocolVersion) {
 	case remotecommand.StreamProtocolV4Name, remotecommand.StreamProtocolV5Name:

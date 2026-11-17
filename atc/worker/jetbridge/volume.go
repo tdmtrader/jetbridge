@@ -29,6 +29,10 @@ type ExecAttrs struct {
 	Purpose         string // e.g. "step-command", "artifact-upload", "cache-upload", "stream-in", "stream-out", "gc-cleanup"
 	ArtifactKey     string // artifact store key, when applicable
 	VolumeMountPath string // volume mount path, when applicable
+	// Accepted, when set, is called once the kubelet has accepted the exec:
+	// it upgraded the connection, after which it starts the command. Before
+	// it, nothing of the command ran.
+	Accepted func()
 }
 
 type PodExecutor interface {
