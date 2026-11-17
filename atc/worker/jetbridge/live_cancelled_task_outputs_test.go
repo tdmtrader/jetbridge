@@ -206,7 +206,10 @@ func TestLiveCancelledTaskThatNeverStartedRecordsNothing(t *testing.T) {
 	for _, stepRuntime := range stepRuntimes {
 		t.Run(stepRuntime.name, func(t *testing.T) {
 			clientset, cfg := kubeClient(t)
-			ts := time.Now().Format("150405")
+			// Kubernetes stamps creation to the second; a pod made before
+			// this second is not this step's.
+			began := time.Now().Truncate(time.Second)
+			ts := began.Format("150405")
 			ctx, cancelAll := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancelAll()
 
@@ -255,7 +258,7 @@ func TestLiveCancelledTaskThatNeverStartedRecordsNothing(t *testing.T) {
 			if stepRuntime.name == jetbridge.StepRuntimeJob {
 				list = metav1.ListOptions{LabelSelector: "batch.kubernetes.io/job-name=" + podName}
 			}
-			for !anyPodUnschedulable(ctx, clientset, cfg.Namespace, list) {
+			for !podUnschedulable(ctx, t, clientset, cfg.Namespace, list, began) {
 				select {
 				case err := <-waited:
 					t.Fatalf("Wait returned before the pod was seen Unschedulable: %v (stderr %q)", err, stderr.String())
@@ -281,14 +284,23 @@ func TestLiveCancelledTaskThatNeverStartedRecordsNothing(t *testing.T) {
 	}
 }
 
-func anyPodUnschedulable(ctx context.Context, clientset kubernetes.Interface, namespace string, list metav1.ListOptions) bool {
+// podUnschedulable reports whether a pod this step made (created no earlier
+// than began, bound to no node) carries the scheduler's Unschedulable
+// condition, and logs the observation the abort is made on.
+func podUnschedulable(ctx context.Context, t *testing.T, clientset kubernetes.Interface, namespace string, list metav1.ListOptions, began time.Time) bool {
+	t.Helper()
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, list)
 	if err != nil {
+		t.Logf("listing the step's pod: %v", err)
 		return false
 	}
 	for _, pod := range pods.Items {
+		if pod.CreationTimestamp.Time.Before(began) || pod.Spec.NodeName != "" {
+			continue
+		}
 		for _, condition := range pod.Status.Conditions {
 			if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse && condition.Reason == corev1.PodReasonUnschedulable {
+				t.Logf("pod %s (uid %s, created %s) is Unschedulable: %s; aborting", pod.Name, pod.UID, pod.CreationTimestamp.Format(time.RFC3339), condition.Message)
 				return true
 			}
 		}
