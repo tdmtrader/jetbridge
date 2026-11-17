@@ -179,13 +179,20 @@ func (fixture *readQueueFixture) materialized(handle string) bool {
 	return err == nil
 }
 
-// Two reads queue behind whatever holds the slot for longer than a read's
-// whole timeout. If their wait counted against it, both would answer 503 from
-// the queue; they each get the full two seconds for a tiny tree once they
-// hold the slot.
+// Two reads queue behind whatever holds the slot for twice a read's whole
+// timeout. If their wait counted against it, both would answer 503 from the
+// queue while the slot is still held; they are both still waiting when it
+// frees.
+//
+// Once a read holds the slot it has the daemon's read timeout for its own
+// work, and that work is not what this spec is about: on a loaded node a tiny
+// tree's read has taken longer than two seconds. So the timeout the reads wait
+// past is short, and the one they read under once they hold the slot is the
+// minute a real read is given. A read that took its deadline before the queue
+// -- from the short timeout, at arrival -- answers 503 either way.
 func TestAQueuedMaterializeHasItsWholeReadTimeoutOnceItHoldsTheSlot(t *testing.T) {
-	const timeout = 2 * time.Second
-	fixture := newReadQueue(t, timeout)
+	const queued = 250 * time.Millisecond
+	fixture := newReadQueue(t, queued)
 	release := fixture.holdSlot(t)
 
 	handles := []string{"consumer-a", "consumer-b"}
@@ -200,7 +207,15 @@ func TestAQueuedMaterializeHasItsWholeReadTimeoutOnceItHoldsTheSlot(t *testing.T
 		}()
 	}
 	waitForQueue(t, func() bool { return fixture.inFlight.Load() == int64(len(handles)) })
-	time.Sleep(timeout + timeout/4)
+	// The hold is the subject: it outlasts the read timeout in wall time.
+	time.Sleep(2 * queued)
+	if waiting := fixture.inFlight.Load(); waiting != int64(len(handles)) {
+		t.Fatalf("%d of %d reads still waiting after twice the read timeout in the queue; the wait was charged to the read",
+			waiting, len(handles))
+	}
+	// Written before the slot frees, so before either read can take its
+	// timeout: freeing the slot happens before a waiter's taking it.
+	fixture.server.reads.timeout = time.Minute
 	release()
 	wg.Wait()
 
@@ -263,4 +278,3 @@ func waitForQueue(t *testing.T, condition func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
-
