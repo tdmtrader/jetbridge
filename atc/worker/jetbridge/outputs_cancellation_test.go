@@ -34,9 +34,22 @@ func (b cancelledOutputBackend) RecordOutputs(ctx context.Context, handle, node 
 	b.record(ctx, handle, node, volumes, spec)
 }
 
-type cancelledOutputExecutor struct{}
+// cancelledOutputExecutor holds the command open until its step is
+// cancelled. A non-nil started hears when the command was exec'd, so a spec
+// can cancel after that rather than after a guess at how long it takes.
+type cancelledOutputExecutor struct{ started chan struct{} }
 
-func (cancelledOutputExecutor) ExecInPod(ctx context.Context, _, _, _ string, _ []string, _ io.Reader, _, _ io.Writer, _ bool, _ ExecAttrs) error {
+// signalStarted tells started, if anyone listens, without blocking a second
+// exec (a resource command's stop is one).
+func signalStarted(started chan struct{}) {
+	select {
+	case started <- struct{}{}:
+	default:
+	}
+}
+
+func (e cancelledOutputExecutor) ExecInPod(ctx context.Context, _, _, _ string, _ []string, _ io.Reader, _, _ io.Writer, _ bool, _ ExecAttrs) error {
+	signalStarted(e.started)
 	<-ctx.Done()
 	return errors.New("exec stream closed on cancellation")
 }
@@ -83,9 +96,10 @@ var _ = Describe("Outputs of an abandoned task", func() {
 						clientset: clientset, config: Config{Namespace: "test-ns"}, metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
 						containerSpec: spec, volumes: volumes, storageBackend: backend}
 					var process runtime.Process
+					started := make(chan struct{}, 1)
 					if kind == "exec" {
 						process = newExecProcess("task", pod.Name, clientset, container.config, container,
-							cancelledOutputExecutor{}, runtime.ProcessSpec{Path: "write-report"}, runtime.ProcessIO{}, backend)
+							cancelledOutputExecutor{started: started}, runtime.ProcessSpec{Path: "write-report"}, runtime.ProcessIO{}, backend)
 					} else {
 						container.podName = job.Name
 						process = newJobProcess("task", container, runtime.ProcessIO{})
@@ -97,6 +111,17 @@ var _ = Describe("Outputs of an abandoned task", func() {
 					if termination == "timeout" {
 						ctx, cancel = context.WithTimeout(base, 100*time.Millisecond)
 						want = context.DeadlineExceeded
+					} else if kind == "exec" && placement == "running on a node" {
+						// Abort once the command was exec'd: a wall-clock
+						// abort could land before it, and record nothing.
+						ctx, cancel = context.WithCancel(base)
+						go func() {
+							select {
+							case <-started:
+								cancel()
+							case <-ctx.Done():
+							}
+						}()
 					} else {
 						ctx, cancel = context.WithCancel(base)
 						timer := time.AfterFunc(100*time.Millisecond, cancel)
@@ -163,9 +188,13 @@ var _ = Describe("Recording abandoned output locations", func() {
 
 // The transport can report the command's own exit as cancellation arrives.
 // Wait already preserves that exit; its output recording must survive too.
-type exitedOutputExecutor struct{ exit int }
+type exitedOutputExecutor struct {
+	exit    int
+	started chan struct{}
+}
 
 func (e exitedOutputExecutor) ExecInPod(ctx context.Context, _, _, _ string, _ []string, _ io.Reader, _, _ io.Writer, _ bool, _ ExecAttrs) error {
+	signalStarted(e.started)
 	<-ctx.Done()
 	if e.exit != 0 {
 		return &ExecExitError{ExitCode: e.exit}
@@ -188,10 +217,20 @@ var _ = Describe("An exit racing task cancellation", func() {
 			container := &Container{handle: "task-handle", podName: pod.Name, clientset: clientset,
 				config: Config{Namespace: "test-ns"}, metadata: db.ContainerMetadata{Type: db.ContainerTypeTask},
 				properties: map[string]string{}, storageBackend: backend}
+			started := make(chan struct{}, 1)
 			process := newExecProcess("task", pod.Name, clientset, container.config, container,
-				exitedOutputExecutor{exit: exit}, runtime.ProcessSpec{Path: "write-report"}, runtime.ProcessIO{}, backend)
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+				exitedOutputExecutor{exit: exit, started: started}, runtime.ProcessSpec{Path: "write-report"}, runtime.ProcessIO{}, backend)
+			// Cancel once the command was exec'd, so its exit is what races
+			// the cancellation rather than a deadline that could expire first.
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			go func() {
+				select {
+				case <-started:
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
 			result, err := process.Wait(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.ExitStatus).To(Equal(exit))
