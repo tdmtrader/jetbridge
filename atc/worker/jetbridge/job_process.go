@@ -116,7 +116,7 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		if finished {
 			return
 		}
-		if ctx.Err() != nil && pod != nil && p.storageBackend != nil {
+		if ctx.Err() != nil && p.container.metadata.Type == db.ContainerTypeTask && pod != nil && p.storageBackend != nil {
 			// The first observation may have been Pending. Ask once more
 			// before deleting the Job to learn whether main actually started.
 			// Observation must not consume the budget that stops the command.
@@ -137,7 +137,10 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 			logger.Error("failed-to-delete-unfinished-step-job", err)
 		}
 		cancelCleanup()
-		if ctx.Err() != nil && pod != nil && pod.Spec.NodeName != "" && mainStarted(pod) && p.storageBackend != nil {
+		// Only a task's outputs are filed: a get or put counts its Dir as an
+		// output once it completes, and an abandoned one holds a partial fetch.
+		if ctx.Err() != nil && p.container.metadata.Type == db.ContainerTypeTask &&
+			pod != nil && pod.Spec.NodeName != "" && mainStarted(pod) && p.storageBackend != nil {
 			// Deleting the Job stops its writer without letting the controller
 			// replace it. Garbage collection may still be ending the Pod;
 			// filing its live hostPath alias is safe for the same reason as in

@@ -199,3 +199,46 @@ var _ = Describe("An exit racing task cancellation", func() {
 		})
 	}
 })
+
+// Only a task's outputs are the step's to file on cancellation. A get or put
+// counts its Dir as an output once it completes; an aborted one leaves a
+// partial fetch there, which must not gain a locator entry, an artifact
+// daemon alias or a mirror to peer nodes.
+var _ = Describe("An abandoned resource step", func() {
+	for _, kind := range []string{"exec", "job"} {
+		for _, stepType := range []db.ContainerType{db.ContainerTypeGet, db.ContainerTypePut} {
+			It(kind+" records nothing when an aborted "+string(stepType)+" had started", func() {
+				pod := runningJobPod("resource-pod", "node-1")
+				pod.Namespace = "test-ns"
+				pod.Labels = map[string]string{jobUIDLabelKey: "job-uid"}
+				job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "resource-job", Namespace: "test-ns", UID: "job-uid"}}
+				clientset := fake.NewSimpleClientset(pod, job)
+				volumes := []*Volume{NewStubVolume("resource-dir", "worker", "/tmp/build/get")}
+				spec := runtime.ContainerSpec{Type: stepType, Dir: "/tmp/build/get"}
+				recorded := 0
+				backend := cancelledOutputBackend{record: func(context.Context, string, string, []*Volume, runtime.ContainerSpec) {
+					recorded++
+				}}
+				container := &Container{handle: "resource-handle", podName: pod.Name, jobUID: job.UID,
+					clientset: clientset, config: Config{Namespace: "test-ns"}, metadata: db.ContainerMetadata{Type: stepType},
+					containerSpec: spec, volumes: volumes, storageBackend: backend}
+				var process runtime.Process
+				if kind == "exec" {
+					process = newExecProcess("resource", pod.Name, clientset, container.config, container,
+						cancelledOutputExecutor{}, runtime.ProcessSpec{Path: "/opt/resource/in"},
+						runtime.ProcessIO{Stdin: strings.NewReader("{}"), Stdout: io.Discard}, backend)
+				} else {
+					container.podName = job.Name
+					process = newJobProcess("resource", container, runtime.ProcessIO{Stdout: io.Discard})
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				timer := time.AfterFunc(100*time.Millisecond, cancel)
+				DeferCleanup(func() { timer.Stop() })
+				defer cancel()
+				_, err := process.Wait(ctx)
+				Expect(errors.Is(err, context.Canceled)).To(BeTrue(), "original cancellation lost: %v", err)
+				Expect(recorded).To(BeZero(), "an aborted "+string(stepType)+" leaves a partial fetch, not outputs")
+			})
+		}
+	}
+})
