@@ -414,8 +414,10 @@ func waitForCoreDNS(kubeconfig string) {
 	}
 }
 
-// helmDeployConcourse deploys Concourse via the local Helm chart.
-func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
+// helmDeployConcourse deploys Concourse via the local Helm chart. Each of
+// extraSets is one more --set key=value over the suite's own values; an
+// upgrade without them puts the suite's deployment back as the suite set it.
+func helmDeployConcourse(kubeconfig, namespace, chartPath, image string, extraSets ...string) {
 	repo, tag := splitImageRef(image)
 
 	waitForCoreDNS(kubeconfig)
@@ -452,6 +454,9 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", "secrets.signingKeySecret=" + signingKeySecretName,
 		"--set", "secrets.encryptionKeySecret=" + encryptionKeySecretName,
 		"--timeout", "5m",
+	}
+	for _, set := range extraSets {
+		helmArgs = append(helmArgs, "--set", set)
 	}
 
 	cmd := exec.Command("helm", helmArgs...)
