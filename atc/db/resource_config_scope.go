@@ -276,11 +276,16 @@ func (r *resourceConfigScope) CopyVersionsFrom(sourceScopeID int) (int, error) {
 }
 
 // copyVersionsIntoScope copies the source scope's versions that the
-// destination scope lacks, ranked below every version the destination already
-// holds: the destination's own versions came from its checks, so they are
-// newer than anything in the source's history. The copied versions keep their
-// source order but are renumbered 1..N, and the destination's versions move up
-// by N, so the latest version stays the latest and no check_order repeats.
+// destination scope lacks, merged into the destination's order. A copied
+// version goes directly above the newest version both scopes hold that the
+// source ranks below it, so a version the source found after history already
+// carried lands above that history, not beneath it. A copied version the
+// source ranks below every shared version, or any copied version when the
+// scopes share none, goes below everything the destination holds: the
+// destination's own versions came from its checks, so they are newer than the
+// source's history. Copied versions keep their source order, the destination's
+// versions keep theirs, and the scope is renumbered 1..N so no check_order
+// repeats.
 func copyVersionsIntoScope(conn DbConn, toScopeID, fromScopeID int) (int, error) {
 	tx, err := conn.Begin()
 	if err != nil {
@@ -322,27 +327,51 @@ func copyVersionsIntoScopeTx(tx Tx, toScopeID, fromScopeID int) (int, error) {
 		return 0, nil
 	}
 
-	_, err = tx.Exec(`
-		UPDATE resource_config_versions
-		SET check_order = check_order + $2
-		WHERE resource_config_scope_id = $1
-	`, toScopeID, missing)
-	if err != nil {
-		return 0, err
-	}
-
+	// The destination is renumbered 1..N in the merged order: each of its
+	// versions keeps its place, and each copied version is ranked by its
+	// anchor, the destination's place for the newest version both scopes hold
+	// that the source ranks below it (0 when there is none), then by its
+	// source order.
 	result, err := tx.Exec(`
+		WITH shared AS (
+			SELECT s.check_order AS source_order, d.check_order AS dest_order
+			FROM resource_config_versions s
+			JOIN resource_config_versions d
+				ON d.resource_config_scope_id = $1
+				AND d.version_sha256 = s.version_sha256
+			WHERE s.resource_config_scope_id = $2
+		), merged AS (
+			SELECT d.id AS dest_id, NULL::bigint AS source_id,
+				d.check_order AS anchor, 0 AS copied, d.id AS tiebreak
+			FROM resource_config_versions d
+			WHERE d.resource_config_scope_id = $1
+			UNION ALL
+			SELECT NULL, s.id,
+				COALESCE((SELECT max(sh.dest_order) FROM shared sh WHERE sh.source_order < s.check_order), 0),
+				1, s.check_order
+			FROM resource_config_versions s
+			WHERE s.resource_config_scope_id = $2
+			AND NOT EXISTS (
+				SELECT 1 FROM resource_config_versions d
+				WHERE d.resource_config_scope_id = $1
+				AND d.version_sha256 = s.version_sha256
+			)
+		), ranked AS (
+			SELECT dest_id, source_id,
+				row_number() OVER (ORDER BY anchor, copied, tiebreak, source_id) AS check_order
+			FROM merged
+		), renumbered AS (
+			UPDATE resource_config_versions d
+			SET check_order = r.check_order
+			FROM ranked r
+			WHERE d.id = r.dest_id
+			AND d.check_order <> r.check_order
+		)
 		INSERT INTO resource_config_versions
 			(resource_config_scope_id, version, version_md5, version_sha256, metadata, check_order, span_context)
-		SELECT $1, s.version, s.version_md5, s.version_sha256, s.metadata,
-			row_number() OVER (ORDER BY s.check_order, s.id), s.span_context
-		FROM resource_config_versions s
-		WHERE s.resource_config_scope_id = $2
-		AND NOT EXISTS (
-			SELECT 1 FROM resource_config_versions d
-			WHERE d.resource_config_scope_id = $1
-			AND d.version_sha256 = s.version_sha256
-		)
+		SELECT $1, s.version, s.version_md5, s.version_sha256, s.metadata, r.check_order, s.span_context
+		FROM ranked r
+		JOIN resource_config_versions s ON s.id = r.source_id
 		ON CONFLICT (resource_config_scope_id, version_sha256) DO NOTHING
 	`, toScopeID, fromScopeID)
 	if err != nil {

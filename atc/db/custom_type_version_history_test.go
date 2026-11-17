@@ -255,6 +255,50 @@ var _ = Describe("A custom resource type's image changing", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(deprecatedScopes).To(HaveLen(1))
 		})
+
+		Context("when the old scope finds a version after the first resource has moved", func() {
+			var newScope db.ResourceConfigScope
+
+			BeforeEach(func() {
+				newScope = moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
+
+				// same-resource is still checked against the old image.
+				oldScope, err := configOnTypeImage("version", resourceSource).FindOrCreateScope(intptr(scenario.Resource("same-resource").ID()))
+				Expect(err).ToNot(HaveOccurred())
+				Expect(oldScope.ID()).To(Equal(oldScopeID))
+				Expect(oldScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v3"}, {"ref": "v4"}})).To(Succeed())
+				Expect(versionsOf(oldScopeID)).To(Equal([]string{"v1", "v2", "v3", "v4"}))
+			})
+
+			It("carries the newer version in above the ones already carried", func() {
+				moveTo("same-resource", configOnTypeImage("bumped", resourceSource))
+
+				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3", "v4"}))
+
+				latest, found, err := newScope.LatestVersion()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(latest.Version()).To(Equal(db.Version{"ref": "v4"}))
+
+				By("and a following check keeps that order")
+				Expect(newScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v3"}, {"ref": "v4"}})).To(Succeed())
+				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3", "v4"}))
+			})
+
+			It("carries it in below a version the new image's check found meanwhile", func() {
+				Expect(newScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v3"}, {"ref": "v5"}})).To(Succeed())
+
+				moveTo("same-resource", configOnTypeImage("bumped", resourceSource))
+
+				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3", "v4", "v5"}))
+
+				latest, found, err := newScope.LatestVersion()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(latest.Version()).To(Equal(db.Version{"ref": "v5"}))
+			})
+		})
 	})
 
 	Context("when the resource's source changes too", func() {
