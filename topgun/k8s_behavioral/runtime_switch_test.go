@@ -2,6 +2,7 @@ package behavioral_test
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"io"
 	"log"
@@ -136,52 +137,11 @@ var _ = Describe("0.4.6 step runtime and privilege mode, through the chart", Ord
 		Expect(line).To(ContainSubstring(taskGrantName + "=main/" + privPipeline + "/" + grantedJob))
 		Expect(line).To(ContainSubstring(checkGrantName + "=main/" + privPipeline + "/resource-type/" + grantedType))
 
-		pipelineFile := writePipelineFile("step-privilege.yml", fmt.Sprintf(`
-resource_types:
-- name: %[1]s
-  type: registry-image
-  privileged: true
-  source: {repository: concourse/mock-resource}
-- name: %[2]s
-  type: registry-image
-  privileged: true
-  source: {repository: concourse/mock-resource}
-
-resources:
-- name: granted-res
-  type: %[1]s
-  source: {}
-- name: ungranted-res
-  type: %[2]s
-  source: {}
-
-jobs:
-- name: %[3]s
-  plan:
-  - task: mount-tmpfs
-    privileged: true
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: sh
-        args:
-        - -ec
-        - |
-          mkdir -p /tmp/privilege-probe
-          mount -t tmpfs tmpfs /tmp/privilege-probe
-          echo privileged-mount-ok
-- name: %[4]s
-  plan:
-  - task: refused
-    privileged: true
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run:
-        path: echo
-        args: ["ungranted-task-ran"]
-`, grantedType, ungrantedType, grantedJob, ungrantedJob))
+		privilegeConfig := runtimeSwitchConfig("step-privilege.yml")
+		for _, name := range []string{grantedType, ungrantedType, grantedJob, ungrantedJob} {
+			Expect(privilegeConfig).To(ContainSubstring("- name: "+name+"\n"), "the config names %s, as the grants do", name)
+		}
+		pipelineFile := writePipelineFile("step-privilege.yml", privilegeConfig)
 		setAndUnpausePipeline(pipelineFile)
 
 		By("a privileged task of the granted job runs privileged: it mounts a tmpfs")
@@ -216,13 +176,7 @@ jobs:
 
 		By("a privileged one-off is refused: main/one-off holds no grant")
 		oneOff := recordStepObjects("concourse.ci/type=task,!concourse.ci/pipeline")
-		taskFile := writeTaskFile("privileged-one-off.yml", `
-platform: linux
-image_resource: {type: registry-image, source: {repository: busybox}}
-run:
-  path: echo
-  args: ["privileged-one-off-ran"]
-`)
+		taskFile := writeTaskFile("privileged-one-off.yml", runtimeSwitchConfig("privileged-one-off.yml"))
 		session = fly.Start("execute", "-p", "-c", taskFile)
 		Eventually(session, 3*time.Minute).Should(gexec.Exit())
 		output = string(session.Out.Contents()) + string(session.Err.Contents())
@@ -272,37 +226,7 @@ run:
 		By("holding every step Job of this pipeline from the web's deletes")
 		applyHoldPolicy(serviceAccount, pipelineName, "")
 
-		pipelineFile := writePipelineFile("runtime-switch.yml", `
-jobs:
-- name: leave
-  plan:
-  - task: first
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run: {path: echo, args: ["left-behind"]}
-- name: held
-  plan:
-  - task: hold
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run: {path: sleep, args: ["1800"]}
-- name: freed-before
-  plan:
-  - task: free-before
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run: {path: sleep, args: ["1800"]}
-- name: freed-after
-  plan:
-  - task: free-after
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      run: {path: sleep, args: ["1800"]}
-`)
+		pipelineFile := writePipelineFile("runtime-switch.yml", runtimeSwitchConfig("runtime-switch.yml"))
 		setAndUnpausePipeline(pipelineFile)
 
 		By("under job, a finished step and three aborted ones leave their Jobs")
@@ -419,6 +343,21 @@ jobs:
 		holdPipeline = ""
 	})
 })
+
+// runtimeSwitchConfigs are the configs the specs here set. They are files,
+// not literals, so the unit tier can hold them to the API's validation
+// (atc/configvalidate/k8s_behavioral_configs_test.go): this tier only runs in
+// CI, and a config the API refuses fails it there, deep into a run.
+//
+//go:embed testdata/runtime-switch/*.yml
+var runtimeSwitchConfigs embed.FS
+
+func runtimeSwitchConfig(name string) string {
+	GinkgoHelper()
+	content, err := runtimeSwitchConfigs.ReadFile("testdata/runtime-switch/" + name)
+	Expect(err).ToNot(HaveOccurred())
+	return string(content)
+}
 
 // upgradeConcourse runs the suite's helm upgrade with extra values and waits
 // until the new web is the only web and answers.

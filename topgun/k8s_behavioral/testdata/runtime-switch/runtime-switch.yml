@@ -1,0 +1,32 @@
+# The switch spec's pipeline (runtime_switch_test.go). Its job and step names
+# are the labels the spec selects on.
+# atc/configvalidate/k8s_behavioral_configs_test.go validates this file.
+jobs:
+- name: leave
+  plan:
+  - task: first
+    config:
+      platform: linux
+      image_resource: {type: registry-image, source: {repository: busybox}}
+      run: {path: echo, args: ["left-behind"]}
+- name: held
+  plan:
+  - task: hold
+    config:
+      platform: linux
+      image_resource: {type: registry-image, source: {repository: busybox}}
+      run: {path: sleep, args: ["1800"]}
+- name: freed-before
+  plan:
+  - task: free-before
+    config:
+      platform: linux
+      image_resource: {type: registry-image, source: {repository: busybox}}
+      run: {path: sleep, args: ["1800"]}
+- name: freed-after
+  plan:
+  - task: free-after
+    config:
+      platform: linux
+      image_resource: {type: registry-image, source: {repository: busybox}}
+      run: {path: sleep, args: ["1800"]}
