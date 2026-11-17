@@ -146,10 +146,13 @@ func TestTheOutputPlaneChangesNoOrdinaryPodWhenNothingIsCaptured(t *testing.T) {
 		}
 
 		// A REUSED handle is the one ordinary pod that legitimately differs,
-		// and it differs in exactly one place: the cleanup init's command,
-		// which now asks the ledger before removing anything. Everything else
-		// -- containers, volumes, mounts, affinity, security -- is equal, and
-		// the comparison says so by zeroing only that field.
+		// and it differs in exactly one container: the cleanup init's command,
+		// which now asks the ledger before removing anything, and the HOST_IP
+		// that question is dialled at. Everything else -- containers, volumes,
+		// mounts, affinity, security -- is equal, and the comparison says so
+		// by zeroing only those two fields. (It once zeroed the command alone,
+		// and so passed a probe with no HOST_IP to dial; see
+		// TestEveryInitContainerDefinesEveryVariableItsScriptExpands.)
 		if len(off.Spec.InitContainers) != 1 || len(on.Spec.InitContainers) != 1 {
 			t.Fatalf("reused pods carry %d and %d init containers; this comparison assumes one",
 				len(off.Spec.InitContainers), len(on.Spec.InitContainers))
@@ -163,8 +166,12 @@ func TestTheOutputPlaneChangesNoOrdinaryPodWhenNothingIsCaptured(t *testing.T) {
 				"one destructive path in a Pod that reached no ledger guard, and enabling the " +
 				"plane is what gives it one")
 		}
+		if len(offCleanup.Env) != 0 {
+			t.Errorf("the plain cleanup init carries env %v; it dials nothing", offCleanup.Env)
+		}
 		off.Spec.InitContainers[0].Command = nil
 		on.Spec.InitContainers[0].Command = nil
+		on.Spec.InitContainers[0].Env = nil
 		if !reflect.DeepEqual(off.Spec, on.Spec) {
 			t.Errorf("enabling the output plane changed a reused ordinary pod somewhere OTHER "+
 				"than the cleanup command:\n off: %+v\n  on: %+v", off.Spec, on.Spec)
