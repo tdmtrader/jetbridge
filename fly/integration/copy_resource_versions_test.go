@@ -131,5 +131,22 @@ var _ = Describe("copy-resource-versions", func() {
 				Eventually(sess).Should(gexec.Exit(1))
 			})
 		})
+
+		Context("when the copy is refused because the current scope is shared", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("PUT", expectedURL),
+						ghttp.RespondWith(http.StatusConflict, `{"error":"the resource's current version history is shared with other resources"}`),
+					),
+				)
+			})
+
+			It("prints the reason and fails", func() {
+				Eventually(sess).Should(gexec.Exit(1))
+				Expect(sess.Err).To(gbytes.Say("409"))
+				Expect(sess.Err).To(gbytes.Say("shared with other resources"))
+			})
+		})
 	})
 })

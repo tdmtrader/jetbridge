@@ -2,6 +2,7 @@ package versionserver
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -69,6 +70,13 @@ func (s *Server) CopyResourceVersions(pipeline db.Pipeline) http.Handler {
 		}
 
 		copied, err := resource.CopyVersionsFromScope(req.FromScopeID)
+		if errors.Is(err, db.ErrCopyIntoSharedScope) {
+			logger.Info("refused-copy-into-shared-scope", lager.Data{"from-scope-id": req.FromScopeID})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 		if err != nil {
 			logger.Error("failed-to-copy-versions", err)
 			w.WriteHeader(http.StatusInternalServerError)
