@@ -770,6 +770,10 @@ jobs:
           echo "=== Pre-compiling everything before Docker (avoids CPU contention with containerd) ==="
           GOOS=linux GOARCH=amd64 go build -o concourse-linux-amd64 ./cmd/concourse
           GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
+          # The job step runtime's launcher, which step pods copy out of the
+          # web's own image: the runtime switch spec deploys stepRuntime=job.
+          # Static, as in Dockerfile.build, since it runs in any step image.
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o jb-launcher-linux-amd64 ./cmd/jb-launcher
           go build -o /tmp/fly ./fly
           go test -c -o /tmp/behavioral.test ./topgun/k8s_behavioral/
 
@@ -801,13 +805,14 @@ jobs:
           # Stage only the needed binaries to avoid sending the full repo (~315MB)
           # as Docker build context — that causes OOM/eviction in constrained pods.
           mkdir -p /tmp/docker-build
-          cp concourse-linux-amd64 artifact-daemon-linux-amd64 /tmp/docker-build/
+          cp concourse-linux-amd64 artifact-daemon-linux-amd64 jb-launcher-linux-amd64 /tmp/docker-build/
           cat <<'DOCKERFILE' > /tmp/docker-build/Dockerfile
           FROM debian:bookworm-slim
           RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ca-certificates dumb-init && rm -rf /var/lib/apt/lists/*
           COPY concourse-linux-amd64 /usr/local/concourse/bin/concourse
           COPY artifact-daemon-linux-amd64 /usr/local/concourse/bin/artifact-daemon
-          RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon
+          COPY jb-launcher-linux-amd64 /usr/local/concourse/bin/jb-launcher
+          RUN chmod +x /usr/local/concourse/bin/concourse /usr/local/concourse/bin/artifact-daemon /usr/local/concourse/bin/jb-launcher
           ENV PATH="/usr/local/concourse/bin:${PATH}"
           ENTRYPOINT ["dumb-init", "concourse"]
           DOCKERFILE
