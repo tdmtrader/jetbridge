@@ -22,14 +22,17 @@ import (
 	"github.com/concourse/concourse/hangar/objectstore"
 )
 
+// The inventory is what crosses the wire here; the 130 objects it pages
+// through are seeded on the store itself. Each create is three fsyncs, and on
+// a loaded node one of them can stall past any one request's client timeout,
+// which says nothing about how a listing pages.
 func TestMetadataHeavyInventoryMakesCursorProgress(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	pub := f.client(t, "publisher")
 	metadata := map[string]string{"large": strings.Repeat("x", 64<<10-32)}
 	const count = 130
 	for i := 0; i < count; i++ {
-		if _, err := pub.CreateAbsent(ctx, "outputs", fmt.Sprintf("tree-%03d", i), metadata, strings.NewReader("body")); err != nil {
+		if _, err := f.store.CreateAbsent(ctx, "outputs", fmt.Sprintf("tree-%03d", i), metadata, strings.NewReader("body")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -71,6 +74,7 @@ func TestMetadataHeavyInventoryMakesCursorProgress(t *testing.T) {
 
 type fixture struct {
 	server   *httptest.Server
+	store    *disk.Store
 	root, ca string
 	tokens   map[string]string
 }
@@ -97,7 +101,7 @@ func setup(t *testing.T) fixture {
 	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return fixture{server: server, root: root, ca: ca, tokens: tokens}
+	return fixture{server: server, store: store, root: root, ca: ca, tokens: tokens}
 }
 func (f fixture) config(t *testing.T, role string) disk.ClientConfig {
 	t.Helper()
