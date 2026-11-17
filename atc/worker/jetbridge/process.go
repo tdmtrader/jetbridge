@@ -866,7 +866,10 @@ func (p *execProcess) Wait(ctx context.Context) (result runtime.ProcessResult, r
 		if ctx.Err() != nil && p.supervised() && !p.container.lookedUp {
 			p.deleteAbandonedPod(logger)
 		}
-		if recordAbandonedOutputs && p.runningNodeName != "" && p.container != nil && !p.container.lookedUp && p.storageBackend != nil {
+		// Only a task's outputs are filed: a get or put counts its Dir as an
+		// output once it completes, and an abandoned one holds a partial fetch.
+		if recordAbandonedOutputs && p.runningNodeName != "" && p.container != nil && p.container.metadata.Type == db.ContainerTypeTask &&
+			!p.container.lookedUp && p.storageBackend != nil {
 			recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), outputRecordBudget)
 			defer cancel()
 			// Resource commands have already joined their stop defer; a
