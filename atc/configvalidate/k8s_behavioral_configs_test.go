@@ -23,6 +23,25 @@ var _ = Describe("the k8s-behavioral runtime switch configs", func() {
 	// A name of the shape the suite gives a pipeline (randomPipelineName).
 	const pipelineName = "k8s-beh-3f1c2a9e-1b2c-4d5e-8f90-0123456789ab"
 
+	// The markers the specs read from build output as proof a command ran
+	// (runtimeSwitchMarkers there). fly prints a step's command line before
+	// running it, so a config that writes one literally proves nothing: the
+	// marker shows up even when the command was refused (build 240).
+	markers := []string{"privileged-mount-ok", "ungranted-task-ran", "privileged-one-off-ran", "left-behind"}
+
+	DescribeTable("writes no output marker literally",
+		func(file string) {
+			payload, err := os.ReadFile(filepath.Join(dir, file))
+			Expect(err).ToNot(HaveOccurred())
+			for _, marker := range markers {
+				Expect(string(payload)).ToNot(ContainSubstring(marker))
+			}
+		},
+		Entry("the privilege spec's pipeline", "step-privilege.yml"),
+		Entry("the switch spec's pipeline", "runtime-switch.yml"),
+		Entry("the privilege spec's one-off task", "privileged-one-off.yml"),
+	)
+
 	DescribeTable("a pipeline config the API saves",
 		func(file string) {
 			payload, err := os.ReadFile(filepath.Join(dir, file))
