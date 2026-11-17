@@ -231,14 +231,7 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		{Name: artifactDaemonHostPathVolumeName, MountPath: ArtifactMountPath, ReadOnly: true},
 	}, mounts...)
 
-	envVars := []corev1.EnvVar{
-		{
-			Name: "HOST_IP",
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"},
-			},
-		},
-	}
+	envVars := []corev1.EnvVar{hostIPEnv()}
 
 	if len(items) > 0 {
 		initContainers = append(initContainers, corev1.Container{
@@ -255,6 +248,15 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 	}
 
 	return append(initContainers, managedInits...), nil
+}
+
+// hostIPEnv is the node's IP, from the Downward API, as HOST_IP: the host
+// every script that opens with artifactwire's ShellPrelude dials.
+func hostIPEnv() corev1.EnvVar {
+	return corev1.EnvVar{
+		Name:      "HOST_IP",
+		ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"}},
+	}
 }
 
 func (b *DaemonSetBackend) daemonResolveBatchCommand(items []artifactwire.ResolveRequest) []string {
@@ -375,8 +377,15 @@ func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerTyp
 echo "[cleanup-stale] removing stale hostPath data: ${TARGET}" >&2
 rm -rf "${TARGET}"
 mkdir -p "${TARGET}"`, shellQuote(cleanupPath))
+	// The ledger probe dials the daemon on this pod's own node, which the
+	// script finds in ${HOST_IP} -- under `set -u`. Without the Downward API
+	// variable the shell exits 2 before its first command, so every pod for a
+	// reused handle on an output-plane deployment failed in this init, and a
+	// re-driven build that needed one looped on it.
+	var env []corev1.EnvVar
 	if b.config.OutputPlaneEnabled {
 		script = b.ledgerCheckedCleanupScript(handle, cleanupPath)
+		env = []corev1.EnvVar{hostIPEnv()}
 	}
 
 	allowEscalation := false
@@ -384,6 +393,7 @@ mkdir -p "${TARGET}"`, shellQuote(cleanupPath))
 		Name:    "cleanup-stale",
 		Image:   helperImage,
 		Command: []string{"sh", "-c", script},
+		Env:     env,
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: artifactDaemonHostPathVolumeName, MountPath: ArtifactMountPath},
 		},

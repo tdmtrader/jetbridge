@@ -73,7 +73,7 @@ func (b *DaemonSetBackend) managedInputInit(handle string, input runtime.Input, 
 	return corev1.Container{
 		Name: fmt.Sprintf("materialize-run-input-%d", index), Image: b.helperImage(), ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"sh", "-c", fmt.Sprintf(managedInputScript, port, base64.StdEncoding.EncodeToString(payload), base64.StdEncoding.EncodeToString(receipt), int64(output.ReadTransferTimeout(b.config.OutputOperationTimeout).Seconds()), int64(managedInputRetryBudget.Seconds()), managedInputRetryCapSeconds)},
-		Env:             []corev1.EnvVar{{Name: "HOST_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"}}}},
+		Env:             []corev1.EnvVar{hostIPEnv()},
 		VolumeMounts:    []corev1.VolumeMount{{Name: name, MountPath: "/hangar-input", ReadOnly: true}},
 		SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &allowEscalation},
 	}, nil
