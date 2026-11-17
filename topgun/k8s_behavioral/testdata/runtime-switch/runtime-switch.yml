@@ -8,7 +8,8 @@ jobs:
     config:
       platform: linux
       image_resource: {type: registry-image, source: {repository: busybox}}
-      run: {path: echo, args: ["left-behind"]}
+      # The marker is built by the shell: fly prints the command line first.
+      run: {path: sh, args: ["-c", "echo left-$(echo behind)"]}
 - name: held
   plan:
   - task: hold

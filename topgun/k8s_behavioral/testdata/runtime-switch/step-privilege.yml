@@ -1,6 +1,11 @@
 # The privilege spec's pipeline (runtime_switch_test.go). The names below are
 # that spec's constants and its grants' owners: change them together.
 # atc/configvalidate/k8s_behavioral_configs_test.go validates this file.
+#
+# Each marker a spec looks for in build output is built by the shell
+# ($(echo ...)): fly prints the step's command line before running it, so a
+# marker written literally there shows up even when the command never ran
+# (build 240).
 resource_types:
 - name: priv-mock
   type: registry-image
@@ -34,7 +39,7 @@ jobs:
         - |
           mkdir -p /tmp/privilege-probe
           mount -t tmpfs tmpfs /tmp/privilege-probe
-          echo privileged-mount-ok
+          echo privileged-mount-$(echo ok)
 - name: ungranted-job
   plan:
   - task: refused
@@ -43,8 +48,8 @@ jobs:
       platform: linux
       image_resource: {type: registry-image, source: {repository: busybox}}
       run:
-        path: echo
-        args: ["ungranted-task-ran"]
+        path: sh
+        args: ["-c", "echo ungranted-task-$(echo ran)"]
 # The config validator refuses a resource no job uses. This job uses both and
 # is never triggered (no get triggers it), so it makes no build and no pod;
 # the spec checks the resources with fly check-resource.

@@ -251,18 +251,19 @@ var _ = Describe("0.4.6 step runtime and privilege mode, through the chart", Ord
 			}, 2*time.Minute, time.Second).Should(Equal("aborted"), "build %s/1", job)
 		}
 
+		// Keyed by the Concourse job label, which build 240 showed on real
+		// step Jobs and pods; each job here runs one task.
 		left := map[string]types.UID{}
 		for _, job := range stepJobsOfPipeline(pipelineName) {
 			Expect(job.Labels["concourse.ci/runtime"]).To(Equal("job"), "Job %s", job.Name)
 			if job.Labels["concourse.ci/type"] == "task" {
-				left[job.Labels["concourse.ci/step"]] = job.UID
+				left[job.Labels["concourse.ci/job"]] = job.UID
 			}
 		}
-		Expect(left).To(HaveKey("first"))
-		Expect(left).To(HaveKey("hold"))
-		Expect(left).To(HaveKey("free-before"))
-		Expect(left).To(HaveKey("free-after"))
-		allLeft := []types.UID{left["first"], left["free-before"], left["hold"], left["free-after"]}
+		for _, job := range []string{"leave", "freed-before", "held", "freed-after"} {
+			Expect(left).To(HaveKey(job))
+		}
+		allLeft := []types.UID{left["leave"], left["freed-before"], left["held"], left["freed-after"]}
 		leftUIDs := func(g Gomega) []types.UID {
 			uids, err := stepJobUIDsOfPipeline(pipelineName)
 			g.Expect(err).ToNot(HaveOccurred())
@@ -290,9 +291,9 @@ var _ = Describe("0.4.6 step runtime and privilege mode, through the chart", Ord
 		// Only what the web logs once the hold is narrowed is evidence about
 		// the narrowed passes; earlier passes refused every Job.
 		narrowedAt := len(currentWebPodLog())
-		applyHoldPolicy(serviceAccount, pipelineName, "hold")
-		for _, step := range []string{"first", "free-before", "free-after"} {
-			Eventually(leftUIDs, 3*time.Minute, time.Second).ShouldNot(ContainElement(left[step]), "step Job %s", step)
+		applyHoldPolicy(serviceAccount, pipelineName, "held")
+		for _, job := range []string{"leave", "freed-before", "freed-after"} {
+			Eventually(leftUIDs, 3*time.Minute, time.Second).ShouldNot(ContainElement(left[job]), "step Job of %s", job)
 		}
 		for _, job := range []string{"leave", "freed-before", "freed-after"} {
 			Eventually(func(g Gomega) []corev1.Pod {
@@ -301,7 +302,7 @@ var _ = Describe("0.4.6 step runtime and privilege mode, through the chart", Ord
 				return pods
 			}, 3*time.Minute, time.Second).Should(BeEmpty(), "pods of %s", job)
 		}
-		Consistently(leftUIDs, 25*time.Second, time.Second).Should(ContainElement(left["hold"]))
+		Consistently(leftUIDs, 25*time.Second, time.Second).Should(ContainElement(left["held"]))
 		Eventually(func(g Gomega) string {
 			return webPodLogSince(g, narrowedAt)
 		}, time.Minute, time.Second).Should(MatchRegexp(`failed-to-delete-pod"[^\n]*"pod":"`+holdPod+`"`),
@@ -327,7 +328,7 @@ var _ = Describe("0.4.6 step runtime and privilege mode, through the chart", Ord
 		afterNote = afterNote[strings.Index(afterNote, "\n")+1:]
 		Expect(afterNote).ToNot(ContainSubstring(`failed-to-delete-pod"`))
 		Expect(afterNote).ToNot(ContainSubstring(`failed-to-cleanup-completed-pod"`))
-		Expect(leftUIDs(Default)).To(ContainElement(left["hold"]))
+		Expect(leftUIDs(Default)).To(ContainElement(left["held"]))
 
 		By("restoring the chart's Role and lifting the hold")
 		restorePodManagerRules(savedRoleRules)
@@ -356,8 +357,18 @@ func runtimeSwitchConfig(name string) string {
 	GinkgoHelper()
 	content, err := runtimeSwitchConfigs.ReadFile("testdata/runtime-switch/" + name)
 	Expect(err).ToNot(HaveOccurred())
+	for _, marker := range runtimeSwitchMarkers {
+		Expect(string(content)).ToNot(ContainSubstring(marker),
+			"%s writes the marker %q literally: fly echoes the command line, so the marker would show up whether or not it ran", name, marker)
+	}
 	return string(content)
 }
+
+// runtimeSwitchMarkers are the strings the specs here look for, or look for
+// the absence of, in build output as proof a command ran. Each is built by the
+// shell in the configs (atc/configvalidate/k8s_behavioral_configs_test.go
+// holds the same list).
+var runtimeSwitchMarkers = []string{"privileged-mount-ok", "ungranted-task-ran", "privileged-one-off-ran", "left-behind"}
 
 // upgradeConcourse runs the suite's helm upgrade with extra values and waits
 // until the new web is the only web and answers.
@@ -657,17 +668,17 @@ func deleteStepJobsOfPipeline(pipeline string) {
 }
 
 // applyHoldPolicy refuses every delete, by the web's ServiceAccount, of a Job
-// labelled with pipeline's name (and, when onlyStep is set, with that step
+// labelled with pipeline's name (and, when onlyJob is set, with that job
 // name), and waits until the API server enforces exactly that. The refusal is
 // 422 Invalid, not 403: a refusal the reaper must log as an error and step
 // past, distinct from the Forbidden of a Role without batch/jobs, which it
 // reports once and keeps quiet about. Applying it again replaces it.
-func applyHoldPolicy(serviceAccount, pipeline, onlyStep string) {
+func applyHoldPolicy(serviceAccount, pipeline, onlyJob string) {
 	GinkgoHelper()
 	held := fmt.Sprintf("has(oldObject.metadata.labels) && "+
 		"'concourse.ci/pipeline' in oldObject.metadata.labels && oldObject.metadata.labels['concourse.ci/pipeline'] == '%s'", pipeline)
-	if onlyStep != "" {
-		held += fmt.Sprintf(" && 'concourse.ci/step' in oldObject.metadata.labels && oldObject.metadata.labels['concourse.ci/step'] == '%s'", onlyStep)
+	if onlyJob != "" {
+		held += fmt.Sprintf(" && 'concourse.ci/job' in oldObject.metadata.labels && oldObject.metadata.labels['concourse.ci/job'] == '%s'", onlyJob)
 	}
 	manifest := fmt.Sprintf(`
 apiVersion: admissionregistration.k8s.io/v1
@@ -719,32 +730,32 @@ spec:
 		}
 	}
 
-	heldStep := onlyStep
-	if heldStep == "" {
-		heldStep = "canary"
+	heldJob := onlyJob
+	if heldJob == "" {
+		heldJob = "canary"
 	}
-	heldCanary := createCanaryJob(pipeline, heldStep)
+	heldCanary := createCanaryJob(pipeline, heldJob)
 	defer deleteJobAsAdmin(heldCanary)
 	Eventually(dryRunDelete(heldCanary), time.Minute, time.Second).Should(SatisfyAll(
 		WithTransform(apierrors.IsInvalid, BeTrue()),
 		MatchError(ContainSubstring(holdPolicyName)),
 	))
-	if onlyStep != "" {
-		freeCanary := createCanaryJob(pipeline, onlyStep+"-not")
+	if onlyJob != "" {
+		freeCanary := createCanaryJob(pipeline, onlyJob+"-not")
 		defer deleteJobAsAdmin(freeCanary)
 		Eventually(dryRunDelete(freeCanary), time.Minute, time.Second).Should(Succeed())
 	}
 }
 
-// createCanaryJob creates a suspended Job labelled with pipeline and step and
+// createCanaryJob creates a suspended Job labelled with pipeline and job and
 // no worker label, so the reaper never sees it, and returns its name.
-func createCanaryJob(pipeline, step string) string {
+func createCanaryJob(pipeline, job string) string {
 	GinkgoHelper()
 	suspend := true
 	canary, err := kubeClient.BatchV1().Jobs(config.Namespace).Create(context.Background(), &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "k8s-beh-hold-canary-",
-			Labels:       map[string]string{"concourse.ci/pipeline": pipeline, "concourse.ci/step": step},
+			Labels:       map[string]string{"concourse.ci/pipeline": pipeline, "concourse.ci/job": job},
 		},
 		Spec: batchv1.JobSpec{
 			Suspend: &suspend,
@@ -798,6 +809,17 @@ func recordStepObjects(selector string) func() ([]corev1.Pod, []batchv1.Job) {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
+	// The watches start at their lists' resource versions, so an object
+	// created between a list and its watch is still delivered; one listed is
+	// not new.
+	before := map[string]bool{}
+	for _, pod := range podList.Items {
+		before["pod/"+pod.Name] = true
+	}
+	for _, job := range jobList.Items {
+		before["job/"+job.Name] = true
+	}
+
 	var (
 		mu          sync.Mutex
 		pods        []corev1.Pod
@@ -830,8 +852,15 @@ func recordStepObjects(selector string) func() ([]corev1.Pod, []batchv1.Job) {
 		defer wg.Done()
 		for ev := range w.ResultChan() {
 			if ev.Type == watch.Error {
+				// Stopping a watch can itself deliver an Error: client-go's
+				// StreamWatcher, its stream closed under it, selects between
+				// its done channel and sending "unable to decode an event from
+				// the watch stream", and either may win while this loop still
+				// reads. Only an error before stop is a gap (build 240).
 				mu.Lock()
-				endedEarly = append(endedEarly, fmt.Sprintf("%s watch error: %v", kind, apierrors.FromObject(ev.Object)))
+				if !stopping {
+					endedEarly = append(endedEarly, fmt.Sprintf("%s watch error: %v", kind, apierrors.FromObject(ev.Object)))
+				}
 				mu.Unlock()
 				continue
 			}
@@ -857,6 +886,25 @@ func recordStepObjects(selector string) func() ([]corev1.Pod, []batchv1.Job) {
 		cancel()
 		wg.Wait()
 		Expect(endedEarly).To(BeEmpty(), "watching %q", selector)
+
+		// An event still in flight at stop is not lost: whatever matches now
+		// and did not before the watch began was created meanwhile.
+		podsNow, err := kubeClient.CoreV1().Pods(config.Namespace).List(context.Background(), listOpts)
+		Expect(err).ToNot(HaveOccurred())
+		for _, pod := range podsNow.Items {
+			if !before["pod/"+pod.Name] && !seen["pod/"+pod.Name] {
+				seen["pod/"+pod.Name] = true
+				pods = append(pods, pod)
+			}
+		}
+		jobsNow, err := kubeClient.BatchV1().Jobs(config.Namespace).List(context.Background(), listOpts)
+		Expect(err).ToNot(HaveOccurred())
+		for _, job := range jobsNow.Items {
+			if !before["job/"+job.Name] && !seen["job/"+job.Name] {
+				seen["job/"+job.Name] = true
+				jobs = append(jobs, job)
+			}
+		}
 		return pods, jobs
 	}
 }
