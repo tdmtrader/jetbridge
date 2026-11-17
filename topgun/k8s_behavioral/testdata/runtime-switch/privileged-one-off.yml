@@ -1,0 +1,7 @@
+# The privilege spec's one-off task (fly execute -p, runtime_switch_test.go).
+# atc/configvalidate/k8s_behavioral_configs_test.go validates this file.
+platform: linux
+image_resource: {type: registry-image, source: {repository: busybox}}
+run:
+  path: echo
+  args: ["privileged-one-off-ran"]
