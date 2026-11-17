@@ -763,6 +763,45 @@ var _ = Describe("Resource Config Scope", func() {
 			})
 		})
 
+		It("merges a copy that shares versions with the target in order", func() {
+			resource := scenario.Resource("some-resource")
+			Expect(resourceScope.SaveVersions(db.SpanContext{}, []atc.Version{
+				{"ref": "v1"}, {"ref": "v2"}, {"ref": "v3"}, {"ref": "v4"}, {"ref": "v5"},
+			})).To(Succeed())
+
+			targetConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-unique-base-resource-type",
+				atc.Source{"some": "source-sharing-v3"},
+				nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			targetScope, err := targetConfig.FindOrCreateScope(intptr(resource.ID()))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(targetScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v3"}})).To(Succeed())
+
+			copied, err := targetScope.CopyVersionsFrom(resourceScope.ID())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(copied).To(Equal(4))
+
+			rows, err := dbConn.Query(`
+				SELECT version->>'ref' FROM resource_config_versions
+				WHERE resource_config_scope_id = $1 ORDER BY check_order`, targetScope.ID())
+			Expect(err).ToNot(HaveOccurred())
+			defer db.Close(rows)
+			refs := []string{}
+			for rows.Next() {
+				var ref string
+				Expect(rows.Scan(&ref)).To(Succeed())
+				refs = append(refs, ref)
+			}
+			Expect(refs).To(Equal([]string{"v1", "v2", "v3", "v4", "v5"}))
+
+			latest, found, err := targetScope.LatestVersion()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(latest.Version()).To(Equal(db.Version{"ref": "v5"}))
+		})
+
 		It("copies versions from a source scope to the target scope", func() {
 			// Save versions to the current scope
 			err := resourceScope.SaveVersions(db.SpanContext{}, []atc.Version{

@@ -266,6 +266,19 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 		return false, err
 	}
 
+	// Both scopes are locked, in id order, before the resource row points at
+	// the new one: that update takes the new scope FOR KEY SHARE through the
+	// foreign key, and two resources moving into it together would otherwise
+	// each hold that and wait to lock it for the carry. Resources leaving the
+	// old scope take turns, so the last one out sees that it is the last.
+	moving := oldScopeID.Valid && int(oldScopeID.Int64) != scope.ID()
+	if moving {
+		err = lockScopes(tx, int(oldScopeID.Int64), scope.ID())
+		if err != nil {
+			return false, err
+		}
+	}
+
 	_, err = psql.Update("resources").
 		Set("resource_config_id", scope.ResourceConfig().ID()).
 		Set("resource_config_scope_id", scope.ID()).
@@ -276,7 +289,7 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 		return false, err
 	}
 
-	if oldScopeID.Valid && int(oldScopeID.Int64) != scope.ID() {
+	if moving {
 		err = carryVersionHistoryForward(tx, resourceID, int(oldScopeID.Int64), scope)
 		if err != nil {
 			return false, err
@@ -292,37 +305,40 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 }
 
 // carryVersionHistoryForward keeps a resource's version history when the image
-// of its custom resource type changes. The resource's config is keyed on the
-// type's resource cache, so a new image means a new config and a new, empty
-// global scope, though the resource itself is unchanged. The old scope's
-// versions are copied into the new scope below its own, and the old scope is
-// deprecated once no active resource or resource type still uses it, so it
-// outlives its config's grace period by the deprecated-scope grace period.
+// version of its custom resource type changes. The resource's config is keyed
+// on the type's resource cache, so a new image version means a new config and
+// a new, empty global scope, though the resource itself is unchanged. The old
+// scope's versions are merged into the new scope (see copyVersionsIntoScope),
+// and the old scope is deprecated once no active resource or resource type
+// still uses it, so it outlives its config's grace period by the
+// deprecated-scope grace period. The caller holds the resource and both
+// scopes.
 //
-// A resource whose source or type name changed is not this case: its versions
-// mean something else, and saving the pipeline already detached it from its
-// old scope.
+// The two type images must be versions of the same image: the same type
+// config (base type, or parent type image, and source) and the same params.
+// Saving the pipeline detaches a resource whose own source or type name
+// changed, but not one whose type's source changed, and a type on another
+// image is not this resource's history: its checks may have found anything,
+// and the new scope may be one another team's resources share.
 func carryVersionHistoryForward(tx Tx, resourceID int, oldScopeID int, newScope ResourceConfigScope) error {
 	if newScope.ResourceID() != nil {
 		return nil
 	}
 
-	// Locking the old scope makes resources leaving it take turns, so the
-	// last one out sees that it is the last. The resource is locked first, as
-	// in findOrCreateResourceConfigScope.
 	var oldConfigID int
 	err := tx.QueryRow(`
 		SELECT old_config.id
 		FROM resource_config_scopes old_scope
 		JOIN resource_configs old_config ON old_config.id = old_scope.resource_config_id
 		JOIN resource_configs new_config ON new_config.id = $2
+		JOIN resource_caches old_image ON old_image.id = old_config.resource_cache_id
+		JOIN resource_caches new_image ON new_image.id = new_config.resource_cache_id
 		WHERE old_scope.id = $1
 		AND old_scope.resource_id IS NULL
-		AND old_config.resource_cache_id IS NOT NULL
-		AND new_config.resource_cache_id IS NOT NULL
 		AND old_config.id <> new_config.id
 		AND old_config.source_hash = new_config.source_hash
-		FOR UPDATE OF old_scope
+		AND old_image.resource_config_id = new_image.resource_config_id
+		AND old_image.params_hash = new_image.params_hash
 	`, oldScopeID, newScope.ResourceConfig().ID()).Scan(&oldConfigID)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -573,8 +589,8 @@ func (r *resource) DeprecatedScopes() ([]DeprecatedScope, error) {
 }
 
 // CopyVersionsFromScope copies the given source scope's versions into this
-// resource's current scope, below the versions the current scope already
-// holds. Returns count of versions copied.
+// resource's current scope, merged into its order as copyVersionsIntoScope
+// describes. Returns count of versions copied.
 func (r *resource) CopyVersionsFromScope(fromScopeID int) (int, error) {
 	if r.resourceConfigScopeID == 0 {
 		return 0, errors.New("resource does not have a current scope")
