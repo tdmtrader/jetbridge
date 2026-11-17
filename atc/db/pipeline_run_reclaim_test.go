@@ -623,7 +623,12 @@ var _ = Describe("run payload mutation guards", func() {
 })
 
 var _ = Describe("team purge with pipeline runs", func() {
-	It("locks templates before runs and serializes concurrent run creation", func() {
+	// The waits below are bounded by the spec, not by a latency budget: a
+	// loaded node can stall the postmaster for seconds, and what the spec
+	// pins is the lock order and the outcomes, not how fast they arrive. A
+	// lock cycle cannot hide behind that: PostgreSQL breaks a deadlock and
+	// fails one side within deadlock_timeout.
+	It("locks templates before runs and serializes concurrent run creation", NodeTimeout(2*time.Minute), func(ctx SpecContext) {
 		team, err := teamFactory.CreateTeam(atc.Team{Name: "purge-run-race"})
 		Expect(err).NotTo(HaveOccurred())
 		template, _, err := team.SavePipeline(atc.PipelineRef{Name: "purge-race-template"}, atc.Config{
@@ -649,11 +654,11 @@ var _ = Describe("team purge with pipeline runs", func() {
 		deleted := make(chan error, 1)
 		go func() { deleted <- deleteTeam.Delete() }()
 		Consistently(deleted, 100*time.Millisecond).ShouldNot(Receive())
-		Eventually(func() bool {
+		Eventually(ctx, func() bool {
 			var id int
 			err := createConn.QueryRow(`SELECT id FROM pipelines WHERE id = $1 FOR UPDATE NOWAIT`, template.ID()).Scan(&id)
 			return err != nil
-		}).WithTimeout(3*time.Second).Should(BeTrue(), "team purge must acquire the template lock before waiting for the run")
+		}).Should(BeTrue(), "team purge must acquire the template lock before waiting for the run")
 
 		createFactory := db.NewPipelineRunFactory(createConn, lockFactory)
 		created := make(chan error, 1)
@@ -664,8 +669,8 @@ var _ = Describe("team purge with pipeline runs", func() {
 		Consistently(created, 100*time.Millisecond).ShouldNot(Receive())
 
 		Expect(gate.Rollback()).To(Succeed())
-		Eventually(deleted).WithTimeout(3 * time.Second).Should(Receive(BeNil()))
-		Eventually(created).WithTimeout(3 * time.Second).Should(Receive(MatchError(db.ErrPipelineRunNotTemplate)))
+		Eventually(ctx, deleted).Should(Receive(BeNil()))
+		Eventually(ctx, created).Should(Receive(MatchError(db.ErrPipelineRunNotTemplate)))
 		var headers int
 		Expect(dbConn.QueryRow(`SELECT count(*) FROM pipeline_runs WHERE template_pipeline_id = $1`, template.ID()).Scan(&headers)).To(Succeed())
 		Expect(headers).To(BeZero())
