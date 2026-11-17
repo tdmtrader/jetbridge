@@ -244,6 +244,10 @@ func (r *resource) SetResourceConfigScope(scope ResourceConfigScope) error {
 func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred any, args ...any) (bool, error) {
 	// Only a resource that is actually moving is locked: a check points its
 	// resource at the scope it already has far more often than at a new one.
+	// It is locked FOR NO KEY UPDATE, the strength of the UPDATE below, so a
+	// foreign key on the resource (FOR KEY SHARE, as the scheduler's next
+	// build inputs take it while holding a job this move then schedules)
+	// does not wait for the move.
 	var resourceID int
 	var oldScopeID sql.NullInt64
 	err := psql.Select("id", "resource_config_scope_id").
@@ -255,7 +259,7 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 			sq.NotEq{"resource_config_id": scope.ResourceConfig().ID()},
 			sq.NotEq{"resource_config_scope_id": scope.ID()},
 		}).
-		Suffix("FOR UPDATE").
+		Suffix("FOR NO KEY UPDATE").
 		RunWith(tx).
 		QueryRow().
 		Scan(&resourceID, &oldScopeID)

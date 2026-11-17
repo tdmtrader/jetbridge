@@ -1479,10 +1479,14 @@ func (b *build) SaveOutput(
 
 	// A put that moves its resource to another scope locks the resource and
 	// then both scopes in id order, as a check's move does (see lockScopes),
-	// before finding or creating the new scope takes that one alone.
+	// before finding or creating the new scope takes that one alone. The
+	// resource row is taken FOR NO KEY UPDATE, the strength of the UPDATE that
+	// moves it: a foreign key on the resource (the scheduler's next build
+	// inputs, which it inserts while holding a job this put then schedules)
+	// takes it FOR KEY SHARE and must not wait for the put.
 	var currentConfigID, currentScopeID sql.NullInt64
 	err = tx.QueryRow(`
-		SELECT resource_config_id, resource_config_scope_id FROM resources WHERE id = $1 FOR UPDATE
+		SELECT resource_config_id, resource_config_scope_id FROM resources WHERE id = $1 FOR NO KEY UPDATE
 	`, theResource.ID()).Scan(&currentConfigID, &currentScopeID)
 	if err != nil {
 		return err

@@ -436,6 +436,85 @@ var _ = Describe("A custom resource type's image changing", func() {
 		})
 	})
 
+	Context("while a move of the resource waits for a scope", func() {
+		var (
+			resource   db.Resource
+			newScope   db.ResourceConfigScope
+			imageCache db.ResourceCache
+			holder     db.Tx
+			moved      chan error
+		)
+
+		// Another transaction holds the new scope, so the move stops after
+		// locking the resource row.
+		BeforeEach(func() {
+			resource = scenario.Resource("some-resource")
+
+			var err error
+			imageCache, err = resourceCacheFactory.FindOrCreateResourceCache(
+				db.ForBuild(upstreamBuild.ID()),
+				dbtest.BaseResourceType,
+				atc.Version{"custom-type": "bumped"},
+				typeSource,
+				nil,
+				nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			newScope, err = configOnTypeImage("bumped", resourceSource).FindOrCreateScope(intptr(resource.ID()))
+			Expect(err).ToNot(HaveOccurred())
+
+			holderConn := postgresRunner.OpenConn()
+			DeferCleanup(holderConn.Close)
+			holder, err = holderConn.Begin()
+			Expect(err).ToNot(HaveOccurred())
+			DeferCleanup(func() { _ = holder.Rollback() })
+			_, err = holder.Exec(`SELECT id FROM resource_config_scopes WHERE id = $1 FOR UPDATE`, newScope.ID())
+			Expect(err).ToNot(HaveOccurred())
+
+			moved = make(chan error, 1)
+		})
+
+		// The scheduler's SaveNextInputMapping, for one, inserts rows whose
+		// foreign key takes the resource row FOR KEY SHARE while it holds a
+		// job that the move then asks to schedule.
+		expectKeyShareNotBlocked := func() {
+			Consistently(moved, 500*time.Millisecond).ShouldNot(Receive())
+
+			otherConn := postgresRunner.OpenConn()
+			defer otherConn.Close()
+			inserted := make(chan error, 1)
+			go func() {
+				defer GinkgoRecover()
+				_, err := otherConn.Exec(`
+					INSERT INTO resource_disabled_versions (resource_id, version_digest) VALUES ($1, 'some-digest')
+				`, resource.ID())
+				inserted <- err
+			}()
+			Eventually(inserted, 5*time.Second).Should(Receive(BeNil()))
+
+			Expect(holder.Commit()).To(Succeed())
+			Eventually(moved, 10*time.Second).Should(Receive(BeNil()))
+		}
+
+		It("does not block a foreign key on the resource during a check's move", func() {
+			go func() {
+				defer GinkgoRecover()
+				moved <- resource.SetResourceConfigScope(newScope)
+			}()
+
+			expectKeyShareNotBlocked()
+		})
+
+		It("does not block a foreign key on the resource during a put's move", func() {
+			go func() {
+				defer GinkgoRecover()
+				moved <- upstreamBuild.SaveOutput("some-custom-type", imageCache, resourceSource, atc.Version{"ref": "put"}, nil, "some-output", "some-resource")
+			}()
+
+			expectKeyShareNotBlocked()
+		})
+	})
+
 	Context("when a check of the new scope is saving versions as the resource moves", func() {
 		It("waits for the check, and carries the history below what it saved", func() {
 			resource := scenario.Resource("some-resource")
