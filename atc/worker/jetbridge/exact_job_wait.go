@@ -131,7 +131,12 @@ func (p *jobProcess) startExactJob(ctx context.Context) error {
 	}
 	e := newExactJobExecution(c, p.id, p.spec, p.processIO, "")
 	c.envelopes.RegisterWithStartGate(c.podName, StepEnvelope{Stdin: p.stdin}, e.startGate())
-	created, err := c.createStepJob(ctx, job, allowance)
+	// The envelope is the start gate's, not createStepJob's to publish: a Job
+	// of this name that appeared meanwhile is never this execution's (it is
+	// refused below whatever re-admission says), and the gate serves nothing
+	// before this execution's own Wait admits it (beforeServe), which an
+	// error here never reaches.
+	created, err := c.createStepJob(ctx, job, allowance, nil)
 	if err == nil && !created {
 		err = fmt.Errorf("step job %q appeared while an exact task's Job was being made", c.podName)
 	}

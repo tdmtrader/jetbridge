@@ -3,6 +3,7 @@ package jetbridge_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,6 +53,8 @@ var _ = Describe("Re-admission of an existing step pod", func() {
 		// every step's ContainerSpec.
 		configure func(*jetbridge.Config)
 		shape     func(*runtime.ContainerSpec)
+		// envelopes is the step envelope store of the web built last.
+		envelopes *jetbridge.StepEnvelopes
 	)
 
 	pipelineConfig := atc.Config{
@@ -122,10 +125,11 @@ var _ = Describe("Re-admission of an existing step pod", func() {
 					Expect(err).NotTo(HaveOccurred())
 					config.StepPodGrants = append(config.StepPodGrants, grant)
 				}
+				envelopes = jetbridge.NewStepEnvelopes()
 				deps := jetbridge.WorkerDeps{
 					StepPodBuilds:    builds,
 					StepPodPipelines: jetbridge.NewStepPodPipelines(database.Conn, database.LockFactory),
-					StepEnvelopes:    jetbridge.NewStepEnvelopes(),
+					StepEnvelopes:    envelopes,
 				}
 				if stepRuntime == jetbridge.StepRuntimeJob {
 					config.StepRuntime = jetbridge.StepRuntimeJob
@@ -471,6 +475,164 @@ var _ = Describe("Re-admission of an existing step pod", func() {
 						Expect(err).NotTo(MatchError(ContainSubstring("deleted")))
 						Expect(existing("finished-refused")).NotTo(BeNil())
 						Expect(deletes.preconditionsOf("jobs")).To(BeEmpty())
+					})
+
+					// A step envelope is the launcher's leave to start the
+					// command: a pod that has it runs. An existing Job's pod
+					// may be waiting for it, so it is not served until that
+					// Job has passed re-admission, and never when it is
+					// refused; a new Job's is servable from before its pod
+					// can exist (the unsuspend), so that pod never asks for
+					// nothing.
+					Describe("the step envelope of a step Job", func() {
+						const launcherPodUID = types.UID("launcher-pod-uid")
+
+						// startReading runs the step with stdin, so it has an
+						// envelope to register.
+						startReading := func(worker *jetbridge.Worker, handle string, metadata db.ContainerMetadata, privileged bool) error {
+							GinkgoHelper()
+							container, _, err := worker.FindOrCreateContainer(ctx, db.NewFixedHandleContainerOwner(handle), metadata,
+								runtime.ContainerSpec{Type: metadata.Type, TeamID: 1,
+									ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: privileged}},
+								&noopDelegate{})
+							Expect(err).NotTo(HaveOccurred())
+							_, err = container.Run(ctx, runtime.ProcessSpec{Path: "/bin/true"},
+								runtime.ProcessIO{Stdin: strings.NewReader(`{"source":"secret"}`)})
+							return err
+						}
+
+						// resumable gives the step Job the first web made a
+						// UID and a running pod, as the API server and its
+						// controller would: the pod's launcher is polling
+						// for its envelope.
+						resumable := func(handle string) (*batchv1.Job, *corev1.Pod) {
+							GinkgoHelper()
+							job := existing(handle).(*batchv1.Job)
+							job.UID = types.UID("uid-" + handle)
+							job, err := clientset.BatchV1().Jobs(namespace).Update(ctx, job, metav1.UpdateOptions{})
+							Expect(err).NotTo(HaveOccurred())
+							pod := &corev1.Pod{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: job.Name + "-launcher", Namespace: namespace, UID: launcherPodUID,
+									Labels: map[string]string{"batch.kubernetes.io/controller-uid": string(job.UID),
+										"batch.kubernetes.io/job-name": job.Name},
+								},
+								Spec:   job.Spec.Template.Spec,
+								Status: corev1.PodStatus{Phase: corev1.PodRunning},
+							}
+							_, err = clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+							Expect(err).NotTo(HaveOccurred())
+							return job, pod
+						}
+
+						// fetchDuring has the launcher ask for its envelope
+						// (StepEnvelopes.Serve, as StepEnvelopeHandler does)
+						// each time the web sends the given request, and
+						// counts the asks and the envelopes served.
+						type fetches struct {
+							mu            sync.Mutex
+							asked, served int
+						}
+						fetchDuring := func(verb, resource, job string, pod *corev1.Pod) *fetches {
+							f := &fetches{}
+							clientset.PrependReactor(verb, resource, func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
+								if get, ok := action.(k8stesting.GetAction); ok && get.GetName() != job {
+									return false, nil, nil
+								}
+								_, err := envelopes.Serve(context.Background(), job, pod)
+								f.mu.Lock()
+								f.asked++
+								if err == nil {
+									f.served++
+								}
+								f.mu.Unlock()
+								return false, nil, nil
+							})
+							return f
+						}
+						counts := func(f *fetches) (int, int) {
+							f.mu.Lock()
+							defer f.mu.Unlock()
+							return f.asked, f.served
+						}
+
+						It("is not served to a resumed Job's waiting pod while its re-admission decides, nor once it refuses it", func() {
+							metadata := jobBuild("unit")
+							Expect(startReading(web(jetbridge.StepPrivilegeAny, database.BuildFactory), "envelope-refused", metadata, true)).To(Succeed())
+							job, pod := resumable("envelope-refused")
+
+							// The resumed step composes an unprivileged pod, so its
+							// own composition passes; the Job that exists is still
+							// privileged, and no grant covers it.
+							second := web(jetbridge.StepPrivilegeGranted, database.BuildFactory)
+							duringJobGet := fetchDuring("get", "jobs", job.Name, pod)
+							duringPodList := fetchDuring("list", "pods", job.Name, pod)
+							duringJobDelete := fetchDuring("delete", "jobs", job.Name, pod)
+							err := startReading(second, "envelope-refused", metadata, false)
+							Expect(err).To(MatchError(ContainSubstring("privilege its step no longer asks for")))
+							Expect(err).To(MatchError(ContainSubstring("deleted")))
+							expectDeleted("envelope-refused", job.UID)
+
+							asked, served := counts(duringJobGet)
+							Expect(asked).To(BeNumerically(">", 0), "the existing Job was never read")
+							Expect(served).To(BeZero(), "the envelope was served while the existing Job was being read")
+							asked, served = counts(duringPodList)
+							Expect(asked).To(BeNumerically(">", 0), "the existing Job's pod was never looked up")
+							Expect(served).To(BeZero(), "the envelope was served while the existing Job's pod was being looked up")
+							asked, served = counts(duringJobDelete)
+							Expect(asked).To(BeNumerically(">", 0), "the refused Job was never deleted")
+							Expect(served).To(BeZero(), "the envelope was served while the refused Job was being deleted")
+
+							_, err = envelopes.Serve(ctx, job.Name, pod)
+							Expect(err).To(HaveOccurred(), "the refused Job's envelope is still there to serve")
+						})
+
+						It("is served to a resumed Job's waiting pod once its re-admission admits it, and not before", func() {
+							metadata := jobBuild("dind")
+							Expect(startReading(web(jetbridge.StepPrivilegeGranted, database.BuildFactory, dindGrant), "envelope-admitted", metadata, true)).To(Succeed())
+							job, pod := resumable("envelope-admitted")
+
+							second := web(jetbridge.StepPrivilegeGranted, database.BuildFactory, dindGrant)
+							duringPodList := fetchDuring("list", "pods", job.Name, pod)
+							Expect(startReading(second, "envelope-admitted", metadata, true)).To(Succeed())
+							asked, served := counts(duringPodList)
+							Expect(asked).To(BeNumerically(">", 0), "the existing Job's pod was never looked up")
+							Expect(served).To(BeZero(), "the envelope was served while the existing Job's pod was being looked up")
+
+							envelope, err := envelopes.Serve(ctx, job.Name, pod)
+							Expect(err).NotTo(HaveOccurred())
+							Expect(string(envelope.Stdin)).To(Equal(`{"source":"secret"}`))
+						})
+
+						It("is servable for a new Job before the Job is unsuspended, so its pod never asks for nothing", func() {
+							metadata := jobBuild("dind")
+							worker := web(jetbridge.StepPrivilegeGranted, database.BuildFactory, dindGrant)
+							var mu sync.Mutex
+							name, unsuspended, servedAtUnsuspend := "", false, false
+							clientset.PrependReactor("create", "jobs", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
+								mu.Lock()
+								name = action.(k8stesting.CreateAction).GetObject().(*batchv1.Job).Name
+								mu.Unlock()
+								return false, nil, nil
+							})
+							pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "new-launcher", UID: launcherPodUID}}
+							clientset.PrependReactor("patch", "jobs", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
+								mu.Lock()
+								defer mu.Unlock()
+								if action.(k8stesting.PatchAction).GetName() != name || unsuspended {
+									return false, nil, nil
+								}
+								unsuspended = true
+								_, err := envelopes.Serve(context.Background(), name, pod)
+								servedAtUnsuspend = err == nil
+								return false, nil, nil
+							})
+							Expect(startReading(worker, "envelope-new", metadata, true)).To(Succeed())
+							mu.Lock()
+							defer mu.Unlock()
+							Expect(unsuspended).To(BeTrue(), "the new Job was never unsuspended")
+							Expect(servedAtUnsuspend).To(BeTrue(), "the new Job was unsuspended before its envelope was registered")
+						})
 					})
 
 					// A composition that fails for a reason of its own still

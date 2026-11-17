@@ -182,28 +182,55 @@ func TestBuildStepJobForAResourceCommandCarriesTokenAndAnswer(t *testing.T) {
 }
 
 // jobControllerDouble stands in for the Job controller on the fake
-// clientset: a created Job gets the pod the caller describes, labelled and
-// owned the way the controller does it, and a deleted Job takes its pods.
+// clientset: a Job gets the pod the caller describes, labelled and owned the
+// way the controller does it, once it is not suspended (at its creation, or
+// at the patch that unsuspends it), and a deleted Job takes its pods.
 func jobControllerDouble(clientset *fake.Clientset, podFor func(job *batchv1.Job) *corev1.Pod) {
+	makePod := func(job *batchv1.Job) error {
+		pod := podFor(job)
+		if pod == nil {
+			return nil
+		}
+		pod.Namespace = job.Namespace
+		pod.Labels = map[string]string{jobNameLabelKey: job.Name, jobUIDLabelKey: string(job.UID), runtimeLabelKey: StepRuntimeJob}
+		controller := true
+		pod.OwnerReferences = []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: job.Name, UID: job.UID, Controller: &controller}}
+		return clientset.Tracker().Add(pod)
+	}
+	jobs := schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}
 	clientset.PrependReactor("create", "jobs", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
 		job := action.(k8stesting.CreateAction).GetObject().(*batchv1.Job)
-		if _, err := clientset.Tracker().Get(schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"}, job.Namespace, job.Name); err == nil {
+		if _, err := clientset.Tracker().Get(jobs, job.Namespace, job.Name); err == nil {
 			return true, nil, apierrors.NewAlreadyExists(schema.GroupResource{Group: "batch", Resource: "jobs"}, job.Name)
 		}
 		job.UID = types.UID("uid-" + job.Name)
 		if err := clientset.Tracker().Add(job); err != nil {
 			return true, nil, err
 		}
-		if pod := podFor(job); pod != nil {
-			pod.Namespace = job.Namespace
-			pod.Labels = map[string]string{jobNameLabelKey: job.Name, jobUIDLabelKey: string(job.UID), runtimeLabelKey: StepRuntimeJob}
-			controller := true
-			pod.OwnerReferences = []metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: job.Name, UID: job.UID, Controller: &controller}}
-			if err := clientset.Tracker().Add(pod); err != nil {
+		if job.Spec.Suspend == nil || !*job.Spec.Suspend {
+			if err := makePod(job); err != nil {
 				return true, nil, err
 			}
 		}
 		return true, job, nil
+	})
+	clientset.PrependReactor("patch", "jobs", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
+		patch := action.(k8stesting.PatchAction)
+		if !strings.Contains(string(patch.GetPatch()), `"suspend":false`) {
+			return false, nil, nil
+		}
+		stored, err := clientset.Tracker().Get(jobs, action.GetNamespace(), patch.GetName())
+		if err != nil {
+			return false, nil, nil
+		}
+		job := stored.(*batchv1.Job)
+		if job.Spec.Suspend == nil || !*job.Spec.Suspend {
+			return false, nil, nil
+		}
+		if err := makePod(job); err != nil {
+			return true, nil, err
+		}
+		return false, nil, nil
 	})
 	clientset.PrependReactor("delete", "jobs", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
 		// The tracker, not the clientset: a reactor runs under the fake's
@@ -315,22 +342,37 @@ func TestRunAsJobReplacesAFinishedJobOnTheSameHandle(t *testing.T) {
 	}
 }
 
-func TestRunAsJobRegistersTheEnvelopeBeforeTheJobStarts(t *testing.T) {
+// A new Job is created suspended, and its pod exists only once it is
+// unsuspended: the envelope is registered between the two, so the pod never
+// asks for nothing, and never before the Job is created, when a Job of the
+// same name may exist that re-admission has not judged
+// (step_pod_readmission_test.go).
+func TestRunAsJobRegistersTheEnvelopeBeforeTheJobIsUnsuspended(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
-	var registeredAtCreate bool
+	var registeredAtCreate, registeredAtPod, podMade bool
 	var container *Container
+	// The double makes the pod at the unsuspend, as the Job controller does.
 	jobControllerDouble(clientset, func(job *batchv1.Job) *corev1.Pod {
+		podMade = true
 		_, err := container.envelopes.Take(job.Name, "any")
-		registeredAtCreate = err == nil
+		registeredAtPod = err == nil
 		return terminatedJobPod(job.Name+"-abcde", 0)
+	})
+	clientset.PrependReactor("create", "jobs", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
+		_, err := container.envelopes.Take(action.(k8stesting.CreateAction).GetObject().(*batchv1.Job).Name, "any")
+		registeredAtCreate = err == nil
+		return false, nil, nil
 	})
 	container = jobRuntimeContainer(t, clientset, db.ContainerTypeGet, runtime.ContainerSpec{Dir: "/tmp/build/get"})
 	_, err := container.Run(context.Background(), runtime.ProcessSpec{Path: "/opt/resource/in"}, runtime.ProcessIO{Stdin: strings.NewReader(`{"source":{}}`), Stderr: &bytes.Buffer{}})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !registeredAtCreate {
-		t.Error("the envelope was not registered before the Job existed")
+	if registeredAtCreate {
+		t.Error("the envelope was registered before the Job was created")
+	}
+	if !podMade || !registeredAtPod {
+		t.Errorf("the envelope was not registered before the unsuspended Job's pod existed (pod made: %t)", podMade)
 	}
 	envelope, err := container.envelopes.Take(container.podName, "any")
 	if err != nil || string(envelope.Stdin) != `{"source":{}}` {

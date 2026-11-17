@@ -283,17 +283,24 @@ func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*b
 //
 // A Job of this name may exist already. If its pod is running, it is this
 // step's, started by a web that died before it could follow it: it is left
-// alone and followed, and this invocation's envelope is not registered, the
-// running pod already has its own. If its pod has finished, or it never got a
-// pod (a web that died between creating and unsuspending it), it is a
-// previous invocation on this handle (a repeated check reuses its container)
-// or a start that never happened: the Job is deleted and a new one created,
-// as the exec runtime replaces a terminal pause pod.
+// alone and followed. If its pod has finished, or it never got a pod (a web
+// that died between creating and unsuspending it), it is a previous
+// invocation on this handle (a repeated check reuses its container) or a
+// start that never happened: the Job is deleted and a new one created, as the
+// exec runtime replaces a terminal pause pod.
 //
 // A running Job is followed only once it passes the step pod admission again,
 // under the allowance this step's own composition resolved (readmitStepJob):
 // one the privilege gate now refuses is deleted, and the step fails.
-func (c *Container) createStepJob(ctx context.Context, job *batchv1.Job, allowance privilegeAllowance) (bool, error) {
+//
+// publish, when set, makes the step envelope available. A step envelope is
+// the launcher's leave to start the command, so it is published only for a
+// Job this step may run: a new one once it exists and before it is
+// unsuspended, so its pod, which only the unsuspend lets the Job controller
+// make, never asks for nothing; a running one only once it has passed
+// re-admission, as its pod may be waiting for the envelope now, and a command
+// that has begun cannot be stopped by a refusal after it.
+func (c *Container) createStepJob(ctx context.Context, job *batchv1.Job, allowance privilegeAllowance, publish func()) (bool, error) {
 	logger := lagerctx.FromContext(ctx).Session("create-step-job", lagerData(c))
 	for attempt := 0; ; attempt++ {
 		created, err := c.clientset.BatchV1().Jobs(c.config.Namespace).Create(ctx, job, metav1.CreateOptions{})
@@ -308,6 +315,9 @@ func (c *Container) createStepJob(ctx context.Context, job *batchv1.Job, allowan
 			if !finished {
 				if err := c.readmitStepJob(ctx, existing, allowance); err != nil {
 					return false, err
+				}
+				if publish != nil {
+					publish()
 				}
 				logger.Info("following-existing-step-job")
 				return false, nil
@@ -328,6 +338,9 @@ func (c *Container) createStepJob(ctx context.Context, job *batchv1.Job, allowan
 		c.jobUID = created.UID
 		c.jobPodName = ""
 		c.mu.Unlock()
+		if publish != nil {
+			publish()
+		}
 		patch := []byte(`{"spec":{"suspend":false}}`)
 		if _, err := c.clientset.BatchV1().Jobs(c.config.Namespace).Patch(ctx, job.Name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
 			return false, fmt.Errorf("unsuspend step job: %w", err)
@@ -586,9 +599,10 @@ func lagerData(c *Container) map[string]any {
 }
 
 // runAsJob starts the step as a Job. The envelope (the command's stdin) is
-// registered for the Job's pod to fetch before the Job is unsuspended, so
-// the pod never asks for something that is not there. A Job already running
-// keeps the envelope its pod has.
+// published by createStepJob: for a new Job before it is unsuspended, so its
+// pod never asks for something that is not there; for a Job already running
+// only once it has passed re-admission, so a pod still waiting for its
+// envelope starts nothing the privilege gate refuses.
 func (c *Container) runAsJob(ctx context.Context, spec runtime.ProcessSpec, pio runtime.ProcessIO) (runtime.Process, error) {
 	processID := c.handle
 	if spec.ID != "" {
@@ -612,6 +626,12 @@ func (c *Container) runAsJob(ctx context.Context, spec runtime.ProcessSpec, pio 
 	if hasEnvelope && c.envelopes == nil {
 		return nil, errors.New("job step runtime: no step envelope store; this worker cannot run a command that reads stdin")
 	}
+	// Until createStepJob decides which Job this step runs, no envelope of
+	// its name is served: one an earlier invocation left would start a Job
+	// re-admission has not judged yet.
+	if c.envelopes != nil {
+		c.envelopes.Forget(c.podName)
+	}
 	job, allowance, err := c.buildStepJob(spec, hasEnvelope)
 	if err != nil {
 		// A step whose own composition is refused may come back to a Job made
@@ -622,23 +642,22 @@ func (c *Container) runAsJob(ctx context.Context, spec runtime.ProcessSpec, pio 
 		}
 		return nil, err
 	}
+	// The envelope is published by createStepJob: before a new Job is
+	// unsuspended, and for a running Job only once re-admission admits it,
+	// which is what that Job's pod, if it has not fetched yet, needs. A pod
+	// that took the envelope from a web before this one runs that command,
+	// and this invocation's answer is that command's.
+	var publish func()
 	if hasEnvelope {
-		c.envelopes.Register(c.podName, StepEnvelope{Stdin: stdin})
+		publish = func() { c.envelopes.Register(c.podName, StepEnvelope{Stdin: stdin}) }
 	}
-	created, err := c.createStepJob(ctx, job, allowance)
+	_, err = c.createStepJob(ctx, job, allowance, publish)
 	if err != nil {
 		if hasEnvelope {
 			c.envelopes.Forget(c.podName)
 		}
 		metric.Metrics.FailedContainers.Inc()
 		return nil, wrapIfTransient(err)
-	}
-	if !created && hasEnvelope {
-		// The running pod took its own envelope; this invocation's answer is
-		// that command's. A later web resuming the step registers the same
-		// envelope again, which is what a pod that has not fetched yet needs.
-		c.envelopes.Forget(c.podName)
-		c.envelopes.Register(c.podName, StepEnvelope{Stdin: stdin})
 	}
 	metric.Metrics.ContainersCreated.Inc()
 	// The deferred volumes' exec destination is vestigial here: nothing
