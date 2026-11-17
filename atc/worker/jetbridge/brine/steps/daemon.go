@@ -187,11 +187,17 @@ func startLiveDaemonPlan(rec *brine.Recorder) (DaemonPlan, error) {
 		Port: int(d.port), DaemonIP: d.nodeIP, Root: d.store.root, IPs: []string{d.nodeIP}, live: d}, nil
 }
 
-func (p DaemonPlan) requireNodeRead() error {
+func (p DaemonPlan) requireDaemonResolution() error {
 	if p.live == nil || p.SourceNode == "" {
 		return nil
 	}
-	return p.nodeReads.requireNodeRead(p.SourceNode)
+	// Only a reader that may fall back is handed discovery, and only
+	// discovery can name the node's daemon in place of the node's address.
+	service := ""
+	if p.Fallback {
+		service = p.Service
+	}
+	return p.nodeReads.requireDaemonResolution(p.Ctx, p.live.store.cluster.Clientset, p.Namespace, service, p.SourceNode)
 }
 
 // writeArtifactFile writes one file, creating the directories above it.
@@ -319,7 +325,7 @@ func (p DaemonPlan) read(vol *jetbridge.DaemonSetVolume) DaemonFetch {
 	}
 
 	stream, err := vol.StreamOut(p.Ctx, path, enc)
-	if nodeErr := p.requireNodeRead(); nodeErr != nil {
+	if nodeErr := p.requireDaemonResolution(); nodeErr != nil {
 		if stream != nil {
 			_ = stream.Close()
 		}

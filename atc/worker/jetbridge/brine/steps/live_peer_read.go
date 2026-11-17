@@ -51,7 +51,8 @@ func LivePeerReadDefinitions() []brine.StepDefinition {
 
 // The producer uses the approved node-IP host port. The peer has a different
 // pod IP and independent emptyDir, listening on that same port without a host
-// port. Only the peer is selected by a real EndpointSlice controller.
+// port. Only the peer is selected by a real EndpointSlice controller; the web
+// is handed that verified endpoint as livePeerWebService, which names no node.
 func startLiveArtifactPeer(ctx context.Context, rec *brine.Recorder, d *liveArtifactDaemon) (string, error) {
 	s := d.store
 	size := *resource.NewQuantity(liveDaemonEphemeralBudget, resource.BinarySI)
@@ -164,6 +165,9 @@ func startLiveArtifactPeer(ctx context.Context, rec *brine.Recorder, d *liveArti
 		}
 	}
 	fmt.Printf("verified independent peer pod %s/%s UID %s endpoint %s and controller-generated discovery\n", s.cluster.Namespace, pod.Name, pod.UID, endpoint)
+	if err := publishPeerForWeb(ctx, s.cluster.Clientset, s.cluster.Namespace, pod, d.port); err != nil {
+		return "", fmt.Errorf("publish the verified peer for the web: %w", err)
+	}
 	return endpoint, nil
 }
 
@@ -249,7 +253,7 @@ func readLivePeerArtifact(state, copy string, rec *brine.Recorder) (PeerReadOutc
 	var volume *jetbridge.DaemonSetVolume
 	out.trace, err = observeDaemonConstruction(map[string]bool{out.producer: true, out.peer: true}, func() {
 		volume = jetbridge.NewDaemonSetVolume("h/o", "h", "brine", nil, d.pod.Spec.NodeName, cfg, jetbridge.NewNodeIPResolver(d.store.cluster.Clientset))
-		volume.SetDaemonClient(jetbridge.NewDaemonClient(lagerctx.FromContext(ctx), d.store.cluster.Clientset, d.store.cluster.Namespace, livePeerService, int(d.port), nil))
+		volume.SetDaemonClient(jetbridge.NewDaemonClient(lagerctx.FromContext(ctx), d.store.cluster.Clientset, d.store.cluster.Namespace, livePeerWebService, int(d.port), nil))
 	})
 	if err != nil {
 		return out, err
