@@ -289,8 +289,22 @@ func copyVersionsIntoScope(conn DbConn, toScopeID, fromScopeID int) (int, error)
 
 	defer Rollback(tx)
 
+	copied, err := copyVersionsIntoScopeTx(tx, toScopeID, fromScopeID)
+	if err != nil {
+		return 0, err
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return 0, err
+	}
+
+	return copied, nil
+}
+
+func copyVersionsIntoScopeTx(tx Tx, toScopeID, fromScopeID int) (int, error) {
 	var missing int
-	err = tx.QueryRow(`
+	err := tx.QueryRow(`
 		SELECT COUNT(*)
 		FROM resource_config_versions s
 		WHERE s.resource_config_scope_id = $2
@@ -341,11 +355,6 @@ func copyVersionsIntoScope(conn DbConn, toScopeID, fromScopeID int) (int, error)
 	}
 
 	err = requestScheduleForJobsUsingResourceConfigScope(tx, toScopeID)
-	if err != nil {
-		return 0, err
-	}
-
-	err = tx.Commit()
 	if err != nil {
 		return 0, err
 	}

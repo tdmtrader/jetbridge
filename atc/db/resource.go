@@ -242,10 +242,12 @@ func (r *resource) SetResourceConfigScope(scope ResourceConfigScope) error {
 }
 
 func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred any, args ...any) (bool, error) {
+	// Only a resource that is actually moving is locked: a check points its
+	// resource at the scope it already has far more often than at a new one.
 	var resourceID int
-	err := psql.Update("resources").
-		Set("resource_config_id", scope.ResourceConfig().ID()).
-		Set("resource_config_scope_id", scope.ID()).
+	var oldScopeID sql.NullInt64
+	err := psql.Select("id", "resource_config_scope_id").
+		From("resources").
 		Where(pred, args...).
 		Where(sq.Or{
 			sq.Eq{"resource_config_id": nil},
@@ -253,15 +255,32 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 			sq.NotEq{"resource_config_id": scope.ResourceConfig().ID()},
 			sq.NotEq{"resource_config_scope_id": scope.ID()},
 		}).
-		Suffix("RETURNING id").
+		Suffix("FOR UPDATE").
 		RunWith(tx).
 		QueryRow().
-		Scan(&resourceID)
+		Scan(&resourceID, &oldScopeID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil
 		}
 		return false, err
+	}
+
+	_, err = psql.Update("resources").
+		Set("resource_config_id", scope.ResourceConfig().ID()).
+		Set("resource_config_scope_id", scope.ID()).
+		Where(sq.Eq{"id": resourceID}).
+		RunWith(tx).
+		Exec()
+	if err != nil {
+		return false, err
+	}
+
+	if oldScopeID.Valid && int(oldScopeID.Int64) != scope.ID() {
+		err = carryVersionHistoryForward(tx, resourceID, int(oldScopeID.Int64), scope)
+		if err != nil {
+			return false, err
+		}
 	}
 
 	err = requestScheduleForJobsUsingResource(tx, resourceID)
@@ -270,6 +289,68 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 	}
 
 	return true, nil
+}
+
+// carryVersionHistoryForward keeps a resource's version history when the image
+// of its custom resource type changes. The resource's config is keyed on the
+// type's resource cache, so a new image means a new config and a new, empty
+// global scope, though the resource itself is unchanged. The old scope's
+// versions are copied into the new scope below its own, and the old scope is
+// deprecated once no active resource or resource type still uses it, so it
+// outlives its config's grace period by the deprecated-scope grace period.
+//
+// A resource whose source or type name changed is not this case: its versions
+// mean something else, and saving the pipeline already detached it from its
+// old scope.
+func carryVersionHistoryForward(tx Tx, resourceID int, oldScopeID int, newScope ResourceConfigScope) error {
+	if newScope.ResourceID() != nil {
+		return nil
+	}
+
+	// Locking the old scope makes resources leaving it take turns, so the
+	// last one out sees that it is the last. The resource is locked first, as
+	// in findOrCreateResourceConfigScope.
+	var oldConfigID int
+	err := tx.QueryRow(`
+		SELECT old_config.id
+		FROM resource_config_scopes old_scope
+		JOIN resource_configs old_config ON old_config.id = old_scope.resource_config_id
+		JOIN resource_configs new_config ON new_config.id = $2
+		WHERE old_scope.id = $1
+		AND old_scope.resource_id IS NULL
+		AND old_config.resource_cache_id IS NOT NULL
+		AND new_config.resource_cache_id IS NOT NULL
+		AND old_config.id <> new_config.id
+		AND old_config.source_hash = new_config.source_hash
+		FOR UPDATE OF old_scope
+	`, oldScopeID, newScope.ResourceConfig().ID()).Scan(&oldConfigID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+
+	_, err = copyVersionsIntoScopeTx(tx, newScope.ID(), oldScopeID)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(`
+		UPDATE resource_config_scopes
+		SET deprecated_at = now(), deprecated_from_resource_id = $2
+		WHERE id = $1
+		AND deprecated_at IS NULL
+		AND NOT EXISTS (
+			SELECT 1 FROM resources r
+			WHERE r.resource_config_scope_id = $1 AND r.active
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM resource_types rt
+			WHERE rt.resource_config_id = $3 AND rt.active
+		)
+	`, oldScopeID, resourceID, oldConfigID)
+	return err
 }
 
 func (r *resource) CheckPlan(planFactory atc.PlanFactory, imagePlanner atc.ImagePlanner, from atc.Version, interval atc.CheckEvery, sourceDefaults atc.Source, skipInterval bool, skipIntervalRecursively bool) atc.Plan {
