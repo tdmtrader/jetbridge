@@ -135,6 +135,27 @@ var _ = Describe("ArtifactOutputStep", func() {
 			})
 		})
 
+		Context("when the volume has no row and cannot be given one", func() {
+			BeforeEach(func() {
+				state = exec.NewRunState(noopStepper, vars.StaticVariables{})
+				state.ArtifactRepository().RegisterArtifact(
+					build.ArtifactName("some-artifact-name"),
+					runtimeVolume,
+					false,
+				)
+			})
+
+			It("refuses with an error naming the output, rather than dereferencing nil", func() {
+				Expect(stepOk).To(BeFalse())
+				Expect(stepErr).To(MatchError(exec.ArtifactNotPersistableError{
+					ArtifactName: "some-artifact-name",
+				}))
+				artifacts, err := realBuild.Artifacts()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(artifacts).To(BeEmpty())
+			})
+		})
+
 		Context("when initializing the artifact succeeds", func() {
 			It("persists the output artifact association", func() {
 				Expect(stepErr).NotTo(HaveOccurred())

@@ -429,7 +429,14 @@ func (w *Worker) ArtifactFromVolume(vol runtime.Volume) runtime.Artifact {
 		return vol
 	}
 	key := ArtifactKey(vol.Handle())
-	return w.storageBackend.WrapVolumeForLookup(context.Background(), key, vol.Handle(), w.Name(), nil)
+	wrapped := w.storageBackend.WrapVolumeForLookup(context.Background(), key, vol.Handle(), w.Name(), nil)
+	// A step volume has no volume row. The artifact output step of `fly
+	// execute -o` needs one to hand the download, and asks for it through
+	// PersistVolume; this is what lets it.
+	if daemonVolume, ok := wrapped.(*DaemonSetVolume); ok && w.volumeRepo != nil {
+		daemonVolume.SetVolumeRepository(w.volumeRepo)
+	}
+	return wrapped
 }
 
 func markContainerAsFailed(logger lager.Logger, container db.CreatingContainer) {
