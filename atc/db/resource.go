@@ -702,19 +702,28 @@ func (r *resource) CopyVersionsFromScope(fromScopeID int) (int, error) {
 
 	defer Rollback(tx)
 
+	// The resource row is locked alone, and its scope read in a statement of
+	// its own: locking it through a join with the scope would, when a move
+	// commits while this waits, recheck the moved row against the old scope
+	// row, find no match, and return no row at all.
+	var currentScopeID sql.NullInt64
+	err = tx.QueryRow(`
+		SELECT resource_config_scope_id FROM resources WHERE id = $1 FOR NO KEY UPDATE
+	`, r.id).Scan(&currentScopeID)
+	if err != nil {
+		return 0, err
+	}
+
+	if !currentScopeID.Valid {
+		return 0, errors.New("resource does not have a current scope")
+	}
+
 	var scopeID, configID int
 	var scopeResourceID sql.NullInt64
 	err = tx.QueryRow(`
-		SELECT s.id, s.resource_id, s.resource_config_id
-		FROM resources r
-		JOIN resource_config_scopes s ON s.id = r.resource_config_scope_id
-		WHERE r.id = $1
-		FOR NO KEY UPDATE OF r
-	`, r.id).Scan(&scopeID, &scopeResourceID, &configID)
+		SELECT id, resource_id, resource_config_id FROM resource_config_scopes WHERE id = $1
+	`, currentScopeID.Int64).Scan(&scopeID, &scopeResourceID, &configID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return 0, errors.New("resource does not have a current scope")
-		}
 		return 0, err
 	}
 
