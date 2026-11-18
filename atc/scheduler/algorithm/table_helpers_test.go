@@ -818,9 +818,11 @@ func (s setupDB) insertResource(name string, scope *int) int {
 
 	var rcsID sql.NullInt64
 	if scope != nil {
+		// A scope belongs to the team of the resource it is for: its
+		// pipeline's team (ADR-0012).
 		_, err = s.psql.Insert("resource_config_scopes").
-			Columns("id", "resource_config_id").
-			Values(*scope, resourceConfigID).
+			Columns("id", "resource_config_id", "team_id").
+			Values(*scope, resourceConfigID, sq.Expr("(SELECT team_id FROM pipelines WHERE id = ?)", s.pipelineID)).
 			Suffix("ON CONFLICT DO NOTHING").
 			Exec()
 		Expect(err).ToNot(HaveOccurred())
