@@ -50,3 +50,34 @@ JetBridge 0.4.6 follows jb-0.4.5 (e610ff1acb). These are running notes, kept as 
 - **`kubernetes.stepPrivilege` (`any | granted`, default `any`) sets the privilege mode.** Only `granted` renders a flag, so an `any` render is byte-identical to 0.4.5's. The value budget rises by one (`maxValues` 177), an exception recorded in the ADR-0008 amendment of 2026-11-09.
 
 - **The pod-manager Role grants `batch/jobs` `list` and `delete` under `exec` too,** so the reaper can collect step Jobs a `job` deployment left behind. `get`, `watch`, `create`, `update` and `patch` stay `job`-only. No new value.
+
+## Verification
+
+Exercised live means run on the concourse.home deployment, or on the k8s-behavioral tier, which installs the chart on K3s in CI.
+
+**Exercised live:**
+
+- Privilege mode `granted`, by `TestLivePrivilegeGate` on the deployment (3 runs, `exec` step runtime) and by k8s-behavioral builds 241 and 242 through the chart (`job` step runtime): the `step-privilege-mode` startup line; a granted privileged task runs privileged; an ungranted one, and a privileged one-off of a team with no one-off grant, fail naming the owner and make no pod or Job; a check of a type a resource-type grant names runs privileged and is annotated with the grant, and a check of an ungranted type is refused; a reused pause pod is re-admitted while its grant still covers it, and one made privileged under `any` is refused and deleted under `granted`.
+- The reaper under the `exec` step runtime with the pod-manager Role, in k8s-behavioral 241 and 242: it collects the step Jobs a `job` deployment left, a step Job it may not delete is logged and the rest of the pass is collected, and a Role without `batch/jobs` is reported once at info, with no `failed-to-list-step-jobs`.
+- A task cancelled after its command started records its outputs, and one cancelled before it started records nothing, under both step runtimes: `TestLiveCancelledTaskRecordsItsOutputs` and `TestLiveCancelledTaskThatNeverStartedRecordsNothing` (k8s-live-tests 852–855).
+- Step envelope ordering, and exact tasks on the `job` step runtime, stop included: the live tier (k8s-live-tests 852–855).
+- The web reaching artifact daemons by pod IP: the live tier and brine 176–179. A daemon pod replaced on the deployment on 2026-11-17 was reached at its new address; the outcome is consistent with the pod-IP route, but the route taken was not separately observed.
+- The launcher's record for a command that does not exist (exit 127): a one-off build on the deployment.
+- History carry on a type digest change: a scratch pipeline on the deployment, before the cross-team refusal landed.
+- `fly execute -o`: a one-off on the deployment at 087032bacc downloaded its output, and the payload's sha256 matched the input's.
+
+**Not live-verified** (covered by unit and integration specs only):
+
+- Step runtime: a pass with an undeletable pod ending in an error, a refused pause pod delete, and a refusal under `job`; the UID precondition on the reaper's and an aborted or failed step's Job delete; a task that times out rather than being aborted, an aborted get or put recording nothing, and the bound on the time recording adds; a transient TokenReview or pod read failure answered 503; the `cleanup-stale` init receiving `HOST_IP` on a rebuilt (reused-handle) pod.
+- Launcher: the record for a non-executable command (126) and for one it could not set up (125).
+- Waiting out an artifact daemon: the managed-input init retrying a busy or restarting daemon, the exact-execution admission dialling again, and the capture control init's longer wait. A daemon pod was deleted on the deployment during a build, but it was Ready again in about 2 seconds, so nothing had to wait. A managed read queued behind the scratch slot under load.
+- Pod IP: the fallback to the node InternalIP.
+- Privilege mode: `any` changing nothing (the byte-identical render is a chart render test); the fail-closed cases (instanced pipelines, other teams' one-offs, Runs, a build not found or not looked up); the refusal of added capabilities and host namespaces; a task image on a privileged custom type needing both grants; re-admission of a step a restarted web reattaches to or resumes, including the deletion of an over-grant step Job, the resumed exact step Job left without an envelope, and a Run's exact execution refused but not deleted.
+- Image pull secrets against an authenticated registry.
+- Resources: the cross-team refusal of a history carry and of `fly copy-resource-versions` (`409 Conflict`); the copy's merge rule and its refusal into a history shared within a team; a carry for a type fetched by check and get; the deprecation and listing of the old history after a carry.
+
+## Known issues
+
+- **`fly intercept` and the Run credential handoff exec into a live pod without passing the privilege gate again, under `granted` too.** The gate judges a pod when it is created and when a step comes back to it; neither path creates a pod. `fly intercept` opens a shell with whatever privilege the step pod already holds, so a user who may intercept a step whose grant allows `privileged=true` gets a privileged shell, as the step itself does; a pod made under `any` before the switch keeps its privilege until its build ends. The handoff runs only a fixed helper, never a command from the request, in a Run's exact execution pod, which holds no grant.
+- **A `fly execute -o` download still streaming when the reaper collects the step directory can end with a partial output and no error.** The database rows created for `-o` outputs and `-i` uploads are not removed.
+- **One one-off build on 2026-11-17 lost its task stdout.** It started in the same second an artifact daemon became Ready; the task ran and exited 0. Seen once; the cause is unknown.
