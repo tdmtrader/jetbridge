@@ -303,7 +303,33 @@ func (r *resourceType) SetResourceConfigScope(scope ResourceConfigScope) error {
 	return nil
 }
 
-func setResourceConfigScopeForResourceType(conn sq.Runner, scope ResourceConfigScope, pred any, args ...any) (bool, error) {
+// setResourceConfigScopeForResourceType points a resource type at the scope's
+// config, so the type reads that config's global scope. It takes the scope
+// FOR KEY SHARE first, as a resource's foreign key does when it moves onto a
+// scope: a history carry or copy-resource-versions into the scope holds it
+// FOR UPDATE while it asks whether another team uses it
+// (historyInUseByAnotherTeam), so the type attaches either before that
+// question, and is seen, or after the write has committed.
+func setResourceConfigScopeForResourceType(conn DbConn, scope ResourceConfigScope, pred any, args ...any) (bool, error) {
+	tx, err := conn.Begin()
+	if err != nil {
+		return false, err
+	}
+
+	defer Rollback(tx)
+
+	rows, err := tx.Query(`
+		SELECT id FROM resource_config_scopes WHERE id = $1 FOR KEY SHARE
+	`, scope.ID())
+	if err != nil {
+		return false, err
+	}
+
+	err = rows.Close()
+	if err != nil {
+		return false, err
+	}
+
 	result, err := psql.Update("resource_types").
 		Set("resource_config_id", scope.ResourceConfig().ID()).
 		Where(pred, args...).
@@ -311,13 +337,18 @@ func setResourceConfigScopeForResourceType(conn sq.Runner, scope ResourceConfigS
 			sq.Eq{"resource_config_id": nil},
 			sq.NotEq{"resource_config_id": scope.ResourceConfig().ID()},
 		}).
-		RunWith(conn).
+		RunWith(tx).
 		Exec()
 	if err != nil {
 		return false, err
 	}
 
 	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+
+	err = tx.Commit()
 	if err != nil {
 		return false, err
 	}

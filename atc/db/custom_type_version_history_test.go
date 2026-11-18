@@ -325,6 +325,221 @@ var _ = Describe("A custom resource type's image changing", func() {
 		})
 	})
 
+	// Another team's pipeline declares the same type on the same repository,
+	// so its resources with the same source share global scopes with this
+	// pipeline's: a scope is keyed on the config alone, whoever's it is.
+	otherTeamsPipeline := func() *dbtest.Scenario {
+		config := pipelineConfig
+		config.ResourceTypes = append(atc.ResourceTypes{
+			{
+				// A type on the custom type, with the resource's source:
+				// its own checks share the resource's global scope.
+				Name:   "nested-type",
+				Type:   "some-custom-type",
+				Source: resourceSource,
+			},
+		}, pipelineConfig.ResourceTypes...)
+
+		return dbtest.Setup(builder.WithPipeline(config))
+	}
+
+	sameTeamsOtherPipeline := func() db.Pipeline {
+		pipeline, _, err := scenario.Team.SavePipeline(atc.PipelineRef{Name: "other-pipeline"}, pipelineConfig, db.ConfigVersion(0), false)
+		Expect(err).ToNot(HaveOccurred())
+		return pipeline
+	}
+
+	resourceOf := func(pipeline db.Pipeline, name string) db.Resource {
+		resource, found, err := pipeline.Resource(name)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		return resource
+	}
+
+	Context("when another team's resource uses the history the resource moves to", func() {
+		var (
+			oldScopeID  int
+			otherTeam   *dbtest.Scenario
+			otherScope  db.ResourceConfigScope
+			otherTeams  db.Resource
+			carriedRefs = []string{"v1", "v2", "v3"}
+		)
+
+		BeforeEach(func() {
+			oldScopeID = scenario.Resource("some-resource").ResourceConfigScopeID()
+
+			otherTeam = otherTeamsPipeline()
+			otherTeams = otherTeam.Resource("some-resource")
+		})
+
+		expectRefused := func(destination db.ResourceConfigScope, destinationRefs []string) {
+			GinkgoHelper()
+
+			Expect(scenario.Resource("some-resource").ResourceConfigScopeID()).To(Equal(destination.ID()))
+			Expect(versionsOf(destination.ID())).To(Equal(destinationRefs))
+			Expect(versionsOf(oldScopeID)).To(Equal(carriedRefs))
+			Expect(deprecated(oldScopeID)).To(BeFalse())
+
+			deprecatedScopes, err := scenario.Resource("some-resource").DeprecatedScopes()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(deprecatedScopes).To(BeEmpty())
+		}
+
+		Context("when the type's digest moves to the one the other team's resource is on (someone pushed to the repository)", func() {
+			BeforeEach(func() {
+				otherScope = attach(otherTeams, configOnDigest("d1", resourceSource))
+				Expect(otherScope.ResourceID()).To(BeNil())
+				Expect(otherScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "o1"}, {"ref": "o2"}})).To(Succeed())
+			})
+
+			It("refuses the carry on a check, and leaves both histories as they were", func() {
+				Expect(moveTo("some-resource", configOnDigest("d1", resourceSource)).ID()).To(Equal(otherScope.ID()))
+
+				expectRefused(otherScope, []string{"o1", "o2"})
+				Expect(otherTeam.Resource("some-resource").ResourceConfigScopeID()).To(Equal(otherScope.ID()))
+			})
+
+			It("refuses the carry on a put, which saves only its own version", func() {
+				Expect(upstreamBuild.SaveOutput("some-custom-type", pinnedImage(imageAt("d1")), resourceSource, atc.Version{"ref": "put"}, nil, "some-output", "some-resource")).To(Succeed())
+
+				expectRefused(otherScope, []string{"o1", "o2", "put"})
+			})
+
+			It("refuses the carry through the pipeline's own move of the resource", func() {
+				scope, err := configOnDigest("d1", resourceSource).FindOrCreateScope(nil)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(scenario.Pipeline.SetResourceConfigScopeForResource("some-resource", scope)).To(Succeed())
+
+				expectRefused(otherScope, []string{"o1", "o2"})
+			})
+
+			It("refuses it too when the other team's resource is no longer active", func() {
+				_, err := dbConn.Exec(`UPDATE resources SET active = false WHERE id = $1`, otherTeams.ID())
+				Expect(err).ToNot(HaveOccurred())
+
+				moveTo("some-resource", configOnDigest("d1", resourceSource))
+
+				expectRefused(otherScope, []string{"o1", "o2"})
+			})
+		})
+
+		Context("when an older digest the other team's resource is on is selected", func() {
+			var newScope db.ResourceConfigScope
+
+			BeforeEach(func() {
+				// Both teams' resources started on d0. This one moved on to
+				// d1, alone there, so its history carried, and found v4.
+				Expect(attach(otherTeams, configOnDigest("d0", resourceSource)).ID()).To(Equal(oldScopeID))
+
+				newScope = moveTo("some-resource", configOnDigest("d1", resourceSource))
+				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
+				Expect(newScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v4"}})).To(Succeed())
+				Expect(deprecated(oldScopeID)).To(BeFalse())
+			})
+
+			It("refuses the carry back, and leaves the other team's history without the newer version", func() {
+				Expect(moveTo("some-resource", configOnDigest("d0", resourceSource)).ID()).To(Equal(oldScopeID))
+
+				Expect(versionsOf(oldScopeID)).To(Equal([]string{"v1", "v2", "v3"}))
+				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3", "v4"}))
+				Expect(deprecated(newScope.ID())).To(BeFalse())
+			})
+		})
+
+		Context("when only another team's resource type uses the history", func() {
+			BeforeEach(func() {
+				otherScope = attach(otherTeams, configOnDigest("d1", resourceSource))
+				Expect(otherScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "o1"}})).To(Succeed())
+
+				nestedType := otherTeam.ResourceType("nested-type")
+				Expect(nestedType.SetResourceConfigScope(otherScope)).To(Succeed())
+
+				// Detach the other team's resource, so the type alone uses it.
+				_, err := dbConn.Exec(`UPDATE resources SET resource_config_id = NULL, resource_config_scope_id = NULL WHERE id = $1`, otherTeams.ID())
+				Expect(err).ToNot(HaveOccurred())
+			})
+
+			It("refuses the carry", func() {
+				Expect(moveTo("some-resource", configOnDigest("d1", resourceSource)).ID()).To(Equal(otherScope.ID()))
+
+				expectRefused(otherScope, []string{"o1"})
+			})
+		})
+
+		Context("when the other team's resource attaches as the resource moves", func() {
+			It("waits for the attachment, and then refuses the carry", func() {
+				destination, err := configOnDigest("d1", resourceSource).FindOrCreateScope(nil)
+				Expect(err).ToNot(HaveOccurred())
+
+				// The other team's move, part way through on its own
+				// connection: its resource points at the destination, and it
+				// has not committed.
+				otherConn := postgresRunner.OpenConn()
+				defer otherConn.Close()
+				otherMove, err := otherConn.Begin()
+				Expect(err).ToNot(HaveOccurred())
+				defer otherMove.Rollback()
+				_, err = otherMove.Exec(`
+					UPDATE resources SET resource_config_id = $2, resource_config_scope_id = $3 WHERE id = $1
+				`, otherTeams.ID(), destination.ResourceConfig().ID(), destination.ID())
+				Expect(err).ToNot(HaveOccurred())
+
+				moved := make(chan error, 1)
+				go func() {
+					defer GinkgoRecover()
+					moved <- scenario.Resource("some-resource").SetResourceConfigScope(destination)
+				}()
+
+				Consistently(moved, time.Second).ShouldNot(Receive())
+				Expect(otherMove.Commit()).To(Succeed())
+				Eventually(moved, 10*time.Second).Should(Receive(BeNil()))
+
+				expectRefused(destination, []string{})
+			})
+		})
+
+		Context("when another team's resource type attaches as the resource's history is carried", func() {
+			It("waits for the carry to commit", func() {
+				destination, err := configOnDigest("d1", resourceSource).FindOrCreateScope(nil)
+				Expect(err).ToNot(HaveOccurred())
+
+				// A carry or copy into the destination holds it FOR UPDATE
+				// until it commits.
+				holderConn := postgresRunner.OpenConn()
+				defer holderConn.Close()
+				holder, err := holderConn.Begin()
+				Expect(err).ToNot(HaveOccurred())
+				defer holder.Rollback()
+				_, err = holder.Exec(`SELECT id FROM resource_config_scopes WHERE id = $1 FOR UPDATE`, destination.ID())
+				Expect(err).ToNot(HaveOccurred())
+
+				attached := make(chan error, 1)
+				go func() {
+					defer GinkgoRecover()
+					attached <- otherTeam.ResourceType("nested-type").SetResourceConfigScope(destination)
+				}()
+
+				Consistently(attached, time.Second).ShouldNot(Receive())
+				Expect(holder.Commit()).To(Succeed())
+				Eventually(attached, 10*time.Second).Should(Receive(BeNil()))
+			})
+		})
+	})
+
+	Context("when only the same team's resources use the history the resource moves to", func() {
+		It("carries the history, whichever of the team's pipelines they are in", func() {
+			oldScopeID := scenario.Resource("some-resource").ResourceConfigScopeID()
+
+			otherScope := attach(resourceOf(sameTeamsOtherPipeline(), "some-resource"), configOnDigest("d1", resourceSource))
+			Expect(otherScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "o1"}})).To(Succeed())
+
+			Expect(moveTo("some-resource", configOnDigest("d1", resourceSource)).ID()).To(Equal(otherScope.ID()))
+
+			Expect(versionsOf(otherScope.ID())).To(Equal([]string{"v1", "v2", "v3", "o1"}))
+			Expect(deprecated(oldScopeID)).To(BeTrue())
+		})
+	})
+
 	Context("when the resource's source changes too", func() {
 		It("starts a new history and leaves the old scope alone", func() {
 			oldScopeID := scenario.Resource("some-resource").ResourceConfigScopeID()
@@ -577,6 +792,51 @@ var _ = Describe("A custom resource type's image changing", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(copied).To(Equal(3))
 			Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
+		})
+
+		Context("when the resource's current history is the same type image's", func() {
+			var newScope db.ResourceConfigScope
+
+			BeforeEach(func() {
+				newScope = moveTo("some-resource", configOnDigest("d1", resourceSource))
+				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
+				Expect(deprecated(oldScopeID)).To(BeTrue())
+
+				// The deprecated history holds a version the current one lacks.
+				_, err := dbConn.Exec(`
+					INSERT INTO resource_config_versions (resource_config_scope_id, version, version_sha256, check_order)
+					SELECT $1, '{"ref":"EVIL"}', encode(digest('{"ref":"EVIL"}', 'sha256'), 'hex'), max(check_order) + 1
+					FROM resource_config_versions WHERE resource_config_scope_id = $1
+				`, oldScopeID)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(versionsOf(oldScopeID)).To(Equal([]string{"v1", "v2", "v3", "EVIL"}))
+			})
+
+			It("refuses copying into it once another team's resource uses it", func() {
+				Expect(attach(otherTeamsPipeline().Resource("some-resource"), configOnDigest("d1", resourceSource)).ID()).To(Equal(newScope.ID()))
+
+				_, err := scenario.Resource("some-resource").CopyVersionsFromScope(oldScopeID)
+				Expect(err).To(MatchError(db.ErrCopyIntoAnotherTeamsHistory))
+				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
+			})
+
+			It("refuses copying into it once another team's resource type uses it", func() {
+				otherTeam := otherTeamsPipeline()
+				Expect(otherTeam.ResourceType("nested-type").SetResourceConfigScope(newScope)).To(Succeed())
+
+				_, err := scenario.Resource("some-resource").CopyVersionsFromScope(oldScopeID)
+				Expect(err).To(MatchError(db.ErrCopyIntoAnotherTeamsHistory))
+				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
+			})
+
+			It("copies into it while only the same team's resources use it", func() {
+				Expect(attach(resourceOf(sameTeamsOtherPipeline(), "some-resource"), configOnDigest("d1", resourceSource)).ID()).To(Equal(newScope.ID()))
+
+				copied, err := scenario.Resource("some-resource").CopyVersionsFromScope(oldScopeID)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(copied).To(Equal(1))
+				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3", "EVIL"}))
+			})
 		})
 
 		It("copies a history of the same resource config into the shared scope", func() {
