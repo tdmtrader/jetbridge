@@ -572,7 +572,7 @@ var _ = Describe("Resource Config Scope", func() {
 			Expect(newVersionCount).To(Equal(0))
 
 			// 4. Copy versions from deprecated scope to new scope
-			copied, err := newScope.CopyVersionsFrom(oldScopeID)
+			copied, err := db.CopyVersionsIntoScope(dbConn, newScope.ID(), oldScopeID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(copied).To(Equal(3))
 
@@ -671,7 +671,7 @@ var _ = Describe("Resource Config Scope", func() {
 		})
 	})
 
-	Describe("CopyVersionsFrom", func() {
+	Describe("copying versions between scopes", func() {
 		Context("when the new scope already has versions of its own after a source change", func() {
 			var resource db.Resource
 			var oldScope, newScope db.ResourceConfigScope
@@ -737,7 +737,7 @@ var _ = Describe("Resource Config Scope", func() {
 			}
 
 			It("copies the deprecated scope's versions below the new scope's own versions", func() {
-				copied, err := newScope.CopyVersionsFrom(oldScope.ID())
+				copied, err := db.CopyVersionsIntoScope(dbConn, newScope.ID(), oldScope.ID())
 				Expect(err).ToNot(HaveOccurred())
 				Expect(copied).To(Equal(5))
 
@@ -745,13 +745,13 @@ var _ = Describe("Resource Config Scope", func() {
 			})
 
 			It("changes nothing when the copy is repeated", func() {
-				copied, err := newScope.CopyVersionsFrom(oldScope.ID())
+				copied, err := db.CopyVersionsIntoScope(dbConn, newScope.ID(), oldScope.ID())
 				Expect(err).ToNot(HaveOccurred())
 				Expect(copied).To(Equal(5))
 
 				refsBefore, checkOrdersBefore := scopeVersionsByCheckOrder(newScope.ID())
 
-				copied, err = newScope.CopyVersionsFrom(oldScope.ID())
+				copied, err = db.CopyVersionsIntoScope(dbConn, newScope.ID(), oldScope.ID())
 				Expect(err).ToNot(HaveOccurred())
 				Expect(copied).To(Equal(0))
 
@@ -779,7 +779,7 @@ var _ = Describe("Resource Config Scope", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(targetScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v3"}})).To(Succeed())
 
-			copied, err := targetScope.CopyVersionsFrom(resourceScope.ID())
+			copied, err := db.CopyVersionsIntoScope(dbConn, targetScope.ID(), resourceScope.ID())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(copied).To(Equal(4))
 
@@ -848,7 +848,7 @@ var _ = Describe("Resource Config Scope", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Copy versions from source to target
-			copied, err := targetScope.CopyVersionsFrom(resourceScope.ID())
+			copied, err := db.CopyVersionsIntoScope(dbConn, targetScope.ID(), resourceScope.ID())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(copied).To(Equal(3))
 
@@ -913,7 +913,7 @@ var _ = Describe("Resource Config Scope", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Copy — should only add v2 (v1 already exists)
-			copied, err := targetScope.CopyVersionsFrom(resourceScope.ID())
+			copied, err := db.CopyVersionsIntoScope(dbConn, targetScope.ID(), resourceScope.ID())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(copied).To(Equal(1))
 		})
@@ -927,7 +927,7 @@ var _ = Describe("Resource Config Scope", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Copy from source to itself — all versions already exist
-			copied, err := resourceScope.CopyVersionsFrom(resourceScope.ID())
+			copied, err := db.CopyVersionsIntoScope(dbConn, resourceScope.ID(), resourceScope.ID())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(copied).To(Equal(0))
 		})

@@ -38,8 +38,6 @@ type ResourceConfigScope interface {
 		logger lager.Logger,
 	) (lock.Lock, bool, error)
 
-	CopyVersionsFrom(sourceScopeID int) (int, error)
-
 	LastCheck() (LastCheck, error)
 	UpdateLastCheckStartTime(int, *json.RawMessage) (bool, error)
 	UpdateLastCheckEndTime(bool) (bool, error)
@@ -268,45 +266,6 @@ func (r *resourceConfigScope) UpdateLastCheckEndTime(succeeded bool) (bool, erro
 	return true, nil
 }
 
-// CopyVersionsFrom copies all resource config versions from a source scope into
-// this scope, skipping any versions that already exist (by version_sha256).
-// Returns the number of new versions copied.
-func (r *resourceConfigScope) CopyVersionsFrom(sourceScopeID int) (int, error) {
-	return copyVersionsIntoScope(r.conn, r.id, sourceScopeID)
-}
-
-// copyVersionsIntoScope copies the source scope's versions that the
-// destination scope lacks, merged into the destination's order. A copied
-// version goes directly above the newest version both scopes hold that the
-// source ranks below it, so a version the source found after history already
-// carried lands above that history, not beneath it. A copied version the
-// source ranks below every shared version, or any copied version when the
-// scopes share none, goes below everything the destination holds: the
-// destination's own versions came from its checks, so they are newer than the
-// source's history. Copied versions keep their source order, the destination's
-// versions keep theirs, and the scope is renumbered 1..N so no check_order
-// repeats.
-func copyVersionsIntoScope(conn DbConn, toScopeID, fromScopeID int) (int, error) {
-	tx, err := conn.Begin()
-	if err != nil {
-		return 0, err
-	}
-
-	defer Rollback(tx)
-
-	copied, err := copyVersionsIntoScopeTx(tx, toScopeID, fromScopeID)
-	if err != nil {
-		return 0, err
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		return 0, err
-	}
-
-	return copied, nil
-}
-
 // lockScopes takes two scopes FOR UPDATE, in id order, so that two
 // transactions moving versions between the same scopes in opposite directions
 // cannot each hold one and wait for the other. Every path that locks more
@@ -331,6 +290,23 @@ func lockScopes(tx Tx, scopeID, otherScopeID int) error {
 	return rows.Close()
 }
 
+// copyVersionsIntoScopeTx copies the source scope's versions that the
+// destination scope lacks, merged into the destination's order. A copied
+// version goes directly above the newest version both scopes hold that the
+// source ranks below it, so a version the source found after history already
+// carried lands above that history, not beneath it. A copied version the
+// source ranks below every shared version, or any copied version when the
+// scopes share none, goes below everything the destination holds: the
+// destination's own versions came from its checks, so they are newer than the
+// source's history. Copied versions keep their source order, the destination's
+// versions keep theirs, and the scope is renumbered 1..N so no check_order
+// repeats.
+//
+// It decides nothing about whose history the destination is. Its only callers
+// are the history carry (carryVersionHistoryForward) and
+// copy-resource-versions (Resource.CopyVersionsFromScope), and each refuses a
+// destination another team uses (historyInUseByAnotherTeam) under the locks
+// this takes again. A new caller must do the same.
 func copyVersionsIntoScopeTx(tx Tx, toScopeID, fromScopeID int) (int, error) {
 	if toScopeID == fromScopeID {
 		return 0, nil

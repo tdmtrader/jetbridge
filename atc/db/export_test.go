@@ -6,6 +6,26 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 )
 
+// CopyVersionsIntoScope runs the merge copyVersionsIntoScopeTx does in a
+// transaction of its own, to test the merge alone. Production writes into a
+// scope only through the carry and copy-resource-versions, which first refuse
+// a destination another team uses.
+func CopyVersionsIntoScope(conn DbConn, toScopeID, fromScopeID int) (int, error) {
+	tx, err := conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+
+	defer Rollback(tx)
+
+	copied, err := copyVersionsIntoScopeTx(tx, toScopeID, fromScopeID)
+	if err != nil {
+		return 0, err
+	}
+
+	return copied, tx.Commit()
+}
+
 // SetEventPageTimeout replaces the bound on one event page and returns a func
 // that restores the previous bound.
 func SetEventPageTimeout(d time.Duration) (restore func()) {
