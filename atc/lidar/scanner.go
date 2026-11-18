@@ -209,8 +209,8 @@ func (s *scanner) resolveResourceType(ctx context.Context, rt db.ResourceType, r
 		return
 	}
 
-	// Get or create a scope for this resource type.
-	scope, err := resourceConfig.FindOrCreateScope(nil)
+	// Get or create the type's team's scope of this config.
+	scope, err := resourceConfig.FindOrCreateScope(rt.TeamID(), nil)
 	if err != nil {
 		logger.Error("failed-to-find-or-create-scope", err)
 		return
@@ -395,8 +395,8 @@ func (s *scanner) resolveResource(ctx context.Context, rs db.Resource, resourceT
 		return
 	}
 
-	// Get or create a scope for this resource.
-	scope, err := resourceConfig.FindOrCreateScope(nil)
+	// Get or create the resource's team's scope of this config.
+	scope, err := resourceConfig.FindOrCreateScope(rs.TeamID(), nil)
 	if err != nil {
 		logger.Error("failed-to-find-or-create-scope", err)
 		return

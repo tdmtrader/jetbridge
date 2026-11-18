@@ -40,7 +40,7 @@ var _ = Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resource
 
 	moveTo := func(config db.ResourceConfig) db.ResourceConfigScope {
 		resource := fixture.resource("some-resource")
-		scope, err := config.FindOrCreateScope(db.NewIntPtr(resource.ID()))
+		scope, err := config.FindOrCreateScope(resource.TeamID(), db.NewIntPtr(resource.ID()))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
 		return scope
@@ -111,10 +111,10 @@ var _ = Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resource
 			// A new image version deprecates that history, listed for the resource.
 			moveTo(onImage("2"))
 
-			// Another team's resource on the base type shares this scope.
+			// Another of the team's resources on the base type shares this scope.
 			baseConfig, err := configFactory.FindOrCreateResourceConfig(dbtest.BaseResourceType, resourceSource, nil)
 			Expect(err).NotTo(HaveOccurred())
-			sharedScope, err = baseConfig.FindOrCreateScope(nil)
+			sharedScope, err = baseConfig.FindOrCreateScope(fixture.team.ID(), nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(sharedScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "b1"}, {"ref": "b2"}, {"ref": "b3"}})).To(Succeed())
 
@@ -139,10 +139,11 @@ var _ = Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resource
 		})
 	})
 
-	Context("when another team's resource uses the resource's current history", func() {
+	Context("when another team's identical resource is on the resource's current digest", func() {
 		var (
 			oldScopeID   int
 			currentScope db.ResourceConfigScope
+			theirScope   db.ResourceConfigScope
 		)
 
 		BeforeEach(func() {
@@ -176,7 +177,8 @@ var _ = Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resource
 			`, oldScopeID)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Another team's resource, on the same digest, joins the history.
+			// Another team's resource, on the same digest, keeps a history of
+			// its own: it cannot join this team's.
 			otherTeam, err := fixture.database.Deps.teamFactory.CreateTeam(atc.Team{Name: "other-team"})
 			Expect(err).NotTo(HaveOccurred())
 			otherPipeline, _, err := otherTeam.SavePipeline(atc.PipelineRef{Name: "other-pipeline"}, atc.Config{
@@ -191,7 +193,11 @@ var _ = Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resource
 			otherResource, found, err := otherPipeline.Resource("some-resource")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
-			Expect(otherResource.SetResourceConfigScope(currentScope)).To(Succeed())
+			Expect(otherResource.SetResourceConfigScope(currentScope)).To(MatchError(ContainSubstring("of another team")))
+			theirScope, err = currentScope.ResourceConfig().FindOrCreateScope(otherResource.TeamID(), db.NewIntPtr(otherResource.ID()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(theirScope.ID()).NotTo(Equal(currentScope.ID()))
+			Expect(otherResource.SetResourceConfigScope(theirScope)).To(Succeed())
 
 			listed, err := fixture.resource("some-resource").DeprecatedScopes()
 			Expect(err).NotTo(HaveOccurred())
@@ -199,15 +205,16 @@ var _ = Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resource
 			Expect(listed[0].ID).To(Equal(oldScopeID))
 		})
 
-		It("refuses the copy with Conflict and a reason, and leaves the history alone", func() {
+		It("copies into the team's own history, and leaves the other team's alone", func() {
 			response := requestCopy(oldScopeID)
-			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
 
-			body, err := io.ReadAll(response.Body)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(string(body)).To(ContainSubstring("another team"))
+			var copied atc.CopyVersionsResponse
+			Expect(json.NewDecoder(response.Body).Decode(&copied)).To(Succeed())
+			Expect(copied.VersionsCopied).To(Equal(1))
 
-			Expect(refs(currentScope.ID())).To(Equal([]string{"v1", "v2"}))
+			Expect(refs(currentScope.ID())).To(Equal([]string{"v1", "v2", "EVIL"}))
+			Expect(refs(theirScope.ID())).To(BeEmpty())
 		})
 	})
 })

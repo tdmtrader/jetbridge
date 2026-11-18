@@ -28,7 +28,7 @@ type scopeErrorResourceConfig struct {
 	err error
 }
 
-func (config scopeErrorResourceConfig) FindOrCreateScope(*int) (db.ResourceConfigScope, error) {
+func (config scopeErrorResourceConfig) FindOrCreateScope(int, *int) (db.ResourceConfigScope, error) {
 	return nil, config.err
 }
 
@@ -219,10 +219,10 @@ var _ = Describe("CheckDelegate", func() {
 			resource.Type(), resource.Source(), nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		globalScope, err = config.FindOrCreateScope(nil)
+		globalScope, err = config.FindOrCreateScope(team.ID(), nil)
 		Expect(err).NotTo(HaveOccurred())
 		resourceID := resource.ID()
-		resourceScope, err = config.FindOrCreateScope(&resourceID)
+		resourceScope, err = config.FindOrCreateScope(team.ID(), &resourceID)
 		Expect(err).NotTo(HaveOccurred())
 	})
 

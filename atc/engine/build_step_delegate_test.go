@@ -64,7 +64,7 @@ type fixedScopeResourceConfig struct {
 	scope db.ResourceConfigScope
 }
 
-func (config fixedScopeResourceConfig) FindOrCreateScope(*int) (db.ResourceConfigScope, error) {
+func (config fixedScopeResourceConfig) FindOrCreateScope(int, *int) (db.ResourceConfigScope, error) {
 	return config.scope, nil
 }
 
@@ -446,7 +446,7 @@ var _ = Describe("BuildStepDelegate", func() {
 					"registry-image", registryGetPlan.Get.Source, nil,
 				)
 				Expect(err).NotTo(HaveOccurred())
-				scope, err = resourceConfig.FindOrCreateScope(nil)
+				scope, err = resourceConfig.FindOrCreateScope(realBuild.TeamID(), nil)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(scope.SaveVersions(
 					db.SpanContext{}, []atc.Version{{"digest": "sha256:abc123"}},
@@ -595,7 +595,7 @@ var _ = Describe("BuildStepDelegate", func() {
 						"registry-image", registryGetPlan.Get.Source, nil,
 					)
 					Expect(err).NotTo(HaveOccurred())
-					resolvedScope, err := config.FindOrCreateScope(nil)
+					resolvedScope, err := config.FindOrCreateScope(realBuild.TeamID(), nil)
 					Expect(err).NotTo(HaveOccurred())
 					latest, found, err := resolvedScope.LatestVersion()
 					Expect(err).NotTo(HaveOccurred())

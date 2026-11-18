@@ -467,8 +467,9 @@ func (delegate *buildStepDelegate) metadataFetchImage(
 			return runtime.ImageSpec{}, nil, fmt.Errorf("find resource config: %w", err)
 		}
 
-		// Find scope (nil resource ID - type images aren't scoped to a pipeline resource)
-		scope, err := resourceConfig.FindOrCreateScope(nil)
+		// The build's team's scope (no resource ID: type images aren't
+		// scoped to a pipeline resource).
+		scope, err := resourceConfig.FindOrCreateScope(delegate.build.TeamID(), nil)
 		if err != nil {
 			return runtime.ImageSpec{}, nil, fmt.Errorf("find scope: %w", err)
 		}

@@ -427,6 +427,74 @@ var _ = Describe("ResourceType", func() {
 		})
 	})
 
+	Describe("a config two teams' resource types have", func() {
+		typeConfig := atc.Config{
+			ResourceTypes: atc.ResourceTypes{{
+				Name:   "team-type",
+				Type:   "registry-image",
+				Source: atc.Source{"repository": "registry.example/team-type"},
+			}},
+		}
+
+		var mine, theirs *dbtest.Scenario
+
+		resolveAt := func(scenario *dbtest.Scenario, digest string) db.ResourceConfigScope {
+			GinkgoHelper()
+			config, err := resourceConfigFactory.FindOrCreateResourceConfig("registry-image", atc.Source{"repository": "registry.example/team-type"}, nil)
+			Expect(err).ToNot(HaveOccurred())
+			scope, err := config.FindOrCreateScope(scenario.Team.ID(), nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(scenario.ResourceType("team-type").SetResourceConfigScope(scope)).To(Succeed())
+			Expect(scope.SaveVersions(db.SpanContext{}, []atc.Version{{"digest": digest}})).To(Succeed())
+			return scope
+		}
+
+		BeforeEach(func() {
+			mine = dbtest.Setup(builder.WithPipeline(typeConfig))
+			theirs = dbtest.Setup(builder.WithPipeline(typeConfig))
+		})
+
+		It("gives each team's type its own team's scope, latest version and resolved image", func() {
+			myScope := resolveAt(mine, "sha256:mine")
+			theirScope := resolveAt(theirs, "sha256:theirs")
+			Expect(myScope.ID()).ToNot(Equal(theirScope.ID()))
+
+			myType := mine.ResourceType("team-type")
+			Expect(myType.ResourceConfigScopeID()).To(Equal(myScope.ID()))
+			Expect(myType.ResolvedImage()).To(Equal("registry.example/team-type@sha256:mine"))
+
+			theirType := theirs.ResourceType("team-type")
+			Expect(theirType.ResourceConfigScopeID()).To(Equal(theirScope.ID()))
+			Expect(theirType.ResolvedImage()).To(Equal("registry.example/team-type@sha256:theirs"))
+		})
+
+		It("gives a type no scope until its own team has one", func() {
+			resolveAt(theirs, "sha256:theirs")
+
+			config, err := resourceConfigFactory.FindOrCreateResourceConfig("registry-image", atc.Source{"repository": "registry.example/team-type"}, nil)
+			Expect(err).ToNot(HaveOccurred())
+			_, err = dbConn.Exec(`UPDATE resource_types SET resource_config_id = $1 WHERE id = $2`, config.ID(), mine.ResourceType("team-type").ID())
+			Expect(err).ToNot(HaveOccurred())
+
+			myType := mine.ResourceType("team-type")
+			Expect(myType.ResourceConfigScopeID()).To(BeZero())
+			Expect(myType.ResolvedImage()).To(BeEmpty())
+		})
+
+		It("lists each type once when its config also has a deprecated scope", func() {
+			old := resolveAt(mine, "sha256:old")
+			_, err := dbConn.Exec(`UPDATE resource_config_scopes SET deprecated_at = now() WHERE id = $1`, old.ID())
+			Expect(err).ToNot(HaveOccurred())
+			current := resolveAt(mine, "sha256:new")
+			Expect(current.ID()).ToNot(Equal(old.ID()))
+
+			types, err := mine.Pipeline.ResourceTypes()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(types).To(HaveLen(1))
+			Expect(types[0].ResourceConfigScopeID()).To(Equal(current.ID()))
+		})
+	})
+
 	Describe("ResolvedImage", func() {
 		var resolvedPipeline db.Pipeline
 
@@ -436,7 +504,7 @@ var _ = Describe("ResourceType", func() {
 			GinkgoHelper()
 			config, err := resourceConfigFactory.FindOrCreateResourceConfig("registry-image", evaluated, nil)
 			Expect(err).ToNot(HaveOccurred())
-			scope, err := config.FindOrCreateScope(nil)
+			scope, err := config.FindOrCreateScope(resolvedPipeline.TeamID(), nil)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(resolvedPipeline.SetResourceConfigScopeForResourceType(name, scope)).To(Succeed())
 			Expect(scope.SaveVersions(db.SpanContext{}, []atc.Version{{"digest": "sha256:resolved"}})).To(Succeed())
@@ -509,7 +577,7 @@ var _ = Describe("ResourceType", func() {
 			resourceConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(resourceType.Type(), resourceType.Source(), nil)
 			Expect(err).ToNot(HaveOccurred())
 
-			scope, err = resourceConfig.FindOrCreateScope(nil)
+			scope, err = resourceConfig.FindOrCreateScope(resourceType.TeamID(), nil)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -1203,7 +1271,7 @@ var _ = Describe("ResourceType", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(found).To(BeTrue())
 
-				scope, err := resourceConfig.FindOrCreateScope(nil)
+				scope, err := resourceConfig.FindOrCreateScope(someResourceType.TeamID(), nil)
 				Expect(err).ToNot(HaveOccurred())
 
 				_, found, err = scope.FindVersion(atc.Version{"ref": "v0"})
@@ -1264,7 +1332,7 @@ var _ = Describe("ResourceType", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(found).To(BeTrue())
 
-				scope, err := resourceConfig.FindOrCreateScope(nil)
+				scope, err := resourceConfig.FindOrCreateScope(someOtherResourceType.TeamID(), nil)
 				Expect(err).ToNot(HaveOccurred())
 
 				_, found, err = scope.FindVersion(atc.Version{"ref": "v0"})

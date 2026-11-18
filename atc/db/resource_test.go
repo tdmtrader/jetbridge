@@ -172,7 +172,7 @@ var _ = Describe("Resource", func() {
 					)
 					Expect(err).NotTo(HaveOccurred())
 
-					resourceConfigScope, err := resourceConfig.FindOrCreateScope(intptr(resource.ID()))
+					resourceConfigScope, err := resourceConfig.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 					Expect(err).NotTo(HaveOccurred())
 
 					err = resource.SetResourceConfigScope(resourceConfigScope)
@@ -445,7 +445,7 @@ var _ = Describe("Resource", func() {
 			resourceConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(resource.Type(), resource.Source(), nil)
 			Expect(err).ToNot(HaveOccurred())
 
-			scope, err = resourceConfig.FindOrCreateScope(intptr(resource.ID()))
+			scope, err = resourceConfig.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -2116,7 +2116,7 @@ var _ = Describe("Resource", func() {
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			resourceConfigScope, err = resourceConfig.FindOrCreateScope(intptr(resource.ID()))
+			resourceConfigScope, err = resourceConfig.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 			Expect(err).NotTo(HaveOccurred())
 
 			err = resource.SetResourceConfigScope(resourceConfigScope)
@@ -2305,7 +2305,41 @@ var _ = Describe("Resource", func() {
 					)
 				})
 
-				It("fetches the shared resources and types", func() {
+				It("names none of another team's identical resources or types, whose history is their own", func() {
+					Expect(sharedErr).ToNot(HaveOccurred())
+					Expect(scenario2.Resource("some-resource").ResourceConfigScopeID()).ToNot(Equal(resource.ResourceConfigScopeID()))
+					Expect(shared.ResourceTypes).To(BeEmpty())
+					Expect(shared.Resources).To(ConsistOf(atc.ResourceIdentifiers{
+						{
+							Name:         "some-resource",
+							PipelineName: scenario.Pipeline.Name(),
+							TeamName:     scenario.Team.Name(),
+						},
+					}))
+				})
+			})
+
+			Context("when the team's other pipeline has identical resources", func() {
+				var otherPipeline db.Pipeline
+
+				BeforeEach(func() {
+					var err error
+					otherPipeline, _, err = scenario.Team.SavePipeline(atc.PipelineRef{Name: "other-pipeline"}, atc.Config{
+						Resources: atc.ResourceConfigs{
+							{
+								Name:   "other-resource",
+								Type:   "some-base-resource-type",
+								Source: atc.Source{"some": "repository"},
+							},
+						},
+					}, db.ConfigVersion(0), false)
+					Expect(err).ToNot(HaveOccurred())
+
+					other := &dbtest.Scenario{Team: scenario.Team, Pipeline: otherPipeline}
+					other.Run(builder.WithResourceVersions("other-resource", atc.Version{"ref": "v0"}))
+				})
+
+				It("names them", func() {
 					Expect(sharedErr).ToNot(HaveOccurred())
 					Expect(shared.Resources).To(ConsistOf(atc.ResourceIdentifiers{
 						{
@@ -2314,21 +2348,9 @@ var _ = Describe("Resource", func() {
 							TeamName:     scenario.Team.Name(),
 						},
 						{
-							Name:         "some-resource",
-							PipelineName: scenario2.Pipeline.Name(),
-							TeamName:     scenario2.Team.Name(),
-						},
-						{
 							Name:         "other-resource",
-							PipelineName: scenario2.Pipeline.Name(),
-							TeamName:     scenario2.Team.Name(),
-						},
-					}))
-					Expect(shared.ResourceTypes).To(Equal(atc.ResourceIdentifiers{
-						{
-							Name:         "some-resource-type",
-							PipelineName: scenario2.Pipeline.Name(),
-							TeamName:     scenario2.Team.Name(),
+							PipelineName: otherPipeline.Name(),
+							TeamName:     scenario.Team.Name(),
 						},
 					}))
 				})
@@ -2430,30 +2452,15 @@ var _ = Describe("Resource", func() {
 					)
 				})
 
-				It("fetches the shared resources and types", func() {
+				It("names none of another team's identical resources or types, whose history is their own", func() {
 					Expect(sharedErr).ToNot(HaveOccurred())
-					Expect(shared.Resources).To(Equal(atc.ResourceIdentifiers{
-						{
-							Name:         "some-resource",
-							PipelineName: scenario2.Pipeline.Name(),
-							TeamName:     scenario2.Team.Name(),
-						},
-					}))
-					Expect(shared.ResourceTypes).To(ConsistOf(atc.ResourceIdentifiers{
+					Expect(scenario2.Resource("some-resource").ResourceConfigScopeID()).ToNot(BeZero())
+					Expect(shared.Resources).To(BeEmpty())
+					Expect(shared.ResourceTypes).To(Equal(atc.ResourceIdentifiers{
 						{
 							Name:         "some-resource-type",
 							PipelineName: scenario.Pipeline.Name(),
 							TeamName:     scenario.Team.Name(),
-						},
-						{
-							Name:         "some-resource-type",
-							PipelineName: scenario2.Pipeline.Name(),
-							TeamName:     scenario2.Team.Name(),
-						},
-						{
-							Name:         "other-resource-type",
-							PipelineName: scenario2.Pipeline.Name(),
-							TeamName:     scenario2.Team.Name(),
 						},
 					}))
 				})

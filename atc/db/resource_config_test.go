@@ -3,6 +3,7 @@ package db_test
 import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbtest"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -23,7 +24,7 @@ var _ = Describe("ResourceConfig", func() {
 				nil,
 			)
 			Expect(err).ToNot(HaveOccurred())
-			_, err = resourceTypeConfig.FindOrCreateScope(nil)
+			_, err = resourceTypeConfig.FindOrCreateScope(defaultTeam.ID(), nil)
 			Expect(err).ToNot(HaveOccurred())
 
 			resourceConfig, err = resourceConfigFactory.FindOrCreateResourceConfig(
@@ -72,14 +73,14 @@ var _ = Describe("ResourceConfig", func() {
 		Describe("FindOrCreateScope", func() {
 			Context("given no resource", func() {
 				It("finds or creates a global scope", func() {
-					createdScope, err := resourceConfig.FindOrCreateScope(nil)
+					createdScope, err := resourceConfig.FindOrCreateScope(defaultTeam.ID(), nil)
 					Expect(err).ToNot(HaveOccurred())
 					Expect(createdScope.ResourceID()).To(BeNil())
 					Expect(createdScope.ResourceConfig().ID()).To(Equal(resourceConfig.ID()))
 					seqAfterCreate, err := currentResourceConfigScopesIdSeq()
 					Expect(err).ToNot(HaveOccurred())
 
-					foundScope, err := resourceConfig.FindOrCreateScope(nil)
+					foundScope, err := resourceConfig.FindOrCreateScope(defaultTeam.ID(), nil)
 					Expect(err).ToNot(HaveOccurred())
 					Expect(foundScope.ID()).To(Equal(createdScope.ID()))
 					seqAfterFind, err := currentResourceConfigScopesIdSeq()
@@ -94,7 +95,7 @@ var _ = Describe("ResourceConfig", func() {
 						// create a scope with default resource
 						seqBeforeCreate, err := currentResourceConfigScopesIdSeq()
 						Expect(err).ToNot(HaveOccurred())
-						createdScope, err := resourceConfig.FindOrCreateScope(intptr(defaultResource.ID()))
+						createdScope, err := resourceConfig.FindOrCreateScope(defaultResource.TeamID(), intptr(defaultResource.ID()))
 						Expect(err).ToNot(HaveOccurred())
 						Expect(createdScope.ResourceID()).To(BeNil())
 						Expect(createdScope.ResourceConfig().ID()).To(Equal(resourceConfig.ID()))
@@ -103,7 +104,7 @@ var _ = Describe("ResourceConfig", func() {
 						Expect(seqAfterCreate).To(Equal(seqBeforeCreate + 1))
 
 						// should find the scope of default resource
-						foundScope, err := resourceConfig.FindOrCreateScope(intptr(defaultResource.ID()))
+						foundScope, err := resourceConfig.FindOrCreateScope(defaultResource.TeamID(), intptr(defaultResource.ID()))
 						Expect(err).ToNot(HaveOccurred())
 						Expect(foundScope.ID()).To(Equal(createdScope.ID()))
 						seqAfterFind, err := currentResourceConfigScopesIdSeq()
@@ -111,12 +112,47 @@ var _ = Describe("ResourceConfig", func() {
 						Expect(seqAfterCreate).To(Equal(seqAfterFind))
 
 						// should find the same scope even with a different resource id
-						foundScope, err = resourceConfig.FindOrCreateScope(intptr(otherResource.ID()))
+						foundScope, err = resourceConfig.FindOrCreateScope(otherResource.TeamID(), intptr(otherResource.ID()))
 						Expect(err).ToNot(HaveOccurred())
 						Expect(foundScope.ID()).To(Equal(createdScope.ID()))
 						seqAfterFind, err = currentResourceConfigScopesIdSeq()
 						Expect(err).ToNot(HaveOccurred())
 						Expect(seqAfterCreate).To(Equal(seqAfterFind))
+					})
+				})
+
+				Context("of another team with the same config", func() {
+					var anotherTeamsResource db.Resource
+
+					BeforeEach(func() {
+						scenario := dbtest.Setup(builder.WithPipeline(atc.Config{
+							Resources: atc.ResourceConfigs{{
+								Name:   "other-resource",
+								Type:   "some-base-resource-type",
+								Source: atc.Source{"some": "source"},
+							}},
+						}))
+						anotherTeamsResource = scenario.Resource("other-resource")
+						Expect(anotherTeamsResource.TeamID()).ToNot(Equal(defaultTeam.ID()))
+					})
+
+					It("finds or creates that team's own scope", func() {
+						mine, err := resourceConfig.FindOrCreateScope(defaultResource.TeamID(), intptr(defaultResource.ID()))
+						Expect(err).ToNot(HaveOccurred())
+
+						theirs, err := resourceConfig.FindOrCreateScope(anotherTeamsResource.TeamID(), intptr(anotherTeamsResource.ID()))
+						Expect(err).ToNot(HaveOccurred())
+						Expect(theirs.ID()).ToNot(Equal(mine.ID()))
+						Expect(theirs.ResourceID()).To(BeNil())
+
+						again, err := resourceConfig.FindOrCreateScope(anotherTeamsResource.TeamID(), nil)
+						Expect(err).ToNot(HaveOccurred())
+						Expect(again.ID()).To(Equal(theirs.ID()))
+					})
+
+					It("refuses a resource of a team other than the one given", func() {
+						_, err := resourceConfig.FindOrCreateScope(defaultTeam.ID(), intptr(anotherTeamsResource.ID()))
+						Expect(err).To(MatchError(ContainSubstring("belongs to team")))
 					})
 				})
 			})
@@ -137,14 +173,14 @@ var _ = Describe("ResourceConfig", func() {
 		Describe("FindOrCreateScope", func() {
 			Context("given no resource", func() {
 				It("finds or creates a global scope", func() {
-					createdScope, err := resourceConfig.FindOrCreateScope(nil)
+					createdScope, err := resourceConfig.FindOrCreateScope(defaultTeam.ID(), nil)
 					Expect(err).ToNot(HaveOccurred())
 					Expect(createdScope.ResourceID()).To(BeNil())
 					Expect(createdScope.ResourceConfig().ID()).To(Equal(resourceConfig.ID()))
 					seqAfterCreate, err := currentResourceConfigScopesIdSeq()
 					Expect(err).ToNot(HaveOccurred())
 
-					foundScope, err := resourceConfig.FindOrCreateScope(nil)
+					foundScope, err := resourceConfig.FindOrCreateScope(defaultTeam.ID(), nil)
 					Expect(err).ToNot(HaveOccurred())
 					Expect(foundScope.ID()).To(Equal(createdScope.ID()))
 					seqAfterFind, err := currentResourceConfigScopesIdSeq()
@@ -155,7 +191,7 @@ var _ = Describe("ResourceConfig", func() {
 
 			Context("given a resource", func() {
 				It("finds or creates a unique scope", func() {
-					createdScope, err := resourceConfig.FindOrCreateScope(intptr(defaultResource.ID()))
+					createdScope, err := resourceConfig.FindOrCreateScope(defaultResource.TeamID(), intptr(defaultResource.ID()))
 					Expect(err).ToNot(HaveOccurred())
 					Expect(createdScope.ResourceID()).ToNot(BeNil())
 					Expect(*createdScope.ResourceID()).To(Equal(defaultResource.ID()))
@@ -163,7 +199,7 @@ var _ = Describe("ResourceConfig", func() {
 					seqAfterCreate, err := currentResourceConfigScopesIdSeq()
 					Expect(err).ToNot(HaveOccurred())
 
-					foundScope, err := resourceConfig.FindOrCreateScope(intptr(defaultResource.ID()))
+					foundScope, err := resourceConfig.FindOrCreateScope(defaultResource.TeamID(), intptr(defaultResource.ID()))
 					Expect(err).ToNot(HaveOccurred())
 					Expect(foundScope.ID()).To(Equal(createdScope.ID()))
 					seqAfterFind, err := currentResourceConfigScopesIdSeq()

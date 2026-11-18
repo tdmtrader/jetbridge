@@ -66,7 +66,7 @@ var _ = Describe("Resource Config Scope", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeTrue())
 
-		resourceScope, err = rc.FindOrCreateScope(intptr(scenario.Resource("some-resource").ID()))
+		resourceScope, err = rc.FindOrCreateScope(scenario.Resource("some-resource").TeamID(), intptr(scenario.Resource("some-resource").ID()))
 		Expect(err).ToNot(HaveOccurred())
 	})
 
@@ -384,7 +384,7 @@ var _ = Describe("Resource Config Scope", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			// Call FindOrCreateScope with the new config — this should deprecate the old scope
-			_, err = newRC.FindOrCreateScope(intptr(resource.ID()))
+			_, err = newRC.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 			Expect(err).ToNot(HaveOccurred())
 
 			// Verify old scope still exists (soft-deleted, not hard-deleted)
@@ -408,14 +408,18 @@ var _ = Describe("Resource Config Scope", func() {
 			Expect(versionCount).To(Equal(2))
 		})
 
-		scopeFor := func(resourceID *int, source string) (db.ResourceConfigScope, error) {
+		scopeOfTeamFor := func(teamID int, resourceID *int, source string) (db.ResourceConfigScope, error) {
 			rc, err := resourceConfigFactory.FindOrCreateResourceConfig(
 				"some-unique-base-resource-type",
 				atc.Source{"some": source},
 				nil,
 			)
 			Expect(err).ToNot(HaveOccurred())
-			return rc.FindOrCreateScope(resourceID)
+			return rc.FindOrCreateScope(teamID, resourceID)
+		}
+
+		scopeFor := func(resourceID *int, source string) (db.ResourceConfigScope, error) {
+			return scopeOfTeamFor(scenario.Team.ID(), resourceID, source)
 		}
 
 		It("lets a resource whose source returns to an earlier config change source again", func() {
@@ -450,7 +454,7 @@ var _ = Describe("Resource Config Scope", func() {
 				{r1, "r1-new"},
 				{r2, "r2-new"},
 			} {
-				_, err := scopeFor(step.resourceID, step.source)
+				_, err := scopeOfTeamFor(shared.Team.ID(), step.resourceID, step.source)
 				Expect(err).ToNot(HaveOccurred())
 			}
 		})
@@ -502,7 +506,7 @@ var _ = Describe("Resource Config Scope", func() {
 			)
 			Expect(err).ToNot(HaveOccurred())
 
-			_, err = newRC.FindOrCreateScope(intptr(resource.ID()))
+			_, err = newRC.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 			Expect(err).ToNot(HaveOccurred())
 
 			// Reload resource to get fresh state
@@ -547,7 +551,7 @@ var _ = Describe("Resource Config Scope", func() {
 			)
 			Expect(err).ToNot(HaveOccurred())
 
-			newScope, err := newRC.FindOrCreateScope(intptr(resource.ID()))
+			newScope, err := newRC.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 			Expect(err).ToNot(HaveOccurred())
 
 			// 3. Verify old scope was deprecated and new scope is different
@@ -624,7 +628,7 @@ var _ = Describe("Resource Config Scope", func() {
 			)
 			Expect(err).ToNot(HaveOccurred())
 
-			newScope, err := newRC.FindOrCreateScope(intptr(resource.ID()))
+			newScope, err := newRC.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(newScope.ID()).ToNot(Equal(oldScopeID))
 			Expect(resource.SetResourceConfigScope(newScope)).To(Succeed())
@@ -713,7 +717,7 @@ var _ = Describe("Resource Config Scope", func() {
 				)
 				Expect(err).ToNot(HaveOccurred())
 
-				newScope, err = newRC.FindOrCreateScope(intptr(resource.ID()))
+				newScope, err = newRC.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 				Expect(err).ToNot(HaveOccurred())
 				Expect(newScope.ID()).ToNot(Equal(oldScope.ID()))
 
@@ -775,7 +779,7 @@ var _ = Describe("Resource Config Scope", func() {
 				nil,
 			)
 			Expect(err).ToNot(HaveOccurred())
-			targetScope, err := targetConfig.FindOrCreateScope(intptr(resource.ID()))
+			targetScope, err := targetConfig.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(targetScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v3"}})).To(Succeed())
 
@@ -844,7 +848,7 @@ var _ = Describe("Resource Config Scope", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			targetScope, err := rc2.FindOrCreateScope(intptr(targetResource.ID()))
+			targetScope, err := rc2.FindOrCreateScope(targetResource.TeamID(), intptr(targetResource.ID()))
 			Expect(err).ToNot(HaveOccurred())
 
 			// Copy versions from source to target
@@ -903,7 +907,7 @@ var _ = Describe("Resource Config Scope", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			targetScope, err := rc2.FindOrCreateScope(intptr(targetResource.ID()))
+			targetScope, err := rc2.FindOrCreateScope(targetResource.TeamID(), intptr(targetResource.ID()))
 			Expect(err).ToNot(HaveOccurred())
 
 			// Pre-populate target with v1

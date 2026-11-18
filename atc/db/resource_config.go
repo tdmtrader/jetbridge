@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -16,7 +17,11 @@ type ResourceConfig interface {
 
 	OriginBaseResourceType() *UsedBaseResourceType
 
-	FindOrCreateScope(resourceID *int) (ResourceConfigScope, error)
+	// FindOrCreateScope finds or creates the team's scope of this config:
+	// the resource's own when its base type asks for a unique history, and
+	// otherwise the one the team's identical resources and resource types
+	// share. A resource given must be one of the team's.
+	FindOrCreateScope(teamID int, resourceID *int) (ResourceConfigScope, error)
 }
 
 // ResourceConfig represents a resource type and config source.
@@ -57,7 +62,7 @@ func (r *resourceConfig) OriginBaseResourceType() *UsedBaseResourceType {
 	return r.createdByResourceCache.ResourceConfig().OriginBaseResourceType()
 }
 
-func (r *resourceConfig) FindOrCreateScope(resourceID *int) (ResourceConfigScope, error) {
+func (r *resourceConfig) FindOrCreateScope(teamID int, resourceID *int) (ResourceConfigScope, error) {
 	tx, err := r.conn.Begin()
 	if err != nil {
 		return nil, err
@@ -70,6 +75,7 @@ func (r *resourceConfig) FindOrCreateScope(resourceID *int) (ResourceConfigScope
 		r.conn,
 		r.lockFactory,
 		r,
+		teamID,
 		resourceID,
 	)
 	if err != nil {
@@ -89,13 +95,31 @@ func findOrCreateResourceConfigScope(
 	conn DbConn,
 	lockFactory lock.LockFactory,
 	resourceConfig ResourceConfig,
+	teamID int,
 	resourceID *int,
 ) (ResourceConfigScope, error) {
-	// Equivalent resources across pipelines and teams share one version
-	// history: a scope is global unless the base resource type asks for a
-	// unique history per resource.
+	// A version history belongs to one team (ADR-0012): a team's equivalent
+	// resources and resource types, in any of its pipelines, share one scope
+	// per config, unless the base resource type asks for a unique history per
+	// resource. A resource of another team is refused here, and pointing a
+	// resource at another team's scope is refused by the store.
 	var uniqueResourceID *int
 	if resourceID != nil {
+		var resourceTeamID int
+		err := tx.QueryRow(`
+			SELECT p.team_id FROM resources r JOIN pipelines p ON p.id = r.pipeline_id WHERE r.id = $1
+		`, *resourceID).Scan(&resourceTeamID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, fmt.Errorf("resource %d not found", *resourceID)
+			}
+			return nil, err
+		}
+
+		if resourceTeamID != teamID {
+			return nil, fmt.Errorf("resource %d belongs to team %d, not team %d", *resourceID, resourceTeamID, teamID)
+		}
+
 		if brt := resourceConfig.CreatedByBaseResourceType(); brt != nil && brt.UniqueVersionHistory {
 			uniqueResourceID = resourceID
 		}
@@ -109,6 +133,7 @@ func findOrCreateResourceConfigScope(
 			From("resource_config_scopes").
 			Where(sq.Eq{
 				"resource_config_id": resourceConfig.ID(),
+				"team_id":            teamID,
 				"deprecated_at":      nil,
 			}).
 			Where(sq.Expr("resource_id IS NULL")).
@@ -194,8 +219,8 @@ func findOrCreateResourceConfigScope(
 		}
 
 		err = psql.Insert("resource_config_scopes").
-			Columns("resource_id", "resource_config_id").
-			Values(*resourceID, resourceConfig.ID()).
+			Columns("resource_id", "resource_config_id", "team_id").
+			Values(*resourceID, resourceConfig.ID(), teamID).
 			Suffix(`
 				ON CONFLICT (resource_id, resource_config_id) WHERE resource_id IS NOT NULL DO UPDATE SET
 					resource_id = ?,
@@ -210,10 +235,10 @@ func findOrCreateResourceConfigScope(
 		}
 	} else {
 		err = psql.Insert("resource_config_scopes").
-			Columns("resource_id", "resource_config_id").
-			Values(nil, resourceConfig.ID()).
+			Columns("resource_id", "resource_config_id", "team_id").
+			Values(nil, resourceConfig.ID(), teamID).
 			Suffix(`
-				ON CONFLICT (resource_config_id) WHERE resource_id IS NULL AND deprecated_at IS NULL DO UPDATE SET
+				ON CONFLICT (resource_config_id, team_id) WHERE resource_id IS NULL AND deprecated_at IS NULL DO UPDATE SET
 					resource_config_id = ?
 				RETURNING id
 			`, resourceConfig.ID()).

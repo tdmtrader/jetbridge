@@ -44,7 +44,7 @@ var _ = Describe("Component Notifications", func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 
-		scope, err := rc.FindOrCreateScope(intptr(resource.ID()))
+		scope, err := rc.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 		Expect(err).NotTo(HaveOccurred())
 		return scope
 	}
@@ -58,7 +58,7 @@ var _ = Describe("Component Notifications", func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 
-		scope, err := rc.FindOrCreateScope(nil)
+		scope, err := rc.FindOrCreateScope(rt.TeamID(), nil)
 		Expect(err).NotTo(HaveOccurred())
 		return scope
 	}

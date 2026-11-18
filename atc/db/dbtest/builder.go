@@ -235,7 +235,7 @@ func (builder Builder) WithResourceVersions(resourceName string, versions ...atc
 			return fmt.Errorf("find or create resource config: %w", err)
 		}
 
-		scope, err := resourceConfig.FindOrCreateScope(intptr(resource.ID()))
+		scope, err := resourceConfig.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 		if err != nil {
 			return fmt.Errorf("find or create scope: %w", err)
 		}
@@ -342,7 +342,7 @@ func (builder Builder) WithResourceTypeVersions(resourceTypeName string, version
 			return fmt.Errorf("find or create resource config: %w", err)
 		}
 
-		scope, err := resourceConfig.FindOrCreateScope(nil)
+		scope, err := resourceConfig.FindOrCreateScope(resourceType.TeamID(), nil)
 		if err != nil {
 			return fmt.Errorf("find or create scope: %w", err)
 		}

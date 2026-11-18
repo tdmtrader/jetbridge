@@ -1208,7 +1208,7 @@ func sharedResourcesAndTypes(conn DbConn, resourceConfigScopeID int, name string
 		From("resource_types rt").
 		Join("pipelines p ON p.id = rt.pipeline_id").
 		Join("teams t ON t.id = p.team_id").
-		Join("resource_config_scopes rs ON rs.resource_config_id = rt.resource_config_id").
+		Join("resource_config_scopes rs ON rs.resource_config_id = rt.resource_config_id AND rs.team_id = p.team_id AND rs.resource_id IS NULL AND rs.deprecated_at IS NULL").
 		Where(sq.Eq{
 			"rs.id": resourceConfigScopeID,
 		}).

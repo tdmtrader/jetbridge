@@ -416,12 +416,8 @@ func persistSharedResources(fixture *resourceAPIFixture) atc.ResourcesAndTypes {
 			fixture.builder.WithResourceVersions("shared-resource", atc.Version{"ref": other.teamName}),
 			fixture.builder.WithResourceTypeVersions("shared-type", atc.Version{"ref": other.teamName}),
 		)
-		expected.Resources = append(expected.Resources, atc.ResourceIdentifier{
-			Name: "shared-resource", PipelineName: pipeline.Name(), TeamName: team.Name(),
-		})
-		expected.ResourceTypes = append(expected.ResourceTypes, atc.ResourceIdentifier{
-			Name: "shared-type", PipelineName: pipeline.Name(), TeamName: team.Name(),
-		})
+		// Another team's identical resource and type keep a history of
+		// their own, so they share none with this team's.
 	}
 	return expected
 }
@@ -1250,7 +1246,7 @@ var _ = Describe("Resources API", func() {
 			scriptedAccess.teamNames = []string{fixture.team.Name()}
 		})
 
-		It("returns the public, authorized-private, and unauthorized-private resources sharing a real scope", func() {
+		It("returns the team's own resources and types sharing a real scope, not a public or private team's identical ones", func() {
 			expected := persistSharedResources(fixture)
 			response := requestResourceAPI(
 				fixture, http.MethodGet,

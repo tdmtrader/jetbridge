@@ -85,7 +85,7 @@ var _ = Describe("CheckFactory", func() {
 				resourceConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(resource.Type(), resource.Source(), nil)
 				Expect(err).NotTo(HaveOccurred())
 
-				scope, err := resourceConfig.FindOrCreateScope(intptr(resource.ID()))
+				scope, err := resourceConfig.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 				Expect(err).NotTo(HaveOccurred())
 
 				err = resource.SetResourceConfigScope(scope)
@@ -533,7 +533,7 @@ var _ = Describe("CheckFactory", func() {
 						resourceConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(checkResourceType.Type(), checkResourceType.Source(), nil)
 						Expect(err).NotTo(HaveOccurred())
 
-						scope, err := resourceConfig.FindOrCreateScope(nil)
+						scope, err := resourceConfig.FindOrCreateScope(checkResourceType.TeamID(), nil)
 						Expect(err).NotTo(HaveOccurred())
 
 						err = checkResourceType.SetResourceConfigScope(scope)
@@ -628,7 +628,7 @@ var _ = Describe("CheckFactory", func() {
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			putOnlyResourceConfigScope, err = resourceConfig.FindOrCreateScope(intptr(putOnlyResource.ID()))
+			putOnlyResourceConfigScope, err = resourceConfig.FindOrCreateScope(putOnlyResource.TeamID(), intptr(putOnlyResource.ID()))
 			Expect(err).NotTo(HaveOccurred())
 
 			err = putOnlyResource.SetResourceConfigScope(putOnlyResourceConfigScope)

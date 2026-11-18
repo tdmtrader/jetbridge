@@ -48,7 +48,7 @@ var _ = Describe("CheckCollector", func() {
 			usedResource.Type(), usedResource.Source(), nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		scope, err = resourceConfig.FindOrCreateScope(intptr(usedResource.ID()))
+		scope, err = resourceConfig.FindOrCreateScope(usedResource.TeamID(), intptr(usedResource.ID()))
 		Expect(err).NotTo(HaveOccurred())
 	})
 
