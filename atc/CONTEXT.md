@@ -54,8 +54,10 @@ One discovered state of a resource, found by a check.
 A build that asks a resource for new versions. Checks are scheduled by lidar.
 
 **Resource config scope**:
-The shared version history for one resource config, so identical resources
-across pipelines share checks and versions.
+The version history of one resource config for one team: a team's identical
+resources and resource types, in any of its pipelines, share its checks and
+versions, unless the base type asks for a history per resource. Another team's
+identical resources have a scope of their own (ADR-0012).
 
 **Resource cache**:
 The fetched content of one resource version with given params. It is
