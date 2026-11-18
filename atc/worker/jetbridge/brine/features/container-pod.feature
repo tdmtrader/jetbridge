@@ -179,6 +179,36 @@ Feature: What a step's pod actually looks like
     When the container runs
     Then the step uses the "privileged" security policy
 
+  # Numeric users select a uid; names keep the image's USER. Step directories
+  # and caches are hostPath DirectoryOrCreate, created root-owned 0755 by the
+  # kubelet, so a non-root uid cannot write a fresh output or cache directory.
+  # The mount hides image permissions, and an unprivileged uid cannot chmod
+  # a root-owned directory. Caches are shared across builds regardless of uid,
+  # so a per-uid chown is not a generic fix. This is not changed here.
+  Scenario: A task that runs as root runs as uid 0
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "user-handle" from image "docker:///busybox"
+    And its command runs as user "root"
+    When the container runs
+    Then the step's command runs as uid "0"
+    And the step uses the "unprivileged" security policy
+
+  Scenario: A task that runs as a numeric uid runs as that uid
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "numeric-user-handle" from image "docker:///busybox"
+    And its command runs as user "1001"
+    When the container runs
+    Then the step's command runs as uid "1001"
+    And the step uses the "unprivileged" security policy
+
+  Scenario: A task that names a user keeps the image's user
+    Given a Kubernetes worker "pod-spec-worker" with a database behind it
+    And the worker prepares task "named-user-handle" from image "docker:///busybox"
+    And its command runs as user "concourse"
+    When the container runs
+    Then the step's command runs as the image's user
+    And the step uses the "unprivileged" security policy
+
   # PE-03
   @PE-03
   Scenario: A step's pod is never restarted behind the scheduler's back

@@ -69,6 +69,7 @@ type ContainerDraft struct {
 	Dir          string
 	ContainerEnv []string
 	ProcessEnv   []string
+	ProcessUser  string
 
 	// Inputs are destination paths, each of which gets a real artifact volume
 	// when the container runs. There is no artifact-less form: production's

@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -197,6 +198,18 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	logger := lagerctx.FromContext(ctx).Session("container-run", lager.Data{
 		"handle": c.handle,
 	})
+
+	if _, ignoredName, err := runAsUser(spec.User); err != nil {
+		return nil, err
+	} else if ignoredName {
+		// Lager has no warning level. Keep the warning explicit in both
+		// the event name and structured data, before either runtime branches.
+		logger.Info("warning-ignored-task-user", lager.Data{
+			"severity": "warning",
+			"user":     spec.User,
+			"reason":   "Kubernetes runAsUser takes only a numeric uid, so the step runs as its image's USER",
+		})
+	}
 
 	execMode := c.executor != nil
 	ctx, span := tracing.StartSpan(ctx, "k8s.container.run", tracing.Attrs{
@@ -588,6 +601,12 @@ func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string
 	volumes, volumeMounts := c.buildVolumeMounts()
 	resources := buildResourceRequirements(c.containerSpec.Limits)
 	privileged := c.containerSpec.ImageSpec.Privileged
+	uid, _, err := runAsUser(processSpec.User)
+	if err != nil {
+		return nil, privilegeAllowance{}, err
+	}
+	securityContext := buildContainerSecurityContext(privileged)
+	securityContext.RunAsUser = uid
 
 	// Add the artifact storage volume, when a backend is configured.
 	if artifactVol := c.buildArtifactStoreVolume(); artifactVol != nil {
@@ -650,7 +669,7 @@ func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string
 			Env:             env,
 			VolumeMounts:    volumeMounts,
 			Resources:       resources,
-			SecurityContext: buildContainerSecurityContext(privileged),
+			SecurityContext: securityContext,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 		},
 	}
@@ -1166,6 +1185,47 @@ func buildContainerSecurityContext(privileged bool) *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		AllowPrivilegeEscalation: &allowEscalation,
 	}
+}
+
+// runAsUser maps root to 0 and unsigned decimal uids from 0 to 2147483647
+// to Kubernetes' runAsUser, as validated by validation.IsValidUserID.
+// An empty user keeps the image's USER. Names also keep the image's
+// USER for compatibility, with ignoredName telling Run to warn on both runtimes.
+// Only all-decimal strings (optionally signed) are treated as uid attempts;
+// signed or out-of-range uids are refused. Other values, including user:group,
+// are treated as names because Kubernetes cannot resolve them.
+//
+// Step directories and caches are hostPath DirectoryOrCreate: the kubelet
+// creates them root-owned 0755, so a non-root uid cannot write a fresh output
+// or cache directory. The mount hides image permissions, and an unprivileged
+// uid cannot chmod a root-owned directory. Caches are shared across builds
+// regardless of each build's uid, so a per-uid chown is not a generic fix.
+// These directory permissions are not changed here.
+func runAsUser(user string) (uid *int64, ignoredName bool, err error) {
+	switch user {
+	case "":
+		return nil, false, nil
+	case "root":
+		root := int64(0)
+		return &root, false, nil
+	}
+	digits := user
+	if user[0] == '+' || user[0] == '-' {
+		digits = user[1:]
+	}
+	if digits == "" {
+		return nil, true, nil
+	}
+	for _, digit := range digits {
+		if digit < '0' || digit > '9' {
+			return nil, true, nil
+		}
+	}
+	parsed, parseErr := strconv.ParseInt(user, 10, 64)
+	if parseErr != nil || len(validation.IsValidUserID(parsed)) != 0 || user[0] == '+' || user[0] == '-' {
+		return nil, false, fmt.Errorf("unsupported task user %q: a numeric uid must be unsigned decimal digits from 0 to 2147483647, the range Kubernetes runAsUser accepts", user)
+	}
+	return &parsed, false, nil
 }
 
 // buildImagePullSecrets converts a list of secret names into K8s
