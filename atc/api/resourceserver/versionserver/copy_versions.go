@@ -70,8 +70,8 @@ func (s *Server) CopyResourceVersions(pipeline db.Pipeline) http.Handler {
 		}
 
 		copied, err := resource.CopyVersionsFromScope(req.FromScopeID)
-		if errors.Is(err, db.ErrCopyIntoSharedScope) {
-			logger.Info("refused-copy-into-shared-scope", lager.Data{"from-scope-id": req.FromScopeID})
+		if errors.Is(err, db.ErrCopyIntoSharedScope) || errors.Is(err, db.ErrCopyIntoAnotherTeamsHistory) {
+			logger.Info("refused-copy-into-shared-scope", lager.Data{"from-scope-id": req.FromScopeID, "reason": err.Error()})
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

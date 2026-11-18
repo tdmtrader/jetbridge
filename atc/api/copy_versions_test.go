@@ -138,4 +138,76 @@ var _ = Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resource
 			Expect(refs(sharedScope.ID())).To(Equal([]string{"b1", "b2", "b3"}))
 		})
 	})
+
+	Context("when another team's resource uses the resource's current history", func() {
+		var (
+			oldScopeID   int
+			currentScope db.ResourceConfigScope
+		)
+
+		BeforeEach(func() {
+			build, err := fixture.team.CreateOneOffBuild()
+			Expect(err).NotTo(HaveOccurred())
+			cacheFactory := db.NewResourceCacheFactory(fixture.database.Conn, fixture.database.LockFactory)
+			configFactory := fixture.database.Deps.resourceConfigFactory
+
+			// A resolved type is keyed on its image's repository@digest.
+			onDigest := func(digest string) db.ResourceConfig {
+				resourceType, source, version := db.PinnedImage("registry.example/some-custom-type@sha256:" + digest)
+				cache, err := cacheFactory.FindOrCreateResourceCache(db.ForBuild(build.ID()), resourceType, version, source, nil, nil)
+				Expect(err).NotTo(HaveOccurred())
+				config, err := configFactory.FindOrCreateResourceConfig("some-custom-type", resourceSource, cache)
+				Expect(err).NotTo(HaveOccurred())
+				return config
+			}
+
+			oldScope := moveTo(onDigest("d0"))
+			oldScopeID = oldScope.ID()
+			Expect(oldScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v1"}, {"ref": "v2"}})).To(Succeed())
+
+			// A new digest in the same repository carries the history and
+			// deprecates the old one, listed for the resource.
+			currentScope = moveTo(onDigest("d1"))
+			Expect(refs(currentScope.ID())).To(Equal([]string{"v1", "v2"}))
+
+			_, err = fixture.database.Conn.Exec(`
+				INSERT INTO resource_config_versions (resource_config_scope_id, version, version_sha256, check_order)
+				VALUES ($1, '{"ref":"EVIL"}', encode(digest('{"ref":"EVIL"}', 'sha256'), 'hex'), 3)
+			`, oldScopeID)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Another team's resource, on the same digest, joins the history.
+			otherTeam, err := fixture.database.Deps.teamFactory.CreateTeam(atc.Team{Name: "other-team"})
+			Expect(err).NotTo(HaveOccurred())
+			otherPipeline, _, err := otherTeam.SavePipeline(atc.PipelineRef{Name: "other-pipeline"}, atc.Config{
+				ResourceTypes: atc.ResourceTypes{
+					{Name: "some-custom-type", Type: "registry-image", Source: atc.Source{"repository": "registry.example/some-custom-type"}},
+				},
+				Resources: atc.ResourceConfigs{
+					{Name: "some-resource", Type: "some-custom-type", Source: resourceSource},
+				},
+			}, db.ConfigVersion(0), false)
+			Expect(err).NotTo(HaveOccurred())
+			otherResource, found, err := otherPipeline.Resource("some-resource")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(otherResource.SetResourceConfigScope(currentScope)).To(Succeed())
+
+			listed, err := fixture.resource("some-resource").DeprecatedScopes()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(listed).NotTo(BeEmpty())
+			Expect(listed[0].ID).To(Equal(oldScopeID))
+		})
+
+		It("refuses the copy with Conflict and a reason, and leaves the history alone", func() {
+			response := requestCopy(oldScopeID)
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("another team"))
+
+			Expect(refs(currentScope.ID())).To(Equal([]string{"v1", "v2"}))
+		})
+	})
 })
