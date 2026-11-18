@@ -219,6 +219,49 @@ var _ = Describe("A version history belongs to one team", func() {
 		Expect(versionsOf(teamB.Resource("git-resource").ResourceConfigScopeID())).To(Equal([]string{"b1"}))
 	})
 
+	Context("given the row id of a version in another team's history", func() {
+		var theirVersionID int
+
+		BeforeEach(func() {
+			attach(teamA, "git-resource", gitConfig())
+			attach(teamB, "git-resource", gitConfig())
+			theirs := teamB.Resource("git-resource").ResourceConfigScopeID()
+			Expect(dbConn.QueryRow(`
+				INSERT INTO resource_config_versions (resource_config_scope_id, version, version_sha256, metadata, check_order)
+				VALUES ($1, '{"ref":"secret"}', encode(digest('{"ref":"secret"}', 'sha256'), 'hex'), '[{"name":"m","value":"secret"}]', 1)
+				RETURNING id
+			`, theirs).Scan(&theirVersionID)).To(Succeed())
+		})
+
+		It("does not read it through the team's pipeline", func() {
+			_, found, err := teamA.Pipeline.ResourceVersion(teamA.Resource("git-resource").ID(), theirVersionID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeFalse())
+		})
+
+		It("does not pin to it", func() {
+			found, err := teamA.Resource("git-resource").PinVersion(theirVersionID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeFalse())
+			Expect(teamA.Resource("git-resource").CurrentPinnedVersion()).To(BeNil())
+		})
+
+		It("does not disable or enable by it", func() {
+			Expect(teamA.Resource("git-resource").DisableVersion(theirVersionID)).To(MatchError(db.ErrResourceVersionNotFound))
+			Expect(teamA.Resource("git-resource").EnableVersion(theirVersionID)).To(MatchError(db.ErrResourceVersionNotFound))
+
+			var disabled int
+			Expect(dbConn.QueryRow(`SELECT count(*) FROM resource_disabled_versions`).Scan(&disabled)).To(Succeed())
+			Expect(disabled).To(BeZero())
+		})
+
+		It("lists no builds through it", func() {
+			builds, err := teamA.Pipeline.GetBuildsWithVersionAsInput(teamA.Resource("git-resource").ID(), theirVersionID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(builds).To(BeEmpty())
+		})
+	})
+
 	It("names only the team's own resources and types as sharing a history", func() {
 		attach(teamA, "git-resource", gitConfig())
 		attach(teamB, "git-resource", gitConfig())

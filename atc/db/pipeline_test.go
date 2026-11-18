@@ -1549,7 +1549,7 @@ var _ = Describe("Pipeline", func() {
 			var found bool
 			var err error
 
-			rv, found, err = pipeline.ResourceVersion(resourceConfigVersion.ID())
+			rv, found, err = scenario.Pipeline.ResourceVersion(scenario.Resource("some-resource").ID(), resourceConfigVersion.ID())
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 		})

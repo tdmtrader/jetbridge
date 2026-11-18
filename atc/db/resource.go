@@ -623,6 +623,10 @@ func (r *resource) DeprecatedScopes() ([]DeprecatedScope, error) {
 	return scopes, nil
 }
 
+// ErrResourceVersionNotFound is returned for a version row id that names no
+// version of the resource's own history.
+var ErrResourceVersionNotFound = errors.New("resource version not found")
+
 // ErrCopyIntoSharedScope refuses a copy into a version history that other
 // resources share, from a history that is not theirs.
 var ErrCopyIntoSharedScope = errors.New("the resource's current version history is shared with other resources, and the source scope's history is not one of the same resource config or of another version of the same type image (same type source and params); copying it would write into their history")
@@ -769,7 +773,7 @@ func (r *resource) Versions(page Page, versionFilter atc.Version) ([]atc.Resourc
 				FROM (
 						%s
 					AND version @> $4
-					AND v.check_order >= (SELECT check_order FROM resource_config_versions WHERE id = $2)
+					AND v.check_order >= (SELECT check_order FROM resource_config_versions WHERE id = $2 AND resource_config_scope_id = r.resource_config_scope_id)
 				ORDER BY v.check_order ASC
 				LIMIT $3
 			) sub
@@ -782,7 +786,7 @@ func (r *resource) Versions(page Page, versionFilter atc.Version) ([]atc.Resourc
 		rows, err = tx.Query(fmt.Sprintf(`
 			%s
 				AND version @> $4
-				AND v.check_order <= (SELECT check_order FROM resource_config_versions WHERE id = $2)
+				AND v.check_order <= (SELECT check_order FROM resource_config_versions WHERE id = $2 AND resource_config_scope_id = r.resource_config_scope_id)
 			ORDER BY v.check_order DESC
 			LIMIT $3
 		`, query), r.id, *page.To, page.Limit, filterJSON)
@@ -927,13 +931,13 @@ func (r *resource) PinVersion(rcvID int) (bool, error) {
 		return false, ErrPinnedThroughConfig
 	}
 
+	// A version row id reaches only a version of the resource's own history.
 	results, err := tx.Exec(`
 	    INSERT INTO resource_pins(resource_id, version, comment_text, config)
-			VALUES ($1,
-				( SELECT rcv.version
-				FROM resource_config_versions rcv
-				WHERE rcv.id = $2 ),
-				'', false)
+			SELECT $1, rcv.version, '', false
+			FROM resource_config_versions rcv
+			WHERE rcv.id = $2
+			AND rcv.resource_config_scope_id = (SELECT resource_config_scope_id FROM resources WHERE id = $1)
 			ON CONFLICT (resource_id) DO UPDATE SET version=EXCLUDED.version`, r.id, rcvID)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -1014,20 +1018,33 @@ func (r *resource) toggleVersion(rcvID int, enable bool) error {
 
 	defer Rollback(tx)
 
+	// A version row id reaches only a version of the resource's own history.
+	var digest string
+	err = tx.QueryRow(`
+		SELECT COALESCE(rcv.version_md5, rcv.version_sha256)
+		FROM resource_config_versions rcv
+		WHERE rcv.id = $2
+		AND rcv.resource_config_scope_id = (SELECT resource_config_scope_id FROM resources WHERE id = $1)
+	`, r.id, rcvID).Scan(&digest)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return ErrResourceVersionNotFound
+		}
+		return err
+	}
+
 	var results sql.Result
 	if enable {
 		results, err = tx.Exec(`
 			DELETE FROM resource_disabled_versions
 			WHERE resource_id = $1
-			AND version_digest = (SELECT COALESCE(version_md5, version_sha256) FROM resource_config_versions rcv WHERE rcv.id = $2)
-			`, r.id, rcvID)
+			AND version_digest = $2
+			`, r.id, digest)
 	} else {
 		results, err = tx.Exec(`
 			INSERT INTO resource_disabled_versions (resource_id, version_digest)
-			SELECT $1, COALESCE(rcv.version_md5, rcv.version_sha256)
-			FROM resource_config_versions rcv
-			WHERE rcv.id = $2
-			`, r.id, rcvID)
+			VALUES ($1, $2)
+			`, r.id, digest)
 	}
 	if err != nil {
 		return err

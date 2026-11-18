@@ -133,6 +133,9 @@ var _ = Describe("Component Notifications", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
 
+				// The version is the resource's only once the resource is on its scope.
+				Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
+
 				received := listenFor(atc.ComponentLidarScanner)
 
 				_, err = resource.PinVersion(rcv.ID())
@@ -150,6 +153,9 @@ var _ = Describe("Component Notifications", func() {
 				rcv, found, err := scope.FindVersion(atc.Version{"ver": "1"})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
+
+				// The version is the resource's only once the resource is on its scope.
+				Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
 
 				_, err = resource.PinVersion(rcv.ID())
 				Expect(err).NotTo(HaveOccurred())
@@ -172,6 +178,9 @@ var _ = Describe("Component Notifications", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
 
+				// The version is the resource's only once the resource is on its scope.
+				Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
+
 				received := listenFor(atc.ComponentLidarScanner)
 
 				err = resource.DisableVersion(rcv.ID())
@@ -189,6 +198,9 @@ var _ = Describe("Component Notifications", func() {
 				rcv, found, err := scope.FindVersion(atc.Version{"ver": "1"})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
+
+				// The version is the resource's only once the resource is on its scope.
+				Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
 
 				err = resource.DisableVersion(rcv.ID())
 				Expect(err).NotTo(HaveOccurred())

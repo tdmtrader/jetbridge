@@ -1710,7 +1710,7 @@ var _ = Describe("Versions API", func() {
 							Expect(reloadVersionsAPIResource(fixture).CurrentPinnedVersion()).To(Equal(versions.target))
 
 							missing := fixture.requestVersionMutation(resourceName, -1, "pin")
-							Expect(missing.StatusCode).To(Equal(http.StatusInternalServerError))
+							Expect(missing.StatusCode).To(Equal(http.StatusNotFound))
 							Expect(reloadVersionsAPIResource(fixture).CurrentPinnedVersion()).To(Equal(versions.target))
 						})
 					})
