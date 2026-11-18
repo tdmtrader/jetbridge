@@ -483,6 +483,20 @@ type Volume interface {
 	DBVolume() db.CreatedVolume
 }
 
+// PersistableVolume is a Volume that has no volume row until something outside
+// the build has to address it by one. On JetBridge a step output is held by the
+// node's artifact daemon under its artifact key, and DBVolume is nil. A
+// download (`fly execute -o`) finds an artifact through its volume row, so the
+// artifact output step asks the volume for one.
+type PersistableVolume interface {
+	Volume
+
+	// PersistVolume returns the created volume row for this volume's handle,
+	// owned by teamID on the volume's own worker, creating it if there is none.
+	// Calling it again returns the same row.
+	PersistVolume(teamID int) (db.CreatedVolume, error)
+}
+
 // VolumeMount defines a Volume mounted at a particular path in a Container.
 type VolumeMount struct {
 	// Volume is the mounted Volume.

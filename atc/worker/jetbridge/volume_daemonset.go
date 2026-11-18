@@ -31,8 +31,12 @@ type DaemonSetVolume struct {
 	sourceIP       string // when set, used directly instead of resolving sourceNode
 	wire           *artifactwire.Client
 	nodeIPResolver *NodeIPResolver
-	daemonClient   *DaemonClient // for discovering daemon pods when sourceNode is empty
+	daemonClient   *DaemonClient       // for discovering daemon pods when sourceNode is empty
+	volumeRepo     db.VolumeRepository // for PersistVolume; nil means it refuses
 }
+
+// A step output is downloadable (`fly execute -o`) once it has a volume row.
+var _ runtime.PersistableVolume = (*DaemonSetVolume)(nil)
 
 // NewDaemonSetVolume creates a DaemonSetVolume.
 func NewDaemonSetVolume(key, handle, workerName string, dbVolume db.CreatedVolume, sourceNode string, config Config, nodeIPResolver *NodeIPResolver) *DaemonSetVolume {
@@ -194,6 +198,56 @@ func filterTarEntry(src io.Reader, dst io.Writer, targetPath string) error {
 	}
 
 	return tw.Close()
+}
+
+// PersistVolume gives a step output its volume row: an artifact volume whose
+// handle is the output's artifact key, on this volume's worker. The artifact
+// server finds the row by its worker artifact and looks the volume up by
+// handle, which wraps the same key again, so the download reads the bytes the
+// node's artifact daemon already holds. Nothing is copied.
+//
+// It is idempotent: a row that already exists for the handle (a resumed build
+// running its artifact output step again) is the row.
+func (v *DaemonSetVolume) PersistVolume(teamID int) (db.CreatedVolume, error) {
+	if v.dbVolume != nil {
+		return v.dbVolume, nil
+	}
+	if v.volumeRepo == nil {
+		return nil, fmt.Errorf("step output %s has no volume repository to record it in", v.handle)
+	}
+
+	existing, found, err := v.volumeRepo.FindVolume(v.handle)
+	if err != nil {
+		return nil, fmt.Errorf("find volume row for %s: %w", v.handle, err)
+	}
+	if !found {
+		creating, createErr := v.volumeRepo.CreateVolumeWithHandle(v.handle, teamID, v.workerName, db.VolumeTypeArtifact)
+		if createErr == nil {
+			existing, err = creating.Created()
+			if err != nil {
+				return nil, fmt.Errorf("mark volume row for %s created: %w", v.handle, err)
+			}
+		} else {
+			// Another caller may have created it between the find and the
+			// insert: the handle is unique. Its row is the row.
+			existing, found, err = v.volumeRepo.FindVolume(v.handle)
+			if err != nil || !found {
+				return nil, fmt.Errorf("create volume row for %s: %w", v.handle, createErr)
+			}
+		}
+	}
+	if existing.TeamID() != teamID || existing.WorkerName() != v.workerName {
+		return nil, fmt.Errorf("volume row %s belongs to team %d on %s, not team %d on %s",
+			v.handle, existing.TeamID(), existing.WorkerName(), teamID, v.workerName)
+	}
+
+	v.dbVolume = existing
+	return existing, nil
+}
+
+// SetVolumeRepository lets PersistVolume record this volume's row.
+func (v *DaemonSetVolume) SetVolumeRepository(repo db.VolumeRepository) {
+	v.volumeRepo = repo
 }
 
 // SetDaemonClient configures node-address discovery and peer fallback.
