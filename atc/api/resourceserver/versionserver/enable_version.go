@@ -1,6 +1,7 @@
 package versionserver
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -31,6 +32,10 @@ func (s *Server) EnableResourceVersion(pipeline db.Pipeline) http.Handler {
 		}
 
 		err = resource.EnableVersion(resourceConfigVersionID)
+		if errors.Is(err, db.ErrResourceVersionNotFound) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if err != nil {
 			logger.Error("failed-to-enable-resource-version", err)
 			w.WriteHeader(http.StatusInternalServerError)

@@ -67,7 +67,7 @@ type Pipeline interface {
 	CheckPaused() (bool, error)
 	Reload() (bool, error)
 
-	ResourceVersion(resourceConfigVersionID int) (atc.ResourceVersion, bool, error)
+	ResourceVersion(resourceID, resourceConfigVersionID int) (atc.ResourceVersion, bool, error)
 
 	GetBuildsWithVersionAsInput(int, int) ([]Build, error)
 	GetBuildsWithVersionAsOutput(int, int) ([]Build, error)
@@ -335,11 +335,12 @@ func (p *pipeline) CreateJobBuild(jobName string) (Build, error) {
 	return build, nil
 }
 
-// ResourceVersion is given a resource config version id and returns the
-// resource version struct. This method is used by the API call
+// ResourceVersion is given a resource and a resource config version id and
+// returns the resource version struct, if the id names a version of the
+// resource's own history. This method is used by the API call
 // GetResourceVersion to get all the attributes for that version of the
 // resource.
-func (p *pipeline) ResourceVersion(resourceConfigVersionID int) (atc.ResourceVersion, bool, error) {
+func (p *pipeline) ResourceVersion(resourceID, resourceConfigVersionID int) (atc.ResourceVersion, bool, error) {
 	rv := atc.ResourceVersion{}
 	var (
 		versionBytes  string
@@ -357,8 +358,11 @@ func (p *pipeline) ResourceVersion(resourceConfigVersionID int) (atc.ResourceVer
 
 	err := psql.Select("v.id", "v.version", "v.metadata", enabled).
 		From("resource_config_versions v").
+		Join("resources own ON own.resource_config_scope_id = v.resource_config_scope_id").
 		Where(sq.Eq{
-			"v.id": resourceConfigVersionID,
+			"v.id":            resourceConfigVersionID,
+			"own.id":          resourceID,
+			"own.pipeline_id": p.id,
 		}).
 		RunWith(p.conn).
 		QueryRow().
@@ -392,6 +396,7 @@ func (p *pipeline) GetBuildsWithVersionAsInput(resourceID, resourceConfigVersion
 			"rcv.id":         resourceConfigVersionID,
 			"bi.resource_id": resourceID,
 		}).
+		Where(sq.Expr("rcv.resource_config_scope_id = (SELECT resource_config_scope_id FROM resources WHERE id = ?)", resourceID)).
 		RunWith(p.conn).
 		Query()
 	if err != nil {
@@ -420,6 +425,7 @@ func (p *pipeline) GetBuildsWithVersionAsOutput(resourceID, resourceConfigVersio
 			"rcv.id":         resourceConfigVersionID,
 			"bo.resource_id": resourceID,
 		}).
+		Where(sq.Expr("rcv.resource_config_scope_id = (SELECT resource_config_scope_id FROM resources WHERE id = ?)", resourceID)).
 		RunWith(p.conn).
 		Query()
 	if err != nil {

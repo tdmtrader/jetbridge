@@ -19,7 +19,19 @@ func (s *Server) GetResourceVersion(pipeline db.Pipeline) http.Handler {
 			return
 		}
 
-		version, found, err := pipeline.ResourceVersion(versionID)
+		resource, found, err := pipeline.Resource(r.FormValue(":resource_name"))
+		if err != nil {
+			logger.Error("failed-to-get-resource", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		if !found {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		version, found, err := pipeline.ResourceVersion(resource.ID(), versionID)
 		if err != nil {
 			logger.Error("failed-to-get-resource-version", err)
 			w.WriteHeader(http.StatusInternalServerError)

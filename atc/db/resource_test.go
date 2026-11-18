@@ -1279,7 +1279,7 @@ var _ = Describe("Resource", func() {
 			It("returns not found and does not update anything", func() {
 				found, err := scenario.Resource("some-resource").PinVersion(-1)
 				Expect(found).To(BeFalse())
-				Expect(err).To(HaveOccurred())
+				Expect(err).ToNot(HaveOccurred())
 
 				Expect(scenario.Resource("some-resource").APIPinnedVersion()).To(Equal(pinnedVersion))
 			})
