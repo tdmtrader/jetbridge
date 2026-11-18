@@ -26,14 +26,25 @@ Team ─┬─ Pipeline ─┬─ Job ─── Build
   its pinned image (`db.PinnedImage`, a `registry-image` get of that exact
   reference). So two teams' types of the same name pinned to different images
   share no config, cache or history, and a type whose image moves (a new
-  digest from lidar's native resolution) starts a fresh history, as a custom
-  type does on a new image version. A reference pinned by tag alone stays one
-  cache as the tag moves, as a moving tag always has.
+  digest from lidar's native resolution) gives its resources a new config and
+  scope, as a custom type does on a new image version. A reference pinned by
+  tag alone stays one cache as the tag moves, as a moving tag always has.
 - A **resource config scope** owns version history. A resource with private
   history gets a scope of its own; a resource with shared history uses the
   one scope that has no owning resource, and that scope is shared across
-  every pipeline that hashes the same. This is the only way version history
-  crosses pipelines.
+  every pipeline, in any team, that hashes the same. This is the only way
+  version history crosses pipelines.
+- A resource moving to a new scope because its type's image moved within the
+  same repository (or, for a type fetched by check and get, to a new image
+  version with the same type source and params) carries its old history
+  into the new scope. Neither the carry nor `copy-resource-versions` writes
+  into a scope that a resource or resource type of another team uses at the
+  time; the check is made under the scope's row lock, which a resource or
+  resource type attaching to the scope waits on. As of 0.4.6 that is the
+  whole of the rule: one of another team that attaches afterwards reads what
+  was written, and a check embedded in a build (a task `image_resource` on a
+  custom type) never attaches, so it reads the scope's latest version
+  whoever's history that is.
 - A **resource cache** is identified by config, version and params. It is
   cluster-wide and pipeline-blind. Its content key names the runtime's
   node-local aliases independently of the database row ID.
