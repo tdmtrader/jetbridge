@@ -743,6 +743,40 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 		Expect(lidarPipelineResourceType(pipeline, resourceTypeName).ResourceConfigScopeID()).To(BeZero())
 	})
 
+	It("resolves two teams' identical resource types into each team's own history", func() {
+		fixture := useLidarDB()
+		config := defaultResourceType()
+		config.CheckEvery = &atc.CheckEvery{Interval: time.Hour}
+		firstPipeline, _ := persistResourceType(fixture, teamName, pipelineName, config)
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:first", nil)
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+
+		// Another team declares the same type after the first team's resolve;
+		// the first team's interval has not elapsed, so only the new one resolves.
+		secondPipeline, _ := persistResourceType(fixture, "other-team", "other-pipeline", config)
+		resolver.ResolveReturns("sha256:second", nil)
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(2))
+
+		firstType := lidarPipelineResourceType(firstPipeline, resourceTypeName)
+		secondType := lidarPipelineResourceType(secondPipeline, resourceTypeName)
+		Expect(firstType.ResourceConfigID()).To(Equal(secondType.ResourceConfigID()))
+		firstScope := resolvedLidarResourceTypeScope(fixture, firstType)
+		secondScope := resolvedLidarResourceTypeScope(fixture, secondType)
+		Expect(firstScope.ID()).NotTo(Equal(secondScope.ID()))
+		expectLidarLatestVersion(firstScope, atc.Version{"digest": "sha256:first"})
+		expectLidarLatestVersion(secondScope, atc.Version{"digest": "sha256:second"})
+		Expect(firstType.ResolvedImage()).To(Equal("my-registry/my-image@sha256:first"))
+		Expect(secondType.ResolvedImage()).To(Equal("my-registry/my-image@sha256:second"))
+	})
+
 	It("resolves persisted resource types across independent pipelines", func() {
 		fixture := useLidarDB()
 		firstConfig := defaultResourceType()
@@ -862,6 +896,37 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 		Expect(lastCheck.EndTime).NotTo(BeZero())
 		Expect(lastCheck.Succeeded).To(BeTrue())
 		Consistently(fixture.CheckBuilds).WithTimeout(100 * time.Millisecond).ShouldNot(Receive())
+	})
+
+	It("resolves two teams' identical native resources into each team's own history", func() {
+		fixture := useLidarDB()
+		config := defaultResource()
+		config.CheckEvery = &atc.CheckEvery{Interval: time.Hour}
+		firstPipeline, _ := persistResource(fixture, config)
+		resolver := new(imageresolvertesting.FakeResolver)
+		resolver.ResolveReturns("sha256:first", nil)
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+
+		_, secondPipeline := persistLidarPipeline(
+			fixture, "other-team", pipelineName,
+			lidarConfigWithGets(atc.ResourceConfigs{config}, nil),
+		)
+		resolver.ResolveReturns("sha256:second", nil)
+		Expect(runScanner(
+			fixture, fixture.CheckFactory, resolver, fixture.ResourceConfigFactory,
+			lagertest.NewTestLogger("test"),
+		)).To(Succeed())
+		Expect(resolver.ResolveCallCount()).To(Equal(2))
+
+		first := lidarPipelineResource(firstPipeline, resourceName)
+		second := lidarPipelineResource(secondPipeline, resourceName)
+		Expect(first.ResourceConfigID()).To(Equal(second.ResourceConfigID()))
+		Expect(first.ResourceConfigScopeID()).NotTo(Equal(second.ResourceConfigScopeID()))
+		expectLidarLatestVersion(resolvedLidarResourceScope(fixture, first), atc.Version{"digest": "sha256:first"})
+		expectLidarLatestVersion(resolvedLidarResourceScope(fixture, second), atc.Version{"digest": "sha256:second"})
 	})
 
 	It("treats a scope deletion during native version save as a debug-level race", func() {

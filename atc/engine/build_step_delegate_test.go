@@ -558,6 +558,53 @@ var _ = Describe("BuildStepDelegate", func() {
 				})
 			})
 
+			Context("when another team's build fetches the same image", func() {
+				var (
+					otherBuild    db.Build
+					otherResolver *imageresolvertesting.FakeResolver
+					otherDelegate exec.BuildStepDelegate
+				)
+
+				BeforeEach(func() {
+					_, _, _, otherBuild = createEngineJobBuild(
+						fixture,
+						"other-team",
+						atc.PipelineRef{Name: "some-pipeline"},
+						atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+						"some-user",
+					)
+					otherResolver = new(imageresolvertesting.FakeResolver)
+					otherResolver.ResolveReturns("sha256:theirs", nil)
+					otherDelegate = engine.NewBuildStepDelegate(
+						otherBuild, planID, exec.NewRunState(func(p atc.Plan) exec.Step {
+							runPlans = append(runPlans, p)
+							return new(scriptedStep)
+						}, nil), fakeClock, false,
+						engine.WithResourceFactories(fixture.ResourceConfigFactory, fixture.ResourceCacheFactory, otherResolver),
+					)
+				})
+
+				It("reads and writes its own team's history of the image, not this team's", func() {
+					spec, _, err := otherDelegate.FetchImage(context.TODO(), *registryGetPlan, registryCheckPlan, false)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(otherResolver.ResolveCallCount()).To(Equal(1))
+					Expect(spec.ImageURL).To(Equal("docker:///my-registry/my-image@sha256:theirs"))
+
+					theirs, err := resourceConfig.FindOrCreateScope(otherBuild.TeamID(), nil)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(theirs.ID()).NotTo(Equal(scope.ID()))
+					latest, found, err := theirs.LatestVersion()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					Expect(atc.Version(latest.Version())).To(Equal(atc.Version{"digest": "sha256:theirs"}))
+
+					mine, found, err := scope.LatestVersion()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(found).To(BeTrue())
+					Expect(atc.Version(mine.Version())).To(Equal(atc.Version{"digest": "sha256:abc123"}))
+				})
+			})
+
 			Context("when no cached version exists in DB but resolver is available", func() {
 				var fakeResolver *imageresolvertesting.FakeResolver
 

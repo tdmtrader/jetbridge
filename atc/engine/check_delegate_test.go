@@ -240,6 +240,30 @@ var _ = Describe("CheckDelegate", func() {
 			Expect(*named.ResourceID()).To(Equal(resource.ID()))
 		})
 
+		It("finds a task image check's scope in its build's team, not another team's history of the config", func() {
+			_, _, _, otherBuild := createEngineJobBuild(
+				fixture,
+				"other-check-delegate-team",
+				atc.PipelineRef{Name: "some-pipeline"},
+				atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+				"some-user",
+			)
+
+			// Another team's image check of the same config found a version.
+			theirs, err := newDelegate(otherBuild, atc.CheckPlan{}).FindOrCreateScope(config)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(theirs.SaveVersions(db.SpanContext{}, []atc.Version{{"some": "their-version"}})).To(Succeed())
+
+			mine, err := newDelegate(jobBuild, atc.CheckPlan{}).FindOrCreateScope(config)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mine.ID()).NotTo(Equal(theirs.ID()))
+			Expect(mine.ResourceID()).To(BeNil())
+
+			_, found, err := mine.LatestVersion()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+		})
+
 		It("bounds a selective scope lookup failure around the healthy config", func() {
 			_, err := newDelegate(jobBuild, atc.CheckPlan{}).FindOrCreateScope(
 				scopeErrorResourceConfig{ResourceConfig: config, err: errors.New("nope")},

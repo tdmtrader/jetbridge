@@ -354,6 +354,37 @@ var _ = Describe("CheckStep", func() {
 					Expect(runState.Result(planID, &dst)).To(BeFalse())
 				})
 			})
+
+			Context("when only another team's history of the config has a version", func() {
+				BeforeEach(func() {
+					_, _, _, otherBuild := createExecJobBuild(
+						fixture,
+						"other-team",
+						atc.PipelineRef{Name: "some-pipeline"},
+						atc.Config{Jobs: atc.JobConfigs{{Name: "some-job"}}},
+						"some-user",
+					)
+
+					// That team's task image check of the same config.
+					theirs, err := engine.NewCheckDelegate(
+						otherBuild,
+						atc.Plan{ID: planID, Check: &atc.CheckPlan{}},
+						exec.NewRunState(noopStepper, vars.StaticVariables{}),
+						clock.NewClock(),
+						db.NewResourceCheckRateLimiter(rate.Inf, 0, time.Minute, nil, time.Minute, clock.NewClock()),
+					).FindOrCreateScope(expectedConfig)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(theirs.SaveVersions(
+						db.SpanContext{},
+						[]atc.Version{{"some": "their-version"}},
+					)).To(Succeed())
+				})
+
+				It("does not store that team's version", func() {
+					var dst any
+					Expect(runState.Result(planID, &dst)).To(BeFalse())
+				})
+			})
 		})
 
 		Context("running", func() {
