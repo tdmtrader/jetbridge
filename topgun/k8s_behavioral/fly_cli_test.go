@@ -67,13 +67,12 @@ run:
   path: sh
   args: ["-c", "echo OUTPUT_DATA > my-output/result.txt"]
 `)
+			// No skip: this spec used to skip on any "errored" build, which is
+			// how a nil dereference in the artifact output step went unseen
+			// from February to November 2026. A -o that errors is a failure.
 			sess := fly.Start("execute", "-c", taskFile, "-o", "my-output="+outputDir)
 			<-sess.Exited
-			combinedOutput := string(sess.Out.Contents()) + string(sess.Err.Contents())
-			if sess.ExitCode() != 0 && (strings.Contains(combinedOutput, "volume repository not configured") || strings.Contains(combinedOutput, "errored")) {
-				Skip("fly execute -o requires volume repository/output dir support (not available in JetBridge K8s runtime)")
-			}
-			Expect(sess.ExitCode()).To(Equal(0))
+			Expect(sess.ExitCode()).To(Equal(0), "fly execute -o:\n%s\n%s", sess.Out.Contents(), sess.Err.Contents())
 
 			By("verifying the output was downloaded")
 			data, err := os.ReadFile(filepath.Join(outputDir, "result.txt"))
