@@ -16,44 +16,56 @@ import (
 var _ = Describe("A custom resource type's image changing", func() {
 	var (
 		scenario      *dbtest.Scenario
+		cacheUser     db.Build
 		upstreamBuild db.Build
 
 		resourceSource = atc.Source{"some": "source"}
-		typeSource     = atc.Source{"some": "type-source"}
 	)
 
-	// The resource config of a resource on a custom type is keyed on the
-	// resource cache of the type's image, so a new image version is a new
-	// resource cache, a new config and a new global scope.
-	configOnType := func(typeSource atc.Source, typeParams atc.Params, imageVersion string, source atc.Source) db.ResourceConfig {
-		imageCache, err := resourceCacheFactory.FindOrCreateResourceCache(
-			db.ForBuild(upstreamBuild.ID()),
-			dbtest.BaseResourceType,
-			atc.Version{"custom-type": imageVersion},
-			typeSource,
-			typeParams,
-			nil,
+	// The type below is a registry-image type, as production keys it: once
+	// lidar resolves it, it is planned as its image's repository@digest
+	// (ResourceTypes' Deserialize, ResolvedImage, ImageForType), and every
+	// resource config of the type is created under the resource cache of that
+	// exact reference (db.PinnedImage): registry-image, {repository},
+	// {digest}, no params. So a new digest in the same repository is a new
+	// resource cache, a new config and a new global scope, whatever moved it:
+	// a pushed image, an edit of the type's tag or params, or an older digest
+	// selected.
+	const repository = "registry.example/some-custom-type"
+
+	imageAt := func(digest string) string {
+		return repository + "@sha256:" + digest
+	}
+
+	pinnedImage := func(imageRef string) db.ResourceCache {
+		resourceType, source, version := db.PinnedImage(imageRef)
+		cache, err := resourceCacheFactory.FindOrCreateResourceCache(
+			db.ForBuild(cacheUser.ID()), resourceType, version, source, nil, nil,
 		)
 		Expect(err).ToNot(HaveOccurred())
+		return cache
+	}
 
-		config, err := resourceConfigFactory.FindOrCreateResourceConfig("some-custom-type", source, imageCache)
+	configOnImage := func(imageRef string, source atc.Source) db.ResourceConfig {
+		config, err := resourceConfigFactory.FindOrCreateResourceConfig("some-custom-type", source, pinnedImage(imageRef))
 		Expect(err).ToNot(HaveOccurred())
-
 		return config
 	}
 
-	configOnTypeImage := func(imageVersion string, source atc.Source) db.ResourceConfig {
-		return configOnType(typeSource, nil, imageVersion, source)
+	configOnDigest := func(digest string, source atc.Source) db.ResourceConfig {
+		return configOnImage(imageAt(digest), source)
 	}
 
-	moveTo := func(resourceName string, config db.ResourceConfig) db.ResourceConfigScope {
-		resource := scenario.Resource(resourceName)
-
+	attach := func(resource db.Resource, config db.ResourceConfig) db.ResourceConfigScope {
 		scope, err := config.FindOrCreateScope(intptr(resource.ID()))
 		Expect(err).ToNot(HaveOccurred())
 		Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
 
 		return scope
+	}
+
+	moveTo := func(resourceName string, config db.ResourceConfig) db.ResourceConfigScope {
+		return attach(scenario.Resource(resourceName), config)
 	}
 
 	versionsOf := func(scopeID int) []string {
@@ -84,48 +96,57 @@ var _ = Describe("A custom resource type's image changing", func() {
 		return isDeprecated
 	}
 
+	pipelineConfig := atc.Config{
+		ResourceTypes: atc.ResourceTypes{
+			{
+				Name:   "some-custom-type",
+				Type:   "registry-image",
+				Source: atc.Source{"repository": repository},
+			},
+		},
+		Resources: atc.ResourceConfigs{
+			{
+				Name:   "some-resource",
+				Type:   "some-custom-type",
+				Source: resourceSource,
+			},
+			{
+				Name:   "same-resource",
+				Type:   "some-custom-type",
+				Source: resourceSource,
+			},
+		},
+		Jobs: atc.JobConfigs{
+			{
+				Name: "upstream-job",
+				PlanSequence: []atc.Step{
+					{Config: &atc.GetStep{Name: "some-resource"}},
+				},
+			},
+			{
+				Name: "downstream-job",
+				PlanSequence: []atc.Step{
+					{Config: &atc.GetStep{Name: "some-resource", Passed: []string{"upstream-job"}}},
+				},
+			},
+		},
+	}
+
 	BeforeEach(func() {
 		scenario = dbtest.Setup(
-			builder.WithPipeline(atc.Config{
-				ResourceTypes: atc.ResourceTypes{
-					{
-						Name:   "some-custom-type",
-						Type:   dbtest.BaseResourceType,
-						Source: typeSource,
-					},
-				},
-				Resources: atc.ResourceConfigs{
-					{
-						Name:   "some-resource",
-						Type:   "some-custom-type",
-						Source: resourceSource,
-					},
-					{
-						Name:   "same-resource",
-						Type:   "some-custom-type",
-						Source: resourceSource,
-					},
-				},
-				Jobs: atc.JobConfigs{
-					{
-						Name: "upstream-job",
-						PlanSequence: []atc.Step{
-							{Config: &atc.GetStep{Name: "some-resource"}},
-						},
-					},
-					{
-						Name: "downstream-job",
-						PlanSequence: []atc.Step{
-							{Config: &atc.GetStep{Name: "some-resource", Passed: []string{"upstream-job"}}},
-						},
-					},
-				},
-			}),
-			builder.WithResourceVersions("some-resource",
-				atc.Version{"ref": "v1"},
-				atc.Version{"ref": "v2"},
-				atc.Version{"ref": "v3"},
-			),
+			builder.WithPipeline(pipelineConfig),
+			builder.WithBaseWorker(),
+		)
+
+		var err error
+		cacheUser, err = scenario.Team.CreateOneOffBuild()
+		Expect(err).ToNot(HaveOccurred())
+
+		// A check against the type's first digest, d0, found v1..v3.
+		scope := moveTo("some-resource", configOnDigest("d0", resourceSource))
+		Expect(scope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v1"}, {"ref": "v2"}, {"ref": "v3"}})).To(Succeed())
+
+		scenario.Run(
 			builder.WithJobBuild(&upstreamBuild, "upstream-job", dbtest.JobInputs{
 				{
 					Name:    "some-resource",
@@ -135,7 +156,7 @@ var _ = Describe("A custom resource type's image changing", func() {
 		)
 	})
 
-	Context("when the resource is checked against the new image", func() {
+	Context("when the resource is checked against the type's new digest", func() {
 		var (
 			oldConfigID int
 			oldScopeID  int
@@ -146,7 +167,7 @@ var _ = Describe("A custom resource type's image changing", func() {
 			oldConfigID = scenario.Resource("some-resource").ResourceConfigID()
 			oldScopeID = scenario.Resource("some-resource").ResourceConfigScopeID()
 
-			newScope = moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+			newScope = moveTo("some-resource", configOnDigest("d1", resourceSource))
 			Expect(newScope.ID()).ToNot(Equal(oldScopeID))
 			Expect(newScope.ResourceConfig().ID()).ToNot(Equal(oldConfigID))
 		})
@@ -212,20 +233,20 @@ var _ = Describe("A custom resource type's image changing", func() {
 			Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
 		})
 
-		It("carries the history on through a second image change", func() {
+		It("carries the history on through a second digest change", func() {
 			Expect(newScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v4"}})).To(Succeed())
 
-			thirdScope := moveTo("some-resource", configOnTypeImage("bumped-again", resourceSource))
+			thirdScope := moveTo("some-resource", configOnDigest("d2", resourceSource))
 
 			Expect(versionsOf(thirdScope.ID())).To(Equal([]string{"v1", "v2", "v3", "v4"}))
 			Expect(deprecated(newScope.ID())).To(BeTrue())
 			Expect(deprecated(oldScopeID)).To(BeTrue())
 		})
 
-		It("carries the history back if a check still runs against the old image", func() {
+		It("carries the history back if a check still runs against the old digest", func() {
 			Expect(newScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v4"}})).To(Succeed())
 
-			revivedScope := moveTo("some-resource", configOnTypeImage("version", resourceSource))
+			revivedScope := moveTo("some-resource", configOnDigest("d0", resourceSource))
 			Expect(revivedScope.ID()).ToNot(Equal(oldScopeID))
 			Expect(revivedScope.ResourceConfig().ID()).To(Equal(oldConfigID))
 
@@ -239,12 +260,11 @@ var _ = Describe("A custom resource type's image changing", func() {
 		BeforeEach(func() {
 			oldScopeID = scenario.Resource("some-resource").ResourceConfigScopeID()
 
-			scenario.Run(builder.WithResourceVersions("same-resource"))
-			Expect(scenario.Resource("same-resource").ResourceConfigScopeID()).To(Equal(oldScopeID))
+			Expect(moveTo("same-resource", configOnDigest("d0", resourceSource)).ID()).To(Equal(oldScopeID))
 		})
 
 		It("leaves the old scope live until the last resource has moved", func() {
-			newConfig := configOnTypeImage("bumped", resourceSource)
+			newConfig := configOnDigest("d1", resourceSource)
 
 			newScope := moveTo("some-resource", newConfig)
 			Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
@@ -264,11 +284,11 @@ var _ = Describe("A custom resource type's image changing", func() {
 			var newScope db.ResourceConfigScope
 
 			BeforeEach(func() {
-				newScope = moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+				newScope = moveTo("some-resource", configOnDigest("d1", resourceSource))
 				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
 
-				// same-resource is still checked against the old image.
-				oldScope, err := configOnTypeImage("version", resourceSource).FindOrCreateScope(intptr(scenario.Resource("same-resource").ID()))
+				// same-resource is still checked against the old digest.
+				oldScope, err := configOnDigest("d0", resourceSource).FindOrCreateScope(intptr(scenario.Resource("same-resource").ID()))
 				Expect(err).ToNot(HaveOccurred())
 				Expect(oldScope.ID()).To(Equal(oldScopeID))
 				Expect(oldScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v3"}, {"ref": "v4"}})).To(Succeed())
@@ -276,7 +296,7 @@ var _ = Describe("A custom resource type's image changing", func() {
 			})
 
 			It("carries the newer version in above the ones already carried", func() {
-				moveTo("same-resource", configOnTypeImage("bumped", resourceSource))
+				moveTo("same-resource", configOnDigest("d1", resourceSource))
 
 				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3", "v4"}))
 
@@ -293,7 +313,7 @@ var _ = Describe("A custom resource type's image changing", func() {
 			It("carries it in below a version the new image's check found meanwhile", func() {
 				Expect(newScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v3"}, {"ref": "v5"}})).To(Succeed())
 
-				moveTo("same-resource", configOnTypeImage("bumped", resourceSource))
+				moveTo("same-resource", configOnDigest("d1", resourceSource))
 
 				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3", "v4", "v5"}))
 
@@ -309,18 +329,19 @@ var _ = Describe("A custom resource type's image changing", func() {
 		It("starts a new history and leaves the old scope alone", func() {
 			oldScopeID := scenario.Resource("some-resource").ResourceConfigScopeID()
 
-			newScope := moveTo("some-resource", configOnTypeImage("bumped", atc.Source{"some": "other-source"}))
+			newScope := moveTo("some-resource", configOnDigest("d1", atc.Source{"some": "other-source"}))
 
 			Expect(versionsOf(newScope.ID())).To(BeEmpty())
 			Expect(deprecated(oldScopeID)).To(BeFalse())
 		})
 	})
 
-	Context("when the type's own source changes", func() {
-		It("carries nothing into the scope another type image already holds", func() {
-			// Another pipeline's type, on an image this pipeline does not
-			// control, checks the same resource source into a global scope.
-			otherConfig := configOnType(atc.Source{"some": "other-type-source"}, nil, "other", resourceSource)
+	Context("when the type's image moves to another repository", func() {
+		It("carries nothing into the scope that repository's image already holds", func() {
+			// Another pipeline's type, on an image in a repository this
+			// pipeline does not control, checks the same resource source into
+			// a global scope.
+			otherConfig := configOnImage("registry.example/another-type@sha256:a0", resourceSource)
 			otherScope, err := otherConfig.FindOrCreateScope(nil)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(otherScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "b1"}, {"ref": "b2"}})).To(Succeed())
@@ -335,15 +356,74 @@ var _ = Describe("A custom resource type's image changing", func() {
 		})
 	})
 
-	Context("when the type's params change", func() {
+	Context("when the type is pinned by tag alone and the tag changes", func() {
 		It("starts a new history and leaves the old scope alone", func() {
-			oldScopeID := scenario.Resource("some-resource").ResourceConfigScopeID()
+			// A direct image: reference without a digest is keyed on its
+			// repository and tag, so another tag is another image.
+			oldScope := moveTo("some-resource", configOnImage(repository+":1.0", resourceSource))
+			Expect(oldScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "t1"}})).To(Succeed())
 
-			newScope := moveTo("some-resource", configOnType(typeSource, atc.Params{"some": "param"}, "version", resourceSource))
-			Expect(newScope.ID()).ToNot(Equal(oldScopeID))
+			newScope := moveTo("some-resource", configOnImage(repository+":2.0", resourceSource))
+			Expect(newScope.ID()).ToNot(Equal(oldScope.ID()))
 
 			Expect(versionsOf(newScope.ID())).To(BeEmpty())
-			Expect(deprecated(oldScopeID)).To(BeFalse())
+			Expect(deprecated(oldScope.ID())).To(BeFalse())
+		})
+	})
+
+	Context("when the type's image is fetched by a check and get", func() {
+		// A type ResolvedImage cannot pin (one whose repository holds a
+		// ((var)), or that is not a registry-image type) is planned as a
+		// check and get of its image instead, and keyed on that get's
+		// resource cache: the type's base type, source and params, and the
+		// image version.
+		typeSource := atc.Source{"some": "type-source"}
+
+		configOnFetchedImage := func(typeSource atc.Source, typeParams atc.Params, imageVersion string) db.ResourceConfig {
+			imageCache, err := resourceCacheFactory.FindOrCreateResourceCache(
+				db.ForBuild(cacheUser.ID()),
+				dbtest.BaseResourceType,
+				atc.Version{"custom-type": imageVersion},
+				typeSource,
+				typeParams,
+				nil,
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			config, err := resourceConfigFactory.FindOrCreateResourceConfig("some-custom-type", resourceSource, imageCache)
+			Expect(err).ToNot(HaveOccurred())
+
+			return config
+		}
+
+		var fetchedScope db.ResourceConfigScope
+
+		BeforeEach(func() {
+			fetchedScope = moveTo("some-resource", configOnFetchedImage(typeSource, nil, "1"))
+			Expect(versionsOf(fetchedScope.ID())).To(BeEmpty())
+			Expect(fetchedScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "f1"}, {"ref": "f2"}})).To(Succeed())
+		})
+
+		It("carries the history to a new image version", func() {
+			newScope := moveTo("some-resource", configOnFetchedImage(typeSource, nil, "2"))
+
+			Expect(versionsOf(newScope.ID())).To(Equal([]string{"f1", "f2"}))
+			Expect(deprecated(fetchedScope.ID())).To(BeTrue())
+		})
+
+		It("starts a new history when the type's own source changes", func() {
+			newScope := moveTo("some-resource", configOnFetchedImage(atc.Source{"some": "other-type-source"}, nil, "2"))
+
+			Expect(versionsOf(newScope.ID())).To(BeEmpty())
+			Expect(deprecated(fetchedScope.ID())).To(BeFalse())
+		})
+
+		It("starts a new history when the type's params change", func() {
+			newScope := moveTo("some-resource", configOnFetchedImage(typeSource, atc.Params{"some": "param"}, "1"))
+			Expect(newScope.ID()).ToNot(Equal(fetchedScope.ID()))
+
+			Expect(versionsOf(newScope.ID())).To(BeEmpty())
+			Expect(deprecated(fetchedScope.ID())).To(BeFalse())
 		})
 	})
 
@@ -363,7 +443,7 @@ var _ = Describe("A custom resource type's image changing", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pinned).To(BeTrue())
 
-			moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+			moveTo("some-resource", configOnDigest("d1", resourceSource))
 		})
 
 		It("still resolves the pinned version and still holds the disabled one back", func() {
@@ -396,7 +476,7 @@ var _ = Describe("A custom resource type's image changing", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			newScope := moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+			newScope := moveTo("some-resource", configOnDigest("d1", resourceSource))
 
 			after, hasNext, found, err := versionsDB.NextEveryVersion(context.TODO(), jobID, resourceID)
 			Expect(err).ToNot(HaveOccurred())
@@ -413,21 +493,11 @@ var _ = Describe("A custom resource type's image changing", func() {
 		})
 	})
 
-	Context("when a put saves its output against the new image", func() {
+	Context("when a put saves its output against the new digest", func() {
 		It("carries the history below the put's version", func() {
 			oldScopeID := scenario.Resource("some-resource").ResourceConfigScopeID()
 
-			imageCache, err := resourceCacheFactory.FindOrCreateResourceCache(
-				db.ForBuild(upstreamBuild.ID()),
-				dbtest.BaseResourceType,
-				atc.Version{"custom-type": "bumped"},
-				typeSource,
-				nil,
-				nil,
-			)
-			Expect(err).ToNot(HaveOccurred())
-
-			Expect(upstreamBuild.SaveOutput("some-custom-type", imageCache, resourceSource, atc.Version{"ref": "put"}, nil, "some-output", "some-resource")).To(Succeed())
+			Expect(upstreamBuild.SaveOutput("some-custom-type", pinnedImage(imageAt("d1")), resourceSource, atc.Version{"ref": "put"}, nil, "some-output", "some-resource")).To(Succeed())
 
 			resource := scenario.Resource("some-resource")
 			Expect(resource.ResourceConfigScopeID()).ToNot(Equal(oldScopeID))
@@ -451,8 +521,8 @@ var _ = Describe("A custom resource type's image changing", func() {
 		BeforeEach(func() {
 			oldScopeID = scenario.Resource("some-resource").ResourceConfigScopeID()
 
-			// Another team's resource on the base type, with the same source,
-			// shares a global scope.
+			// A resource on the base type, with the same source, would share
+			// this global scope.
 			var err error
 			sharedScope, err = baseConfig(dbtest.BaseResourceType, resourceSource).FindOrCreateScope(nil)
 			Expect(err).ToNot(HaveOccurred())
@@ -460,12 +530,12 @@ var _ = Describe("A custom resource type's image changing", func() {
 		})
 
 		It("refuses a custom type's carried-from scope into a scope other resources share", func() {
-			oldScope, err := configOnTypeImage("version", resourceSource).FindOrCreateScope(intptr(scenario.Resource("some-resource").ID()))
+			oldScope, err := configOnDigest("d0", resourceSource).FindOrCreateScope(intptr(scenario.Resource("some-resource").ID()))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(oldScope.ID()).To(Equal(oldScopeID))
 			Expect(oldScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "b3"}, {"ref": "EVIL"}})).To(Succeed())
 
-			moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+			moveTo("some-resource", configOnDigest("d1", resourceSource))
 			Expect(deprecated(oldScopeID)).To(BeTrue())
 
 			Expect(moveTo("some-resource", baseConfig(dbtest.BaseResourceType, resourceSource)).ID()).To(Equal(sharedScope.ID()))
@@ -498,8 +568,8 @@ var _ = Describe("A custom resource type's image changing", func() {
 			Expect(versionsOf(sharedScope.ID())).To(Equal([]string{"b1", "b2", "b3"}))
 		})
 
-		It("copies another version of the same type image's history into the shared scope", func() {
-			newScope := moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+		It("copies another digest's history into the shared scope", func() {
+			newScope := moveTo("some-resource", configOnDigest("d1", resourceSource))
 			_, err := dbConn.Exec(`DELETE FROM resource_config_versions WHERE resource_config_scope_id = $1`, newScope.ID())
 			Expect(err).ToNot(HaveOccurred())
 
@@ -510,10 +580,10 @@ var _ = Describe("A custom resource type's image changing", func() {
 		})
 
 		It("copies a history of the same resource config into the shared scope", func() {
-			newScope := moveTo("some-resource", configOnTypeImage("bumped", resourceSource))
+			newScope := moveTo("some-resource", configOnDigest("d1", resourceSource))
 			Expect(newScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v4"}})).To(Succeed())
 
-			revivedScope := moveTo("some-resource", configOnTypeImage("version", resourceSource))
+			revivedScope := moveTo("some-resource", configOnDigest("d0", resourceSource))
 			var oldConfigID int
 			Expect(dbConn.QueryRow(`SELECT resource_config_id FROM resource_config_scopes WHERE id = $1`, oldScopeID).Scan(&oldConfigID)).To(Succeed())
 			Expect(revivedScope.ID()).ToNot(Equal(oldScopeID))
@@ -542,17 +612,10 @@ var _ = Describe("A custom resource type's image changing", func() {
 		BeforeEach(func() {
 			resource = scenario.Resource("some-resource")
 
+			imageCache = pinnedImage(imageAt("d1"))
+
 			var err error
-			imageCache, err = resourceCacheFactory.FindOrCreateResourceCache(
-				db.ForBuild(upstreamBuild.ID()),
-				dbtest.BaseResourceType,
-				atc.Version{"custom-type": "bumped"},
-				typeSource,
-				nil,
-				nil,
-			)
-			Expect(err).ToNot(HaveOccurred())
-			newScope, err = configOnTypeImage("bumped", resourceSource).FindOrCreateScope(intptr(resource.ID()))
+			newScope, err = configOnDigest("d1", resourceSource).FindOrCreateScope(intptr(resource.ID()))
 			Expect(err).ToNot(HaveOccurred())
 
 			holderConn := postgresRunner.OpenConn()
@@ -611,7 +674,7 @@ var _ = Describe("A custom resource type's image changing", func() {
 		It("waits for the check, and carries the history below what it saved", func() {
 			resource := scenario.Resource("some-resource")
 
-			newScope, err := configOnTypeImage("bumped", resourceSource).FindOrCreateScope(intptr(resource.ID()))
+			newScope, err := configOnDigest("d1", resourceSource).FindOrCreateScope(intptr(resource.ID()))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(newScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "n1"}})).To(Succeed())
 
