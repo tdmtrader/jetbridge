@@ -304,9 +304,9 @@ func lockScopes(tx Tx, scopeID, otherScopeID int) error {
 //
 // It decides nothing about whose history the destination is. Its only callers
 // are the history carry (carryVersionHistoryForward) and
-// copy-resource-versions (Resource.CopyVersionsFromScope), and each refuses a
-// destination another team uses (historyInUseByAnotherTeam) under the locks
-// this takes again. A new caller must do the same.
+// copy-resource-versions (Resource.CopyVersionsFromScope), whose destination
+// is always the resource's own team's scope (ADR-0012). A new caller must
+// write only into a scope of the team it acts for.
 func copyVersionsIntoScopeTx(tx Tx, toScopeID, fromScopeID int) (int, error) {
 	if toScopeID == fromScopeID {
 		return 0, nil

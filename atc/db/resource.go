@@ -325,11 +325,10 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 // image is not this resource's history: its checks may have found anything.
 // A resolved type is keyed on its image's repository and digest alone
 // (PinnedImage), so this is "the same repository": whoever can push to it,
-// or select an older digest of it, chooses the destination.
-//
-// So nothing is carried into a scope a resource or resource type of another
-// team uses (historyInUseByAnotherTeam): the resource joins it with no carry,
-// as before history carried, and its old scope is left live and undeprecated.
+// or select an older digest of it, chooses the destination. Both scopes are
+// the resource's team's (a version history belongs to one team, ADR-0012),
+// so whatever is carried is written only into that team's history, and the
+// old scope's users that keep it live are only that team's.
 func carryVersionHistoryForward(tx Tx, resourceID int, oldScopeID int, newScope ResourceConfigScope) error {
 	if newScope.ResourceID() != nil {
 		return nil
@@ -356,15 +355,6 @@ func carryVersionHistoryForward(tx Tx, resourceID int, oldScopeID int, newScope 
 		return nil
 	}
 
-	inUse, err := historyInUseByAnotherTeam(tx, newScope.ID(), resourceID)
-	if err != nil {
-		return err
-	}
-
-	if inUse {
-		return nil
-	}
-
 	_, err = copyVersionsIntoScopeTx(tx, newScope.ID(), oldScopeID)
 	if err != nil {
 		return err
@@ -381,7 +371,10 @@ func carryVersionHistoryForward(tx Tx, resourceID int, oldScopeID int, newScope 
 		)
 		AND NOT EXISTS (
 			SELECT 1 FROM resource_types rt
+			JOIN pipelines p ON p.id = rt.pipeline_id
+			JOIN resource_config_scopes s ON s.id = $1
 			WHERE rt.resource_config_id = $3 AND rt.active
+			AND p.team_id = s.team_id
 		)
 	`, oldScopeID, resourceID, oldConfigID)
 	return err
@@ -409,47 +402,6 @@ func onlyTypeImageVersionDiffers(tx Tx, configID, otherConfigID int) (bool, erro
 		)
 	`, configID, otherConfigID).Scan(&differs)
 	return differs, err
-}
-
-// historyInUseByAnotherTeam says whether a resource or resource type of a team
-// other than the given resource's uses the scope's version history: a
-// resource that points at the scope, active or not (one removed from its
-// pipeline keeps its scope, and has it again if it comes back), or a resource
-// type whose config the scope is the global scope of. A resource missing its
-// pipeline's team counts as another team's.
-//
-// The caller holds the scope FOR UPDATE (lockScopes), and asks after taking
-// it, so no other team's resource or type can attach between this answer and
-// the caller's commit: a resource attaching takes the scope FOR KEY SHARE
-// through its foreign key, and a resource type attaching takes it FOR KEY
-// SHARE explicitly (setResourceConfigScopeForResourceType). One that attached
-// while the caller waited for the lock has committed, and is seen.
-func historyInUseByAnotherTeam(tx Tx, scopeID, resourceID int) (bool, error) {
-	var inUse bool
-	err := tx.QueryRow(`
-		WITH own AS (
-			SELECT p.team_id
-			FROM resources r
-			JOIN pipelines p ON p.id = r.pipeline_id
-			WHERE r.id = $2
-		)
-		SELECT EXISTS (
-			SELECT 1
-			FROM resources r
-			JOIN pipelines p ON p.id = r.pipeline_id
-			WHERE r.resource_config_scope_id = $1
-			AND p.team_id IS DISTINCT FROM (SELECT team_id FROM own)
-		) OR EXISTS (
-			SELECT 1
-			FROM resource_config_scopes s
-			JOIN resource_types rt ON rt.resource_config_id = s.resource_config_id
-			JOIN pipelines p ON p.id = rt.pipeline_id
-			WHERE s.id = $1
-			AND s.resource_id IS NULL
-			AND p.team_id IS DISTINCT FROM (SELECT team_id FROM own)
-		)
-	`, scopeID, resourceID).Scan(&inUse)
-	return inUse, err
 }
 
 func (r *resource) CheckPlan(planFactory atc.PlanFactory, imagePlanner atc.ImagePlanner, from atc.Version, interval atc.CheckEvery, sourceDefaults atc.Source, skipInterval bool, skipIntervalRecursively bool) atc.Plan {
@@ -675,10 +627,6 @@ func (r *resource) DeprecatedScopes() ([]DeprecatedScope, error) {
 // resources share, from a history that is not theirs.
 var ErrCopyIntoSharedScope = errors.New("the resource's current version history is shared with other resources, and the source scope's history is not one of the same resource config or of another version of the same type image (same type source and params); copying it would write into their history")
 
-// ErrCopyIntoAnotherTeamsHistory refuses a copy into a version history that a
-// resource or resource type of another team uses.
-var ErrCopyIntoAnotherTeamsHistory = errors.New("the resource's current version history is in use by a resource or resource type of another team; copying into it would write into that team's history")
-
 // CopyVersionsFromScope copies the given source scope's versions into this
 // resource's current scope, merged into its order as copyVersionsIntoScopeTx
 // describes. Returns count of versions copied.
@@ -687,9 +635,8 @@ var ErrCopyIntoAnotherTeamsHistory = errors.New("the resource's current version 
 // unique version history) takes any history. A current scope other resources
 // share takes only a history of the same resource config or of another
 // version of the same type image: anything else could write versions its own
-// checks never found into their history. And a current scope a resource or
-// resource type of another team uses takes nothing (ErrCopyIntoAnotherTeamsHistory),
-// since "the same type image" is only the same repository.
+// checks never found into their history. The current scope is the resource's
+// team's (ADR-0012), so a copy never writes into another team's history.
 //
 // The resource row is locked first, as a move locks it, so the resource
 // cannot move off the scope mid-copy, and then both scopes, before anything
@@ -730,15 +677,6 @@ func (r *resource) CopyVersionsFromScope(fromScopeID int) (int, error) {
 	err = lockScopes(tx, scopeID, fromScopeID)
 	if err != nil {
 		return 0, err
-	}
-
-	inUse, err := historyInUseByAnotherTeam(tx, scopeID, r.id)
-	if err != nil {
-		return 0, err
-	}
-
-	if inUse {
-		return 0, ErrCopyIntoAnotherTeamsHistory
 	}
 
 	if !scopeResourceID.Valid || int(scopeResourceID.Int64) != r.id {
