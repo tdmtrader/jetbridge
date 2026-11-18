@@ -304,12 +304,14 @@ func (r *resourceType) SetResourceConfigScope(scope ResourceConfigScope) error {
 }
 
 // setResourceConfigScopeForResourceType points a resource type at the scope's
-// config, so the type reads that config's global scope. It takes the scope
-// FOR KEY SHARE first, as a resource's foreign key does when it moves onto a
-// scope: a history carry or copy-resource-versions into the scope holds it
-// FOR UPDATE while it asks whether another team uses it
-// (historyInUseByAnotherTeam), so the type attaches either before that
-// question, and is seen, or after the write has committed.
+// config, so the type reads that config's live global scope, whichever scope
+// it was handed. It takes that global scope FOR KEY SHARE first, as a
+// resource's foreign key takes the scope it moves onto: a history carry or
+// copy-resource-versions into the scope holds it FOR UPDATE while it asks
+// whether another team uses it (historyInUseByAnotherTeam), so the type
+// attaches either before that question, and is seen, or after the write has
+// committed. A global scope created in a transaction that has not committed
+// yet is not seen, so nothing is locked for it.
 func setResourceConfigScopeForResourceType(conn DbConn, scope ResourceConfigScope, pred any, args ...any) (bool, error) {
 	tx, err := conn.Begin()
 	if err != nil {
@@ -319,8 +321,10 @@ func setResourceConfigScopeForResourceType(conn DbConn, scope ResourceConfigScop
 	defer Rollback(tx)
 
 	rows, err := tx.Query(`
-		SELECT id FROM resource_config_scopes WHERE id = $1 FOR KEY SHARE
-	`, scope.ID())
+		SELECT id FROM resource_config_scopes
+		WHERE resource_config_id = $1 AND resource_id IS NULL AND deprecated_at IS NULL
+		FOR KEY SHARE
+	`, scope.ResourceConfig().ID())
 	if err != nil {
 		return false, err
 	}

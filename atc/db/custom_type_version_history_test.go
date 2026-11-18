@@ -523,6 +523,71 @@ var _ = Describe("A custom resource type's image changing", func() {
 				Expect(holder.Commit()).To(Succeed())
 				Eventually(attached, 10*time.Second).Should(Receive(BeNil()))
 			})
+
+			It("holds a carry that starts while the type is attaching, which is then refused", func() {
+				destination, err := configOnDigest("d1", resourceSource).FindOrCreateScope(nil)
+				Expect(err).ToNot(HaveOccurred())
+
+				// The other team's web attaches the type on a connection of
+				// its own (each test connection holds one session).
+				attachConn := postgresRunner.OpenConn()
+				defer attachConn.Close()
+				team, found, err := db.NewTeamFactory(attachConn, lockFactory).FindTeam(otherTeam.Team.Name())
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				pipeline, found, err := team.Pipeline(atc.PipelineRef{Name: otherTeam.Pipeline.Name()})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+				nestedType, found, err := pipeline.ResourceType("nested-type")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(found).To(BeTrue())
+
+				// Another transaction holds the type's row, so the real
+				// attachment stops at its UPDATE, after it has taken the
+				// config's global scope FOR KEY SHARE.
+				blockerConn := postgresRunner.OpenConn()
+				defer blockerConn.Close()
+				blocker, err := blockerConn.Begin()
+				Expect(err).ToNot(HaveOccurred())
+				defer blocker.Rollback()
+				_, err = blocker.Exec(`SELECT id FROM resource_types WHERE id = $1 FOR UPDATE`, nestedType.ID())
+				Expect(err).ToNot(HaveOccurred())
+
+				attached := make(chan error, 1)
+				go func() {
+					defer GinkgoRecover()
+					attached <- nestedType.SetResourceConfigScope(destination)
+				}()
+
+				Eventually(func() bool {
+					var waiting bool
+					Expect(blocker.QueryRow(`
+						SELECT EXISTS (
+							SELECT 1 FROM pg_locks l
+							JOIN pg_class c ON c.oid = l.relation
+							WHERE l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+							AND c.relname = 'resource_config_scopes' AND l.mode = 'RowShareLock' AND l.granted
+							AND l.pid <> pg_backend_pid()
+						)
+					`).Scan(&waiting)).To(Succeed())
+					return waiting
+				}, 5*time.Second).Should(BeTrue())
+				Consistently(attached, 500*time.Millisecond).ShouldNot(Receive())
+
+				moved := make(chan error, 1)
+				go func() {
+					defer GinkgoRecover()
+					moved <- scenario.Resource("some-resource").SetResourceConfigScope(destination)
+				}()
+
+				Consistently(moved, time.Second).ShouldNot(Receive())
+
+				Expect(blocker.Commit()).To(Succeed())
+				Eventually(attached, 10*time.Second).Should(Receive(BeNil()))
+				Eventually(moved, 10*time.Second).Should(Receive(BeNil()))
+
+				expectRefused(destination, []string{})
+			})
 		})
 	})
 
@@ -826,6 +891,49 @@ var _ = Describe("A custom resource type's image changing", func() {
 
 				_, err := scenario.Resource("some-resource").CopyVersionsFromScope(oldScopeID)
 				Expect(err).To(MatchError(db.ErrCopyIntoAnotherTeamsHistory))
+				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
+			})
+
+			It("copies into the history the resource moved to while the copy waited for it", func() {
+				movedTo, err := configOnDigest("d2", resourceSource).FindOrCreateScope(nil)
+				Expect(err).ToNot(HaveOccurred())
+
+				// A move of the resource, part way through on its own
+				// connection: it holds the resource row and points it at d2,
+				// and has not committed.
+				moveConn := postgresRunner.OpenConn()
+				defer moveConn.Close()
+				move, err := moveConn.Begin()
+				Expect(err).ToNot(HaveOccurred())
+				defer move.Rollback()
+				resourceID := scenario.Resource("some-resource").ID()
+				_, err = move.Exec(`SELECT id FROM resources WHERE id = $1 FOR NO KEY UPDATE`, resourceID)
+				Expect(err).ToNot(HaveOccurred())
+				_, err = move.Exec(`
+					UPDATE resources SET resource_config_id = $2, resource_config_scope_id = $3 WHERE id = $1
+				`, resourceID, movedTo.ResourceConfig().ID(), movedTo.ID())
+				Expect(err).ToNot(HaveOccurred())
+
+				type result struct {
+					copied int
+					err    error
+				}
+				done := make(chan result, 1)
+				resource := scenario.Resource("some-resource")
+				go func() {
+					defer GinkgoRecover()
+					copied, err := resource.CopyVersionsFromScope(oldScopeID)
+					done <- result{copied, err}
+				}()
+
+				Consistently(done, time.Second).ShouldNot(Receive())
+				Expect(move.Commit()).To(Succeed())
+
+				var r result
+				Eventually(done, 10*time.Second).Should(Receive(&r))
+				Expect(r.err).ToNot(HaveOccurred())
+				Expect(r.copied).To(Equal(4))
+				Expect(versionsOf(movedTo.ID())).To(Equal([]string{"v1", "v2", "v3", "EVIL"}))
 				Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
 			})
 
