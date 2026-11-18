@@ -84,18 +84,18 @@ func taskDelegateCacheUseCount(fixture *EngineDBFixture, build db.Build, cache d
 	return count
 }
 
-func findTaskDelegateScope(fixture *EngineDBFixture, resourceType string, source atc.Source) db.ResourceConfigScope {
+func findTaskDelegateScope(fixture *EngineDBFixture, teamID int, resourceType string, source atc.Source) db.ResourceConfigScope {
 	GinkgoHelper()
 	config, err := fixture.ResourceConfigFactory.FindOrCreateResourceConfig(resourceType, source, nil)
 	Expect(err).NotTo(HaveOccurred())
-	scope, err := config.FindOrCreateScope(nil)
+	scope, err := config.FindOrCreateScope(teamID, nil)
 	Expect(err).NotTo(HaveOccurred())
 	return scope
 }
 
-func saveTaskDelegateVersion(fixture *EngineDBFixture, resourceType string, source atc.Source, version atc.Version) db.ResourceConfigScope {
+func saveTaskDelegateVersion(fixture *EngineDBFixture, teamID int, resourceType string, source atc.Source, version atc.Version) db.ResourceConfigScope {
 	GinkgoHelper()
-	scope := findTaskDelegateScope(fixture, resourceType, source)
+	scope := findTaskDelegateScope(fixture, teamID, resourceType, source)
 	Expect(scope.SaveVersions(db.SpanContext{}, []atc.Version{version})).To(Succeed())
 	return scope
 }
@@ -839,7 +839,7 @@ var _ = Describe("TaskDelegate", func() {
 
 		It("resolves a registry-image type without spawning extra pods when the version is cached", func() {
 			source := atc.Source{"repository": "my-org/my-image"}
-			saveTaskDelegateVersion(fixture, "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
+			saveTaskDelegateVersion(fixture, realBuild.TeamID(), "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
 
 			noopStepper := func(p atc.Plan) exec.Step {
 				step := new(scriptedStep)
@@ -868,7 +868,7 @@ var _ = Describe("TaskDelegate", func() {
 
 		It("falls back to check+get plans when no cached version exists", func() {
 			source := atc.Source{"repository": "my-org/uncached"}
-			scope := findTaskDelegateScope(fixture, "registry-image", source)
+			scope := findTaskDelegateScope(fixture, realBuild.TeamID(), "registry-image", source)
 			latest, found, err := scope.LatestVersion()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeFalse())
@@ -916,7 +916,7 @@ var _ = Describe("TaskDelegate", func() {
 
 		It("transitions from fallback to cached resolution across runs", func() {
 			source := atc.Source{"repository": "my-org/evolving"}
-			scope := findTaskDelegateScope(fixture, "registry-image", source)
+			scope := findTaskDelegateScope(fixture, realBuild.TeamID(), "registry-image", source)
 			fallbackCache := createTaskDelegateCache(
 				fixture, realBuild, "registry-image", atc.Version{"digest": "sha256:v1"}, source, nil,
 			)
@@ -975,7 +975,7 @@ var _ = Describe("TaskDelegate", func() {
 
 		It("saves image resource version for build tracking", func() {
 			source := atc.Source{"repository": "my-org/tracked"}
-			saveTaskDelegateVersion(fixture, "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
+			saveTaskDelegateVersion(fixture, realBuild.TeamID(), "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
 
 			noopStepper := func(p atc.Plan) exec.Step {
 				step := new(scriptedStep)
@@ -1000,7 +1000,7 @@ var _ = Describe("TaskDelegate", func() {
 
 		It("produces a valid docker:// URL with digest for all registry-image resolutions", func() {
 			source := atc.Source{"repository": "gcr.io/my-project/worker-image"}
-			saveTaskDelegateVersion(fixture, "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
+			saveTaskDelegateVersion(fixture, realBuild.TeamID(), "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
 
 			noopStepper := func(p atc.Plan) exec.Step {
 				step := new(scriptedStep)
@@ -1023,7 +1023,7 @@ var _ = Describe("TaskDelegate", func() {
 
 		It("emits ImageCheck and ImageGet events even when using cached resolution", func() {
 			source := atc.Source{"repository": "my-org/events-test"}
-			saveTaskDelegateVersion(fixture, "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
+			saveTaskDelegateVersion(fixture, realBuild.TeamID(), "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
 
 			noopStepper := func(p atc.Plan) exec.Step {
 				step := new(scriptedStep)
@@ -1128,7 +1128,7 @@ var _ = Describe("TaskDelegate", func() {
 
 		It("does not spawn any pods when resource factories are injected and cache is warm", func() {
 			source := atc.Source{"repository": "my-org/warm-cache"}
-			saveTaskDelegateVersion(fixture, "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
+			saveTaskDelegateVersion(fixture, realBuild.TeamID(), "registry-image", source, atc.Version{"digest": "sha256:metadata42"})
 
 			// This is the key optimization: with warm cache, zero pods for type images.
 			noopStepper := func(p atc.Plan) exec.Step {
@@ -1149,7 +1149,7 @@ var _ = Describe("TaskDelegate", func() {
 
 		It("resolves on-demand via resolver when no cached version exists", func() {
 			source := atc.Source{"repository": "my-org/on-demand"}
-			scope := findTaskDelegateScope(fixture, "registry-image", source)
+			scope := findTaskDelegateScope(fixture, realBuild.TeamID(), "registry-image", source)
 
 			fakeResolver := new(imageresolvertesting.FakeResolver)
 			fakeResolver.ResolveReturns("sha256:ondemand456", nil)
@@ -1189,7 +1189,7 @@ var _ = Describe("TaskDelegate", func() {
 
 		It("returns error when resolver fails (no fallback to pods)", func() {
 			source := atc.Source{"repository": "my-org/fail-test"}
-			scope := findTaskDelegateScope(fixture, "registry-image", source)
+			scope := findTaskDelegateScope(fixture, realBuild.TeamID(), "registry-image", source)
 
 			fakeResolver := new(imageresolvertesting.FakeResolver)
 			fakeResolver.ResolveReturns("", fmt.Errorf("registry timeout"))
@@ -1409,7 +1409,7 @@ var _ = Describe("TaskDelegate", func() {
 			It("uses the cached DB version, not the resolver, when nothing is pinned", func() {
 				source := atc.Source{"repository": "registry.home/agent-runner"}
 				scope := saveTaskDelegateVersion(
-					fixture, "registry-image", source, atc.Version{"digest": "sha256:stale-cached"},
+					fixture, realBuild.TeamID(), "registry-image", source, atc.Version{"digest": "sha256:stale-cached"},
 				)
 				td := buildResolvingTaskDelegate()
 
@@ -1435,7 +1435,7 @@ var _ = Describe("TaskDelegate", func() {
 
 			It("falls back to an on-demand resolve when nothing is pinned and nothing is cached", func() {
 				source := atc.Source{"repository": "registry.home/agent-runner", "tag": "v1"}
-				scope := findTaskDelegateScope(fixture, "registry-image", source)
+				scope := findTaskDelegateScope(fixture, realBuild.TeamID(), "registry-image", source)
 				fakeResolver.ResolveReturns("sha256:resolved-on-demand", nil)
 
 				td := buildResolvingTaskDelegate()
@@ -1469,7 +1469,7 @@ var _ = Describe("TaskDelegate", func() {
 				// agent/resourcecapture produces for a tag-based reference.
 				// An empty pin identifies nothing, so it must not short-circuit.
 				source := atc.Source{"repository": "registry.home/agent-runner", "tag": "latest"}
-				scope := findTaskDelegateScope(fixture, "registry-image", source)
+				scope := findTaskDelegateScope(fixture, realBuild.TeamID(), "registry-image", source)
 				fakeResolver.ResolveReturns("sha256:tag-resolved", nil)
 
 				td := buildResolvingTaskDelegate()

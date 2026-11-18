@@ -243,8 +243,8 @@ type lidarResourceConfig struct {
 	saveVersionsErr error
 }
 
-func (config lidarResourceConfig) FindOrCreateScope(resourceID *int) (db.ResourceConfigScope, error) {
-	scope, err := config.ResourceConfig.FindOrCreateScope(resourceID)
+func (config lidarResourceConfig) FindOrCreateScope(teamID int, resourceID *int) (db.ResourceConfigScope, error) {
+	scope, err := config.ResourceConfig.FindOrCreateScope(teamID, resourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +358,7 @@ func attachLidarNativeResourceScope(fixture *lidarDB, resource db.Resource) db.R
 		resource.Type(), resource.Source(), nil,
 	)
 	Expect(err).NotTo(HaveOccurred())
-	scope, err := config.FindOrCreateScope(nil)
+	scope, err := config.FindOrCreateScope(resource.TeamID(), nil)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
 	return scope
@@ -370,7 +370,7 @@ func attachLidarResourceTypeScope(fixture *lidarDB, resourceType db.ResourceType
 		resourceType.Type(), resourceType.Source(), nil,
 	)
 	Expect(err).NotTo(HaveOccurred())
-	scope, err := config.FindOrCreateScope(nil)
+	scope, err := config.FindOrCreateScope(resourceType.TeamID(), nil)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(resourceType.SetResourceConfigScope(scope)).To(Succeed())
 	return scope
@@ -386,7 +386,7 @@ func resolvedLidarResourceTypeScope(fixture *lidarDB, resourceType db.ResourceTy
 	Expect(config.CreatedByResourceCache()).To(BeNil())
 	Expect(config.CreatedByBaseResourceType()).NotTo(BeNil())
 	Expect(config.CreatedByBaseResourceType().Name).To(Equal("registry-image"))
-	scope, err := config.FindOrCreateScope(nil)
+	scope, err := config.FindOrCreateScope(resourceType.TeamID(), nil)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(scope.ID()).To(Equal(resourceType.ResourceConfigScopeID()))
 	return scope
@@ -402,7 +402,7 @@ func resolvedLidarResourceScope(fixture *lidarDB, resource db.Resource) db.Resou
 	Expect(config.CreatedByResourceCache()).To(BeNil())
 	Expect(config.CreatedByBaseResourceType()).NotTo(BeNil())
 	Expect(config.CreatedByBaseResourceType().Name).To(Equal("registry-image"))
-	scope, err := config.FindOrCreateScope(nil)
+	scope, err := config.FindOrCreateScope(resource.TeamID(), nil)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(scope.ID()).To(Equal(resource.ResourceConfigScopeID()))
 	return scope
@@ -463,7 +463,7 @@ func attachLidarResourceScope(fixture *lidarDB, resource db.Resource) db.Resourc
 	)
 	Expect(err).NotTo(HaveOccurred())
 	resourceID := resource.ID()
-	scope, err := config.FindOrCreateScope(&resourceID)
+	scope, err := config.FindOrCreateScope(resource.TeamID(), &resourceID)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
 	return scope

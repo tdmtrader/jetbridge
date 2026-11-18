@@ -3774,7 +3774,7 @@ var _ = Describe("Team", func() {
 						)
 						Expect(err).ToNot(HaveOccurred())
 
-						scope, err := resourceConfig.FindOrCreateScope(intptr(defaultResource.ID()))
+						scope, err := resourceConfig.FindOrCreateScope(defaultResource.TeamID(), intptr(defaultResource.ID()))
 						Expect(err).ToNot(HaveOccurred())
 
 						err = defaultResource.SetResourceConfigScope(scope)
@@ -3836,7 +3836,7 @@ var _ = Describe("Team", func() {
 							)
 							Expect(err).ToNot(HaveOccurred())
 
-							scope, err := resourceConfig.FindOrCreateScope(intptr(otherResource.ID()))
+							scope, err := resourceConfig.FindOrCreateScope(otherResource.TeamID(), intptr(otherResource.ID()))
 							Expect(err).ToNot(HaveOccurred())
 
 							err = otherResource.SetResourceConfigScope(scope)

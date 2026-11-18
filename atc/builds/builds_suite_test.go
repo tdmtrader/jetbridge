@@ -131,7 +131,7 @@ func scopeResource() {
 		FindOrCreateResourceConfig(resource.Type(), resource.Source(), nil)
 	Expect(err).NotTo(HaveOccurred())
 
-	scope, err := resourceConfig.FindOrCreateScope(&[]int{resource.ID()}[0])
+	scope, err := resourceConfig.FindOrCreateScope(resource.TeamID(), &[]int{resource.ID()}[0])
 	Expect(err).NotTo(HaveOccurred())
 	Expect(resource.SetResourceConfigScope(scope)).To(Succeed())
 

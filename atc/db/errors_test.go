@@ -69,7 +69,7 @@ var _ = Describe("IsForeignKeyViolation", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 
-			resourceScope, err = rc.FindOrCreateScope(intptr(scenario.Resource("some-resource").ID()))
+			resourceScope, err = rc.FindOrCreateScope(scenario.Resource("some-resource").TeamID(), intptr(scenario.Resource("some-resource").ID()))
 			Expect(err).ToNot(HaveOccurred())
 		})
 

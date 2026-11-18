@@ -204,7 +204,7 @@ var _ = Describe("ResourceConfigFactory", func() {
 				nil,
 			)
 			Expect(err).ToNot(HaveOccurred())
-			newScope, err := newConfig.FindOrCreateScope(intptr(resource.ID()))
+			newScope, err := newConfig.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 			Expect(err).ToNot(HaveOccurred())
 			Expect(resource.SetResourceConfigScope(newScope)).To(Succeed())
 

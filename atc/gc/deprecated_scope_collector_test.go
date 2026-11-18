@@ -69,7 +69,7 @@ var _ = Describe("DeprecatedScopeCollector", func() {
 		)
 		Expect(err).ToNot(HaveOccurred())
 
-		_, err = newRC.FindOrCreateScope(intptr(resource.ID()))
+		_, err = newRC.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
 		Expect(err).ToNot(HaveOccurred())
 
 		// Verify the old scope was deprecated

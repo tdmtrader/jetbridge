@@ -455,7 +455,7 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 			config.Type, config.Source, nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		baselineScope, err := persistedConfig.FindOrCreateScope(nil)
+		baselineScope, err := persistedConfig.FindOrCreateScope(pipeline.TeamID(), nil)
 		Expect(err).NotTo(HaveOccurred())
 		baselineLastCheck, err := baselineScope.LastCheck()
 		Expect(err).NotTo(HaveOccurred())
@@ -488,7 +488,7 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 			config.Type, config.Source, nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		baselineScope, err := persistedConfig.FindOrCreateScope(nil)
+		baselineScope, err := persistedConfig.FindOrCreateScope(pipeline.TeamID(), nil)
 		Expect(err).NotTo(HaveOccurred())
 		baselineLastCheck, err := baselineScope.LastCheck()
 		Expect(err).NotTo(HaveOccurred())
@@ -507,7 +507,7 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 			config.Type, config.Source, nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		scope, err := resourceConfig.FindOrCreateScope(nil)
+		scope, err := resourceConfig.FindOrCreateScope(pipeline.TeamID(), nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(scope.ID()).To(Equal(baselineScope.ID()))
 		_, found, err := scope.LatestVersion()
@@ -526,7 +526,7 @@ var _ = Describe("Scanner Resource Type Resolution", func() {
 			config.Type, config.Source, nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		baselineScope, err := persistedConfig.FindOrCreateScope(nil)
+		baselineScope, err := persistedConfig.FindOrCreateScope(pipeline.TeamID(), nil)
 		Expect(err).NotTo(HaveOccurred())
 		baselineLastCheck, err := baselineScope.LastCheck()
 		Expect(err).NotTo(HaveOccurred())
@@ -872,7 +872,7 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 			"registry-image", config.Source, nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		baselineScope, err := persistedConfig.FindOrCreateScope(nil)
+		baselineScope, err := persistedConfig.FindOrCreateScope(pipeline.TeamID(), nil)
 		Expect(err).NotTo(HaveOccurred())
 		baselineLastCheck, err := baselineScope.LastCheck()
 		Expect(err).NotTo(HaveOccurred())
@@ -907,7 +907,7 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 			"registry-image", config.Source, nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		baselineScope, err := persistedConfig.FindOrCreateScope(nil)
+		baselineScope, err := persistedConfig.FindOrCreateScope(pipeline.TeamID(), nil)
 		Expect(err).NotTo(HaveOccurred())
 		baselineLastCheck, err := baselineScope.LastCheck()
 		Expect(err).NotTo(HaveOccurred())
@@ -1165,7 +1165,7 @@ var _ = Describe("Scanner Native Resource Resolution", func() {
 			config.Type, config.Source, nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		baselineScope, err := persistedConfig.FindOrCreateScope(nil)
+		baselineScope, err := persistedConfig.FindOrCreateScope(pipeline.TeamID(), nil)
 		Expect(err).NotTo(HaveOccurred())
 		baselineLastCheck, err := baselineScope.LastCheck()
 		Expect(err).NotTo(HaveOccurred())
@@ -1541,7 +1541,7 @@ var _ = Describe("Scanner native resolution of a ((var)) source", func() {
 			"registry-image", evaluatedSource, nil,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		scope, err := evaluatedConfig.FindOrCreateScope(nil)
+		scope, err := evaluatedConfig.FindOrCreateScope(pipeline.TeamID(), nil)
 		Expect(err).NotTo(HaveOccurred())
 		expectLidarLatestVersion(scope, atc.Version{"digest": "sha256:evaluated"})
 	})

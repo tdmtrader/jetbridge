@@ -1496,16 +1496,16 @@ func (b *build) SaveOutput(
 		_, err = tx.Exec(`
 			SELECT id FROM resource_config_scopes
 			WHERE id = $1
-			OR (resource_config_id = $2 AND deprecated_at IS NULL AND (resource_id IS NULL OR resource_id = $3))
+			OR (resource_config_id = $2 AND team_id = $4 AND deprecated_at IS NULL AND (resource_id IS NULL OR resource_id = $3))
 			ORDER BY id
 			FOR UPDATE
-		`, currentScopeID.Int64, rc.ID(), theResource.ID())
+		`, currentScopeID.Int64, rc.ID(), theResource.ID(), theResource.TeamID())
 		if err != nil {
 			return err
 		}
 	}
 
-	resourceConfigScope, err := findOrCreateResourceConfigScope(tx, b.conn, b.lockFactory, rc, NewIntPtr(theResource.ID()))
+	resourceConfigScope, err := findOrCreateResourceConfigScope(tx, b.conn, b.lockFactory, rc, theResource.TeamID(), NewIntPtr(theResource.ID()))
 	if err != nil {
 		return err
 	}

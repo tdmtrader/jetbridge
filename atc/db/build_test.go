@@ -1198,9 +1198,9 @@ var _ = Describe("Build", func() {
 					otherTeamOtherJobBeforeTime = otherScenario.Job("some-other-job").ScheduleRequestedTime()
 				})
 
-				It("requests schedule on jobs which use the same config", func() {
+				It("requests schedule on the team's jobs which use the same config, and not the other team's", func() {
 					Expect(scenario.Job("some-job").ScheduleRequestedTime()).To(BeTemporally(">", beforeTime))
-					Expect(otherScenario.Job("some-job").ScheduleRequestedTime()).To(BeTemporally(">", otherTeamBeforeTime))
+					Expect(otherScenario.Job("some-job").ScheduleRequestedTime()).To(BeTemporally("==", otherTeamBeforeTime))
 
 					Expect(scenario.Job("some-other-job").ScheduleRequestedTime()).To(BeTemporally("==", otherJobBeforeTime))
 					Expect(otherScenario.Job("some-other-job").ScheduleRequestedTime()).To(BeTemporally("==", otherTeamOtherJobBeforeTime))

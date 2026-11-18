@@ -31,12 +31,12 @@ var _ = Describe("Check Lifecycle", func() {
 
 		resourceConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(defaultResource.Type(), defaultResource.Source(), nil)
 		Expect(err).ToNot(HaveOccurred())
-		scopeOfDefaultResource, err = resourceConfig.FindOrCreateScope(intptr(defaultResource.ID()))
+		scopeOfDefaultResource, err = resourceConfig.FindOrCreateScope(defaultResource.TeamID(), intptr(defaultResource.ID()))
 		Expect(err).ToNot(HaveOccurred())
 
 		resourceConfig, err = resourceConfigFactory.FindOrCreateResourceConfig(defaultResourceType.Type(), defaultResourceType.Source(), nil)
 		Expect(err).ToNot(HaveOccurred())
-		scopeOfDefaultResourceType, err = resourceConfig.FindOrCreateScope(nil)
+		scopeOfDefaultResourceType, err = resourceConfig.FindOrCreateScope(defaultResourceType.TeamID(), nil)
 		Expect(err).ToNot(HaveOccurred())
 	})
 

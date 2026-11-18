@@ -529,7 +529,7 @@ func versionsAPIResourceTypeVersionExists(
 	)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(found).To(BeTrue())
-	scope, err := resourceConfig.FindOrCreateScope(nil)
+	scope, err := resourceConfig.FindOrCreateScope(resourceType.TeamID(), nil)
 	Expect(err).NotTo(HaveOccurred())
 	_, found, err = scope.FindVersion(version)
 	Expect(err).NotTo(HaveOccurred())

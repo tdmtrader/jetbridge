@@ -220,7 +220,7 @@ var _ = Describe("CheckStep", func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 		resourceConfig = expectedConfig
-		resourceConfigScope, err = resourceConfig.FindOrCreateScope(nil)
+		resourceConfigScope, err = resourceConfig.FindOrCreateScope(currentTeam.ID(), nil)
 		Expect(err).NotTo(HaveOccurred())
 
 		planID = "some-plan-id"

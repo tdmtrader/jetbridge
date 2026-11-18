@@ -87,7 +87,10 @@ func (d *checkDelegate) FindOrCreateScope(config db.ResourceConfig) (db.Resource
 		resourceIDPtr = &resourceID
 	}
 
-	scope, err := config.FindOrCreateScope(resourceIDPtr)
+	// The build's team's scope: a resource's or resource type's check build
+	// is its team's, and a task image check reads and writes the history of
+	// the team running it, never another team's.
+	scope, err := config.FindOrCreateScope(d.build.TeamID(), resourceIDPtr)
 	if err != nil {
 		return nil, fmt.Errorf("find or create scope: %w", err)
 	}
