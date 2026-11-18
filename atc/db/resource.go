@@ -312,7 +312,7 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 // version of its custom resource type changes. The resource's config is keyed
 // on the type's resource cache, so a new image version means a new config and
 // a new, empty global scope, though the resource itself is unchanged. The old
-// scope's versions are merged into the new scope (see copyVersionsIntoScope),
+// scope's versions are merged into the new scope (see copyVersionsIntoScopeTx),
 // and the old scope is deprecated once no active resource or resource type
 // still uses it, so it outlives its config's grace period by the
 // deprecated-scope grace period. The caller holds the resource and both
@@ -680,7 +680,7 @@ var ErrCopyIntoSharedScope = errors.New("the resource's current version history 
 var ErrCopyIntoAnotherTeamsHistory = errors.New("the resource's current version history is in use by a resource or resource type of another team; copying into it would write into that team's history")
 
 // CopyVersionsFromScope copies the given source scope's versions into this
-// resource's current scope, merged into its order as copyVersionsIntoScope
+// resource's current scope, merged into its order as copyVersionsIntoScopeTx
 // describes. Returns count of versions copied.
 //
 // A current scope that belongs to this resource alone (a base type with a
