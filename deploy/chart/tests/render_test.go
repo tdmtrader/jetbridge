@@ -7,6 +7,24 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+// runHelm runs helm with args in dir and returns everything it wrote:
+// stdout and stderr interleaved, as CombinedOutput gives them, since the
+// tests that expect a refusal read the reason helm prints on stderr. An empty
+// dir runs helm in this package's own directory. Every chart test that shells
+// out to helm goes through here.
+func runHelm(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("helm", args...)
+	cmd.Dir = dir
+	return cmd.CombinedOutput()
+}
+
+// helmAtRoot is runHelm from the repository root, where the chart's paths
+// (deploy/chart, deploy/chart/tests/testdata/...) are relative to.
+func helmAtRoot(t *testing.T, args ...string) ([]byte, error) {
+	t.Helper()
+	return runHelm(repoRoot(t), args...)
+}
+
 // render runs `helm template` with the given --set overrides in helm's
 // default release namespace.
 func render(t *testing.T, sets ...string) string {
@@ -28,10 +46,7 @@ func renderInNamespace(t *testing.T, namespace string, sets ...string) string {
 		args = append(args, "--set", s)
 	}
 
-	cmd := exec.Command("helm", args...)
-	cmd.Dir = repoRoot(t)
-
-	out, err := cmd.CombinedOutput()
+	out, err := helmAtRoot(t, args...)
 	if err != nil {
 		t.Fatalf("helm template %v failed: %v\n%s", sets, err, out)
 	}
@@ -92,10 +107,8 @@ func TestWebMountsTheNamedSigningKeySecretAtKeys(t *testing.T) {
 // the newcomer: selfHeal would revert migrate-db, the container that applies
 // schema migrations, to the chart's image after every release.
 func TestMigrateDBIsTheWebDeploymentsFirstInitContainer(t *testing.T) {
-	rollout := exec.Command("helm", "template", "concourse", "deploy/chart", "--namespace", "cicd",
+	home, err := helmAtRoot(t, "template", "concourse", "deploy/chart", "--namespace", "cicd",
 		"-f", "deploy/chart/tests/testdata/concourse-home-rollout.yaml")
-	rollout.Dir = repoRoot(t)
-	home, err := rollout.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the concourse.home rollout values do not render: %v\n%s", err, home)
 	}
