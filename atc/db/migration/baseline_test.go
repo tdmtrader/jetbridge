@@ -273,12 +273,13 @@ func preflightTargetVersion() int {
 
 var _ = Describe("migrate-preflight.sh", func() {
 	// The script runs on an operator's laptop before an upgrade, so it cannot
-	// ask the binary what the head migration is and has to hardcode it. Nothing
-	// syncs the two. Left to drift, the script tells operators their database is
-	// "ahead of JetBridge" and refuses an upgrade that is in fact fine.
+	// ask the binary what the head migration is and has to hardcode it. Only
+	// atc/scripts/create-migration syncs the two, when it generates one. Left to
+	// drift, the script tells operators their database is "ahead of JetBridge"
+	// and refuses an upgrade that is in fact fine.
 	//
-	// Adding a migration means editing this constant. The failure message is the
-	// documentation.
+	// A migration numbered or renamed by hand means editing this constant. The
+	// failure message is the documentation.
 	It("targets the head migration", func() {
 		migrator := migration.NewMigrator(testLogger, nil, nil)
 

@@ -109,7 +109,7 @@ scripts are extensionless 755 executables — `atc/scripts/*`, `hack/*`. An
 against `versions.go` and the chart's `appVersion` by `version_consistency_test.go`. The
 test fixtures derive the head migration from the binary's embedded set. The standalone
 `docs/migration/migrate-preflight.sh` carries a checked copy because it runs without
-the binary; update `JETBRIDGE_VERSION` when adding a migration. Its migration-suite
+the binary; `atc/scripts/create-migration` writes `JETBRIDGE_VERSION`, but a hand-numbered or renamed migration needs it updated by hand. Its migration-suite
 check must match the embedded head.
 
 **Every guard asserts it matched something.** A structural test that silently matches
