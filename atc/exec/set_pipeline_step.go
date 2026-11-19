@@ -114,7 +114,7 @@ func (step *SetPipelineStep) run(ctx context.Context, state RunState, delegate S
 
 	atcConfig, err := source.MarshalPipelineConfig(pipelineBits)
 	if err != nil {
-		fmt.Fprintln(delegate.Stderr(), "error parsing pipeline:")
+		fmt.Fprintln(stderr, "error parsing pipeline:")
 		fmt.Fprintf(stderr, "%s", err)
 		delegate.Finished(logger, false)
 		return false, nil
@@ -126,7 +126,7 @@ func (step *SetPipelineStep) run(ctx context.Context, state RunState, delegate S
 	}
 
 	if len(errors) > 0 {
-		fmt.Fprintln(delegate.Stderr(), "invalid pipeline:")
+		fmt.Fprintln(stderr, "invalid pipeline:")
 
 		for _, e := range errors {
 			fmt.Fprintf(stderr, "- %s", e)
@@ -141,7 +141,7 @@ func (step *SetPipelineStep) run(ctx context.Context, state RunState, delegate S
 		InstanceVars: step.plan.InstanceVars,
 	}
 	if err := configvalidate.ValidateTemplateDeclaration(pipelineRef, atcConfig); err != nil {
-		fmt.Fprintln(delegate.Stderr(), "invalid pipeline:")
+		fmt.Fprintln(stderr, "invalid pipeline:")
 		fmt.Fprintf(stderr, "- %s\n", err)
 		delegate.Finished(logger, false)
 		return false, nil
