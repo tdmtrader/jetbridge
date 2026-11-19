@@ -208,44 +208,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		}
 	}
 
-	var taskConfigSource TaskConfigSource
-
-	if step.plan.ConfigPath != "" {
-		// external task - construct a source which reads it from file, and apply base resource type defaults.
-		taskConfigSource = FileConfigSource{ConfigPath: step.plan.ConfigPath, Streamer: step.streamer}
-
-		// for interpolation - use 'vars' from the pipeline, and then fill remaining with cred variables.
-		// this 2-phase strategy allows to interpolate 'vars' by cred variables.
-		if len(step.plan.Vars) > 0 {
-			taskConfigSource = InterpolateTemplateConfigSource{
-				ConfigSource:  taskConfigSource,
-				Vars:          []vars.Variables{vars.StaticVariables(step.plan.Vars)},
-				ExpectAllKeys: false,
-			}
-		}
-	} else {
-		// embedded task - first we take it
-		taskConfigSource = StaticConfigSource{Config: step.plan.Config}
-	}
-
-	taskConfigSource = BaseResourceTypeDefaultsApplySource{
-		ConfigSource:  taskConfigSource,
-		ResourceTypes: step.plan.ResourceTypes,
-	}
-
-	taskConfigSource = &OverrideContainerLimitsSource{ConfigSource: taskConfigSource, Limits: step.plan.Limits, Requests: step.plan.Requests}
-
-	taskConfigSource = &OverrideParamsConfigSource{ConfigSource: taskConfigSource, Params: step.plan.Params}
-
-	// interpolate template vars: whatever the pipeline's 'vars' left, from cred variables
-	taskConfigSource = InterpolateTemplateConfigSource{
-		ConfigSource:  taskConfigSource,
-		Vars:          []vars.Variables{state},
-		ExpectAllKeys: true,
-	}
-
-	// validate
-	taskConfigSource = ValidatingConfigSource{ConfigSource: taskConfigSource}
+	taskConfigSource := step.configSource(state)
 
 	repository := state.ArtifactRepository()
 
@@ -460,6 +423,50 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	oteltrace.SpanFromContext(ctx).AddEvent("step.finished")
 	delegate.Finished(logger, ExitStatus(result.ExitStatus))
 	return result.ExitStatus == 0, nil
+}
+
+// configSource is the chain the task's config is fetched through: read from
+// file or taken from the plan, given base resource type defaults and the
+// plan's limits and params, interpolated, then validated.
+func (step *TaskStep) configSource(state RunState) TaskConfigSource {
+	var taskConfigSource TaskConfigSource
+
+	if step.plan.ConfigPath != "" {
+		// external task - construct a source which reads it from file, and apply base resource type defaults.
+		taskConfigSource = FileConfigSource{ConfigPath: step.plan.ConfigPath, Streamer: step.streamer}
+
+		// for interpolation - use 'vars' from the pipeline, and then fill remaining with cred variables.
+		// this 2-phase strategy allows to interpolate 'vars' by cred variables.
+		if len(step.plan.Vars) > 0 {
+			taskConfigSource = InterpolateTemplateConfigSource{
+				ConfigSource:  taskConfigSource,
+				Vars:          []vars.Variables{vars.StaticVariables(step.plan.Vars)},
+				ExpectAllKeys: false,
+			}
+		}
+	} else {
+		// embedded task - first we take it
+		taskConfigSource = StaticConfigSource{Config: step.plan.Config}
+	}
+
+	taskConfigSource = BaseResourceTypeDefaultsApplySource{
+		ConfigSource:  taskConfigSource,
+		ResourceTypes: step.plan.ResourceTypes,
+	}
+
+	taskConfigSource = &OverrideContainerLimitsSource{ConfigSource: taskConfigSource, Limits: step.plan.Limits, Requests: step.plan.Requests}
+
+	taskConfigSource = &OverrideParamsConfigSource{ConfigSource: taskConfigSource, Params: step.plan.Params}
+
+	// interpolate template vars: whatever the pipeline's 'vars' left, from cred variables
+	taskConfigSource = InterpolateTemplateConfigSource{
+		ConfigSource:  taskConfigSource,
+		Vars:          []vars.Variables{state},
+		ExpectAllKeys: true,
+	}
+
+	// validate
+	return ValidatingConfigSource{ConfigSource: taskConfigSource}
 }
 
 func (step *TaskStep) imageSpec(ctx context.Context, logger lager.Logger, state RunState, delegate TaskDelegate, config atc.TaskConfig) (runtime.ImageSpec, error) {
