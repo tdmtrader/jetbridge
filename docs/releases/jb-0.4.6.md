@@ -1,6 +1,6 @@
-# JetBridge 0.4.6 (running notes)
+# JetBridge 0.4.6
 
-JetBridge 0.4.6 follows jb-0.4.5 (e610ff1acb). These are running notes, kept as changes land; they become the release notes when 0.4.6 is declared.
+JetBridge 0.4.6 follows jb-0.4.5 (e610ff1acb). It gives each team its own resource version histories, carries a custom type's history across a new image, adds an opt-in privilege mode for step pods, makes `fly execute -o` download its outputs, has a cancelled task record the outputs it wrote, and makes the reaper, the step runtimes and the web's artifact daemon calls outlast a busy or restarting daemon. **Upgrading runs a forward-only migration, and a multi-team deployment upgrades with the web stopped** (see Operator notes).
 
 ## Changes
 
@@ -11,6 +11,7 @@ JetBridge 0.4.6 follows jb-0.4.5 (e610ff1acb). These are running notes, kept as 
 - **The managed-input init waits out a busy or restarting artifact daemon.** It retried a 503 or no answer five times, two seconds apart. Two Runs' inputs queued on one node, or a daemon restart, outlasted that, and the step failed before its command ran. It now retries with capped, jittered backoff for 10 minutes. Any other status still fails at once, with the same message. A node whose artifact daemon is gone for good now fails a managed-input step after about 10 minutes rather than 10 seconds.
 - **Admitting an exact execution dials a restarting artifact daemon again.** A refused, reset or closed connection, no route, or no answer within the client's timeout is retried with backoff for 2 minutes under the step's context. Any HTTP answer, and any TLS or certificate failure, is still final. A repeated admission is the same admission: the node's ledger already holds it.
 - **The capture control init waits about 3 minutes for the daemon, not 1,** so it outlasts a restart the admission waits through.
+- **The `cleanup-stale` init of a pod rebuilt for a reused handle has the `HOST_IP` it dials.** With the output plane on, every such pod failed its first init (`HOST_IP: parameter not set`) before anything ran, so a Run whose exact execution's first pod ended before its command was re-driven forever.
 - **A transient API failure while checking a step envelope's token is retried.** Under `job`, a TokenReview or pod read that failed for want of an answer was a 401, which the launcher treats as final, so the step's pod exited without running its command. It is now a 503, which the launcher retries. A refused token, or a pod that is gone, is still a 401.
 - **The launcher records a command it could not start.** A missing or non-executable command exits 127 or 126 as before, and now also leaves its one-line termination record, saying the command did not run. So does a command it could not set up, exit 125: its stdin could not be staged from the envelope, or its stdout file could not be opened (with or without an envelope). A failure before that (bad usage, the token, the envelope fetch: 125) still leaves none.
 - **The web reaches a node's artifact daemon by its pod IP.** Alias registration, mirror triggers, artifact reads and uploads, capture classification, the job runtime's answer read and the reaper's step-directory delete dialled the node's InternalIP and hostPort. Where the web could not route to that address, registration timed out and a web-side read such as `load_var` failed with `artifact not found on node X or any peer`. They now dial the ready address the daemon Service's EndpointSlices publish for that node, and fall back to the InternalIP when there is none or the EndpointSlice list fails. The output plane (exact-execution control and the capture seal, publish, release and stat routes) still dials the node InternalIP, so a cluster that blocks it cannot yet run with `hangarOutput.executionControl.enabled`.
@@ -45,11 +46,20 @@ JetBridge 0.4.6 follows jb-0.4.5 (e610ff1acb). These are running notes, kept as 
 
 - **`fly execute -o` downloads its outputs.** It was broken in every released JetBridge, 0.4.5 included, under both step runtimes and with the output plane on or off. The task ran and exited 0, then the web panicked in the artifact output step (`nil pointer dereference`, `artifact_output_step.go`), and the build ended `errored` with nothing downloaded. A task output on JetBridge is a step volume that the artifact daemon holds by its artifact key, and it had no volume row for the download to find. Now the artifact output step gives the output an artifact volume row whose handle is that key, and the download streams from the node's artifact daemon. Nothing is copied. A download still needs the step directory, so it races the reaper's deletion of the finished one-off's step directory, just as a later step's read does. `fly execute` without `-o` is unchanged.
 
-## Chart
+## Chart (0.2.5 → 0.2.6)
 
-- **`kubernetes.stepPrivilege` (`any | granted`, default `any`) sets the privilege mode.** Only `granted` renders a flag, so an `any` render is byte-identical to 0.4.5's. The value budget rises by one (`maxValues` 177), an exception recorded in the ADR-0008 amendment of 2026-11-09.
+- **`kubernetes.stepPrivilege` (`any | granted`, default `any`) sets the privilege mode.** Only `granted` renders a flag, so an `any` render is byte-identical to one that leaves the value out. The value budget rises by one (`maxValues` 177), an exception recorded in the ADR-0008 amendment of 2026-11-09.
 
 - **The pod-manager Role grants `batch/jobs` `list` and `delete` under `exec` too,** so the reaper can collect step Jobs a `job` deployment left behind. `get`, `watch`, `create`, `update` and `patch` stay `job`-only. No new value.
+
+- **`image.pullSecrets` reaches every pod that runs the chart's image:** the artifact daemon, the Hangar disk store and its initialization Job, and the Hangar bootstrap Job, not only the web. On a private registry they sat in `ImagePullBackOff`. No new value.
+
+## Operator notes
+
+- **Migration 1789793171** (team-owned version histories). It is forward-only: there is no rollback to 0.4.5 without restoring the database. What it copies and locks is in Resources, "Upgrading copies each shared history once per team".
+- **Upgrade a multi-team deployment with the web stopped** (`web.strategy: {type: Recreate}`, or `web.replicas: 0` first); a single-team deployment may roll. Why is in Resources, "Upgrade a multi-team deployment with the web stopped".
+- **The privilege mode is opt-in.** The default `any` changes nothing. To switch to `granted`, follow MIGRATING's "The privilege mode".
+- The `failed-to-list-step-jobs` error 0.4.5 logged under `exec` is gone (see Step runtime).
 
 ## Verification
 
