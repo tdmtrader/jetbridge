@@ -37,10 +37,13 @@ test-fly-integration:
 # Not viable on macOS: containerd-in-Docker is unstable under Colima at any
 # memory size, so this tier is CI-only from a Mac.
 # Default 2 procs; override with K8S_PROCS=4 if your machine has the headroom.
+# The Ginkgo CLI is the one go.mod pins, built and exec'd (not `go run`, which
+# does not forward SIGTERM), as in hack/unit-tests.sh.
 test-k8s-behavioral:
 	@echo "==> Running K8s behavioral tests (this will take 2-3 hours)..."
 	@$(MAKE) --no-print-directory check-docker-tools
-	ginkgo --procs=$${K8S_PROCS:-2} -v --timeout=3h ./topgun/k8s_behavioral/
+	GINKGO="$$(mktemp -d)/ginkgo" && go build -o "$$GINKGO" github.com/onsi/ginkgo/v2/ginkgo && \
+		exec "$$GINKGO" --procs=$${K8S_PROCS:-2} -v --timeout=3h ./topgun/k8s_behavioral/
 
 # Brine guard tests (~1 sec)
 # Requires: nothing -- no cluster, no build. Nested module (its own go.mod), so
