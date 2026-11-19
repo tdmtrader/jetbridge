@@ -137,24 +137,9 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 		TeamID: step.metadata.TeamID,
 	}
 
-	var (
-		imageSpec          runtime.ImageSpec
-		imageResourceCache db.ResourceCache
-	)
-	if step.plan.TypeImage.ImageRef != "" {
-		var err error
-		imageSpec, imageResourceCache, err = delegate.PinnedImage(ctx, step.plan.TypeImage.ImageRef, step.plan.TypeImage.Privileged)
-		if err != nil {
-			return false, err
-		}
-	} else if step.plan.TypeImage.GetPlan != nil {
-		var err error
-		imageSpec, imageResourceCache, err = delegate.FetchImage(ctx, *step.plan.TypeImage.GetPlan, step.plan.TypeImage.CheckPlan, step.plan.TypeImage.Privileged)
-		if err != nil {
-			return false, err
-		}
-	} else {
-		imageSpec.ResourceType = step.plan.TypeImage.BaseType
+	imageSpec, imageResourceCache, err := step.typeImage(ctx, delegate)
+	if err != nil {
+		return false, err
 	}
 
 	version, err := NewVersionSourceFromPlan(&step.plan).Version(state)
@@ -317,6 +302,19 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 	)
 
 	return succeeded, nil
+}
+
+// typeImage is the image the resource type's container runs: a pinned
+// image, one fetched by the type's own get plan, or a base resource type.
+func (step *GetStep) typeImage(ctx context.Context, delegate GetDelegate) (runtime.ImageSpec, db.ResourceCache, error) {
+	typeImage := step.plan.TypeImage
+	if typeImage.ImageRef != "" {
+		return delegate.PinnedImage(ctx, typeImage.ImageRef, typeImage.Privileged)
+	}
+	if typeImage.GetPlan != nil {
+		return delegate.FetchImage(ctx, *typeImage.GetPlan, typeImage.CheckPlan, typeImage.Privileged)
+	}
+	return runtime.ImageSpec{ResourceType: typeImage.BaseType}, nil, nil
 }
 
 func (step *GetStep) retrieveFromCacheOrPerformGet(
