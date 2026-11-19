@@ -929,9 +929,11 @@ func (s setupDB) insertSuccessfulBuildOutputs(buildID, jobID, rerunOfBuildID int
 	outputsJSON, err := json.Marshal(outputs)
 	Expect(err).ToNot(HaveOccurred())
 
+	// Mirrors build.go's write on success: NULL for an ordinary build, the
+	// rerun build's original for a rerun.
 	var rerunOf sql.NullInt64
 	if rerunOfBuildID != 0 {
-		rerunOf.Int64 = int64(rerunOfBuildID)
+		rerunOf = sql.NullInt64{Int64: int64(rerunOfBuildID), Valid: true}
 	}
 
 	_, err = s.psql.Insert("successful_build_outputs").
