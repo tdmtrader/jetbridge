@@ -87,6 +87,10 @@ runner image requires bumping its tag at *every* site in the pipeline plus a
 `set-pipeline`. A `resource_config_scope` FK flake was once chased for six weeks against
 guards CI had never actually executed.
 
+**A new web flag makes five stops, and a missed one fails a different guard each time.**
+The list (flag, validation, `jetbridge.Config` wiring, chart value and schema, docs) and
+the guard test for each is the comment at the top of `atc/atccmd/command.go`.
+
 ## Local environment
 
 **The K8s tiers are testcontainers-K3s, not KinD** — there are zero `sigs.k8s.io/kind`

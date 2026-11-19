@@ -4,6 +4,35 @@
 // component table into the ifrit group the web node runs. The engine the
 // backend components share is built here too. The flags live in run_flags.go
 // and the wiring Runner calls into lives in the wiring_*.go files beside it.
+//
+// The stops a new web flag makes, in order, with the guard that catches a
+// missed one:
+//
+//  1. A field on RunCommand (run_flags.go); a runtime flag goes under
+//     Kubernetes as --kubernetes-*.
+//  2. Validation: rules on flags alone in validate (run_flags.go), the
+//     runtime's in validateK8sRuntime; a check that needs the assembled
+//     runtime value at the top of assembleJetbridgeConfig.
+//  3. Wiring: a runtime flag becomes a jetbridge.Config field in
+//     assembleJetbridgeConfig (wiring_jetbridge.go). Set the flag and add the
+//     field to the expected Config in
+//     TestTheJetbridgeConfigIsAssembledFromTheFlags, which fails a Config
+//     field no flag sets unless jetbridgeConfigFieldsWithoutAFlag lists it.
+//     Any other flag is read by the file in this package that wires the
+//     component using it.
+//  4. Chart, only for a choice an operator makes (docs/adr/0008). A runtime
+//     flag is an argument in deploy/chart/templates/web-deployment.yaml,
+//     guarded by TestChartRendersOnlyFlagsTheBinaryAccepts. Any other web
+//     setting is a CONCOURSE_* row in concourse.web.settingsEnv
+//     (templates/_helpers.tpl) and in webSettings
+//     (deploy/chart/tests/web_settings_test.go), guarded by
+//     TestEveryConcourseEnvVarTheChartRendersIsAWebFlag at the repo root.
+//     Either way add the default to values.yaml and an entry to the closed
+//     values.schema.json, with a rule between values in
+//     templates/_validate.tpl. TestTheChartHoldsItsShape holds maxValues,
+//     allowedSwitches and bannedKeys and fails a value with no schema entry.
+//  5. Docs: the values table in deploy/chart/README.md and the release's
+//     notes under docs/releases/.
 
 package atccmd
 
