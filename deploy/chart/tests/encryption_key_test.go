@@ -7,7 +7,6 @@ package tests
 // grandfathered one, kept so concourse.home's values render unchanged.
 
 import (
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -77,9 +76,7 @@ func TestTheRenderNamesTheEncryptionKeyWhenNoSourceSetsIt(t *testing.T) {
 			for _, s := range sets {
 				args = append(args, "--set", s)
 			}
-			cmd := exec.Command("helm", args...)
-			cmd.Dir = repoRoot(t)
-			out, err := cmd.CombinedOutput()
+			out, err := helmAtRoot(t, args...)
 			if err == nil {
 				t.Fatalf("render %v succeeded; the chart must refuse it naming secrets.encryptionKeySecret", sets)
 			}

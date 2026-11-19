@@ -1,7 +1,6 @@
 package tests
 
 import (
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -45,10 +44,7 @@ func renderRelease(t *testing.T, release string, sets ...string) (string, error)
 	for _, s := range sets {
 		args = append(args, "--set", s)
 	}
-	cmd := exec.Command("helm", args...)
-	cmd.Dir = repoRoot(t)
-
-	out, err := cmd.CombinedOutput()
+	out, err := helmAtRoot(t, args...)
 
 	return string(out), err
 }

@@ -1,7 +1,6 @@
 package tests
 
 import (
-	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -33,9 +32,7 @@ func renderHangarError(t *testing.T, sets ...string) string {
 	for _, set := range sets {
 		args = append(args, "--set", set)
 	}
-	cmd := exec.Command("helm", args...)
-	cmd.Dir = repoRoot(t)
-	out, err := cmd.CombinedOutput()
+	out, err := helmAtRoot(t, args...)
 	if err == nil {
 		t.Fatalf("helm template unexpectedly accepted %v", sets)
 	}

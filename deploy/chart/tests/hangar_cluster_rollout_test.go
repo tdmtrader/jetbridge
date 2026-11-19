@@ -2,7 +2,6 @@ package tests
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -46,9 +45,7 @@ func TestTheRolloutRendersAtEveryStep(t *testing.T) {
 		for _, set := range sets {
 			args = append(args, "--set", set)
 		}
-		cmd := exec.Command("helm", args...)
-		cmd.Dir = repoRoot(t)
-		raw, err := cmd.CombinedOutput()
+		raw, err := helmAtRoot(t, args...)
 		if err != nil {
 			t.Fatalf("%s does not render: %v\n%s", step.name, err, firstLines(string(raw), 5))
 		}
