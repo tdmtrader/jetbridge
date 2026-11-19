@@ -8,6 +8,8 @@ In CI the disposable K3s tier is the `k8s-e2e` pipeline (`deploy/k8s-e2e-pipelin
 → `hangar-generated-pod-contract` → `k8s-behavioral-tests`, on a 24 h timer and on every `core` commit.
 The other contract jobs (`hangar-disk-store-contract`, `hangar-cluster-contract`,
 `run-cancellation-kubelet`) hang off `build-kind-runner` and gate nothing.
+The "kind" in `build-kind-runner` and its `concourse-kind-runner` image is historical: the image
+(`deploy/Dockerfile.kind-runner`) carries no kind, and the suites start their K3s clusters through testcontainers.
 The jetbridge pipeline's `k8s-live-tests` job is a different thing: the `-tags live` suites in
 `atc/worker/jetbridge`, which run after `self-upgrade` against the cluster's *deployed* artifact
 daemon (hostPath, node-IP dialing, mTLS SANs, capability key) as a post-upgrade acceptance check.
