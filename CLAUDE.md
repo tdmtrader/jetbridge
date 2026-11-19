@@ -33,10 +33,12 @@ in CI.
 
 ### Running a Single Package
 
+Run the Ginkgo CLI go.mod pins (a ginkgo on PATH may be another version):
+
 ```bash
-ginkgo ./atc/db/                          # one package
-ginkgo -r ./atc/api/                      # package + subpackages
-ginkgo --focus="test name" ./atc/db/      # single test by name
+go run github.com/onsi/ginkgo/v2/ginkgo ./atc/db/                       # one package
+go run github.com/onsi/ginkgo/v2/ginkgo -r ./atc/api/                   # package + subpackages
+go run github.com/onsi/ginkgo/v2/ginkgo --focus="test name" ./atc/db/   # single test by name
 ```
 
 ### Running atc/db Tests

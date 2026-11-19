@@ -38,7 +38,14 @@ EXCLUDED="topgun fly/integration testhelpers/otel atc/worker/jetbridge/brine"
 
 if [ "${1:-}" != --ci ]; then
   # Requires: PostgreSQL binaries on PATH (the suites start their own).
-  exec ginkgo -r -p --keep-going --flake-attempts=1 \
+  # The Ginkgo CLI comes from go.mod, as in --ci below: a ginkgo on PATH at
+  # another version fails the suites on a CLI/library mismatch. Built, then
+  # exec'd rather than `go run`: go run does not forward SIGTERM, so killing
+  # this script would orphan ginkgo, the test binaries and their postmasters.
+  # A path per run, because worktrees may pin different versions.
+  GINKGO="$(mktemp -d)/ginkgo"
+  go build -o "$GINKGO" github.com/onsi/ginkgo/v2/ginkgo
+  exec "$GINKGO" -r -p --keep-going --flake-attempts=1 \
     --skip-package="$(echo $EXCLUDED | tr ' ' ',')"
 fi
 
