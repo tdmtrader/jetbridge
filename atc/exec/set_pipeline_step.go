@@ -147,41 +147,9 @@ func (step *SetPipelineStep) run(ctx context.Context, state RunState, delegate S
 		return false, nil
 	}
 
-	var team db.Team
-	if step.plan.Team == "" {
-		team = step.teamFactory.GetByID(step.metadata.TeamID)
-	} else {
-		currentTeam, found, err := step.teamFactory.FindTeam(step.metadata.TeamName)
-		if err != nil {
-			return false, err
-		}
-		if !found {
-			return false, fmt.Errorf("team %s not found", step.metadata.TeamName)
-		}
-
-		targetTeam, found, err := step.teamFactory.FindTeam(step.plan.Team)
-		if err != nil {
-			return false, err
-		}
-		if !found {
-			return false, fmt.Errorf("team %s not found", step.plan.Team)
-		}
-
-		permitted := false
-		if targetTeam.ID() == currentTeam.ID() {
-			permitted = true
-		}
-		if currentTeam.Admin() {
-			permitted = true
-		}
-		if !permitted {
-			return false, fmt.Errorf(
-				"only %s team can set another team's pipeline",
-				atc.DefaultTeamName,
-			)
-		}
-
-		team = targetTeam
+	team, err := step.targetTeam()
+	if err != nil {
+		return false, err
 	}
 
 	pipeline, found, err := team.Pipeline(pipelineRef)
@@ -254,6 +222,46 @@ func (step *SetPipelineStep) run(ctx context.Context, state RunState, delegate S
 	delegate.Finished(logger, true)
 
 	return true, nil
+}
+
+// targetTeam is the team whose pipeline the step sets: its own build's team
+// unless the plan names another, which only the admin team may set.
+func (step *SetPipelineStep) targetTeam() (db.Team, error) {
+	if step.plan.Team == "" {
+		return step.teamFactory.GetByID(step.metadata.TeamID), nil
+	}
+
+	currentTeam, found, err := step.teamFactory.FindTeam(step.metadata.TeamName)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("team %s not found", step.metadata.TeamName)
+	}
+
+	targetTeam, found, err := step.teamFactory.FindTeam(step.plan.Team)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("team %s not found", step.plan.Team)
+	}
+
+	permitted := false
+	if targetTeam.ID() == currentTeam.ID() {
+		permitted = true
+	}
+	if currentTeam.Admin() {
+		permitted = true
+	}
+	if !permitted {
+		return nil, fmt.Errorf(
+			"only %s team can set another team's pipeline",
+			atc.DefaultTeamName,
+		)
+	}
+
+	return targetTeam, nil
 }
 
 type setPipelineSource struct {
