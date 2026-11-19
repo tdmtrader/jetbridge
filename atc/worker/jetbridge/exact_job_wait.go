@@ -87,7 +87,10 @@ func (c *Container) runExactAsJob(ctx context.Context, processID string, spec ru
 		// is done for it. A refusal deletes nothing and replaces nothing: the
 		// Job may have started its command, and it is not this path's to
 		// stop. Its envelope is not registered, so a pod that has not fetched
-		// it never starts (readmitStepJob).
+		// it never starts (readmitStepJob): its launcher, once its envelope
+		// timeout runs out, exits with the never-received record, which
+		// closes as stopped any start a web before this one recorded and
+		// never delivered (jobPodExit).
 		allowance, err := c.readmissionAllowance()
 		if err != nil {
 			return nil, err
