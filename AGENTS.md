@@ -70,11 +70,6 @@ declared in four delegate interfaces, registered in `atc/event/types.go`, and re
 both fly and Elm — but `atc/worker/pool.go` takes no delegate, so nothing can emit it. Do
 not build UI or assertions on it.
 
-**`component.Runner` with `Interval=0` never polls and wakes only on NOTIFY.** The
-Coordinator wraps `Runnable.Run()` identically for `RunPeriodically` and
-`RunImmediately`, so a component needs NOTIFY calls at the right DB mutation points
-rather than runner-level tests.
-
 **Task caches on hostPath are never reclaimed.** Any step with `caches:` auto-selects
 hostPath whenever the artifact-daemon host path is set (it is, by chart default), and
 nothing deletes those directories: the sweeper skips `/caches/`, there is no DELETE
