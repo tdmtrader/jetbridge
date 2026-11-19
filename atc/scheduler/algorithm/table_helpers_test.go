@@ -531,14 +531,7 @@ func (example Example) setupVersionsDB(ctx context.Context, setup setupDB, cache
 
 		resourceID := setup.resourceIDs.ID(row.Resource)
 
-		versionJSON, err := json.Marshal(atc.Version{"ver": row.Version})
-		Expect(err).ToNot(HaveOccurred())
-
-		_, err = setup.psql.Insert("build_resource_config_version_outputs").
-			Columns("build_id", "resource_id", "version_digest", "name").
-			Values(row.BuildID, resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON), row.Resource).
-			Exec()
-		Expect(err).ToNot(HaveOccurred())
+		setup.insertBuildOutput(row.BuildID, resourceID, row.Version, row.Resource)
 
 		if !example.DB.NeedsV6Migration {
 			outputs, ok := buildOutputs[row.BuildID]
@@ -564,14 +557,7 @@ func (example Example) setupVersionsDB(ctx context.Context, setup setupDB, cache
 
 		resourceID := setup.resourceIDs.ID(row.Resource)
 
-		versionJSON, err := json.Marshal(atc.Version{"ver": row.Version})
-		Expect(err).ToNot(HaveOccurred())
-
-		_, err = setup.psql.Insert("build_resource_config_version_inputs").
-			Columns("build_id", "resource_id", "version_digest", "name", "first_occurrence").
-			Values(row.BuildID, resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON), row.Resource, false).
-			Exec()
-		Expect(err).ToNot(HaveOccurred())
+		setup.insertBuildInput(row.BuildID, resourceID, row.Version, row.Resource)
 
 		if !example.DB.NeedsV6Migration {
 			outputs, ok := buildOutputs[row.BuildID]
@@ -592,20 +578,7 @@ func (example Example) setupVersionsDB(ctx context.Context, setup setupDB, cache
 	}
 
 	for buildID, outputs := range buildOutputs {
-		outputsJSON, err := json.Marshal(outputs)
-		Expect(err).ToNot(HaveOccurred())
-
-		var rerunOf sql.NullInt64
-		if buildToRerunOf[buildID] != 0 {
-			rerunOf.Int64 = int64(buildToRerunOf[buildID])
-		}
-
-		_, err = setup.psql.Insert("successful_build_outputs").
-			Columns("build_id", "job_id", "rerun_of", "outputs").
-			Values(buildID, buildToJobID[buildID], rerunOf, outputsJSON).
-			Suffix("ON CONFLICT DO NOTHING").
-			Exec()
-		Expect(err).ToNot(HaveOccurred())
+		setup.insertSuccessfulBuildOutputs(buildID, buildToJobID[buildID], buildToRerunOf[buildID], outputs)
 	}
 
 	for _, row := range example.DB.BuildPipes {
@@ -925,6 +898,45 @@ func (s setupDB) insertBuildPipe(row DBRow) {
 	_, err := s.psql.Insert("build_pipes").
 		Columns("from_build_id", "to_build_id").
 		Values(row.FromBuildID, row.ToBuildID).
+		Suffix("ON CONFLICT DO NOTHING").
+		Exec()
+	Expect(err).ToNot(HaveOccurred())
+}
+
+func (s setupDB) insertBuildOutput(buildID, resourceID int, version string, name string) {
+	versionJSON, err := json.Marshal(atc.Version{"ver": version})
+	Expect(err).ToNot(HaveOccurred())
+
+	_, err = s.psql.Insert("build_resource_config_version_outputs").
+		Columns("build_id", "resource_id", "version_digest", "name").
+		Values(buildID, resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON), name).
+		Exec()
+	Expect(err).ToNot(HaveOccurred())
+}
+
+func (s setupDB) insertBuildInput(buildID, resourceID int, version string, name string) {
+	versionJSON, err := json.Marshal(atc.Version{"ver": version})
+	Expect(err).ToNot(HaveOccurred())
+
+	_, err = s.psql.Insert("build_resource_config_version_inputs").
+		Columns("build_id", "resource_id", "version_digest", "name", "first_occurrence").
+		Values(buildID, resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON), name, false).
+		Exec()
+	Expect(err).ToNot(HaveOccurred())
+}
+
+func (s setupDB) insertSuccessfulBuildOutputs(buildID, jobID, rerunOfBuildID int, outputs map[string][]string) {
+	outputsJSON, err := json.Marshal(outputs)
+	Expect(err).ToNot(HaveOccurred())
+
+	var rerunOf sql.NullInt64
+	if rerunOfBuildID != 0 {
+		rerunOf.Int64 = int64(rerunOfBuildID)
+	}
+
+	_, err = s.psql.Insert("successful_build_outputs").
+		Columns("build_id", "job_id", "rerun_of", "outputs").
+		Values(buildID, jobID, rerunOf, outputsJSON).
 		Suffix("ON CONFLICT DO NOTHING").
 		Exec()
 	Expect(err).ToNot(HaveOccurred())

@@ -3,7 +3,6 @@ package algorithm_test
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"strconv"
@@ -146,15 +145,8 @@ var _ = Describe("Resolve", func() {
 				Disabled:   false,
 			})
 
-			versionJSON, err := json.Marshal(atc.Version{"ver": buildOutput.Version})
-			Expect(err).ToNot(HaveOccurred())
-
 			resourceID := setup.resourceIDs.ID(buildOutput.ResourceName)
-			_, err = setup.psql.Insert("build_resource_config_version_outputs").
-				Columns("build_id", "resource_id", "version_digest", "name").
-				Values(buildOutput.BuildID, resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON), buildOutput.ResourceName).
-				Exec()
-			Expect(err).ToNot(HaveOccurred())
+			setup.insertBuildOutput(buildOutput.BuildID, resourceID, buildOutput.Version, buildOutput.ResourceName)
 
 			outputs, ok := succeessfulBuildOutputs[buildOutput.BuildID]
 			if !ok {
@@ -183,15 +175,8 @@ var _ = Describe("Resolve", func() {
 				Disabled:   false,
 			})
 
-			versionJSON, err := json.Marshal(atc.Version{"ver": buildInput.Version})
-			Expect(err).ToNot(HaveOccurred())
-
 			resourceID := setup.resourceIDs.ID(buildInput.ResourceName)
-			_, err = setup.psql.Insert("build_resource_config_version_inputs").
-				Columns("build_id", "resource_id", "version_digest", "name", "first_occurrence").
-				Values(buildInput.BuildID, resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON), buildInput.InputName, false).
-				Exec()
-			Expect(err).ToNot(HaveOccurred())
+			setup.insertBuildInput(buildInput.BuildID, resourceID, buildInput.Version, buildInput.InputName)
 
 			outputs, ok := succeessfulBuildOutputs[buildInput.BuildID]
 			if !ok {
@@ -210,20 +195,7 @@ var _ = Describe("Resolve", func() {
 		}
 
 		for buildID, outputs := range succeessfulBuildOutputs {
-			outputsJSON, err := json.Marshal(outputs)
-			Expect(err).ToNot(HaveOccurred())
-
-			var rerunOf sql.NullInt64
-			if buildToRerunOf[buildID] != 0 {
-				rerunOf.Int64 = int64(buildToRerunOf[buildID])
-			}
-
-			_, err = setup.psql.Insert("successful_build_outputs").
-				Columns("build_id", "job_id", "rerun_of", "outputs").
-				Values(buildID, buildToJobID[buildID], rerunOf, outputsJSON).
-				Suffix("ON CONFLICT DO NOTHING").
-				Exec()
-			Expect(err).ToNot(HaveOccurred())
+			setup.insertSuccessfulBuildOutputs(buildID, buildToJobID[buildID], buildToRerunOf[buildID], outputs)
 		}
 
 		versionsDB := db.NewVersionsDB(dbConn, 2, gocache.New(10*time.Second, 10*time.Second))
