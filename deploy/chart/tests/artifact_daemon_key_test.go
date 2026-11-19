@@ -13,7 +13,6 @@ package tests
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,9 +122,7 @@ func TestAnEmptiedHangarMappingRendersTheDefaultTTL(t *testing.T) {
 	for _, s := range baseControlSets {
 		args = append(args, "--set", s)
 	}
-	cmd := exec.Command("helm", args...)
-	cmd.Dir = repoRoot(t)
-	out, err := cmd.CombinedOutput()
+	out, err := helmAtRoot(t, args...)
 	if err != nil {
 		t.Fatalf("a null artifactDaemon.hangar failed the render: %v\n%s", err, firstLines(string(out), 5))
 	}
