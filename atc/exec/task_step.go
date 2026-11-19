@@ -260,39 +260,9 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		return false, err
 	}
 
-	// Resolve sidecar image artifact references from the build repository
-	for i, sc := range containerSpec.Sidecars {
-		if sc.ImageArtifact == "" {
-			continue
-		}
-		imageRef, found := state.ArtifactRepository().ImageRefFor(build.ArtifactName(sc.ImageArtifact))
-		if !found {
-			return false, fmt.Errorf("sidecar %q: image_artifact %q not found in artifact repository", sc.Name, sc.ImageArtifact)
-		}
-		containerSpec.Sidecars[i].Image = imageRef
-		containerSpec.Sidecars[i].ImageArtifact = "" // resolved
-	}
-
-	// Pin sidecar images to digests via OCI registry resolution (best-effort).
-	// If resolution fails (e.g. auth not available for private registries),
-	// fall through to the original tag-based reference and let the kubelet
-	// pull it using pod-level imagePullSecrets.
-	if step.imageResolver != nil {
-		for i, sc := range containerSpec.Sidecars {
-			if sc.Image == "" || sc.ImageArtifact != "" {
-				continue // skip artifact refs (already resolved) or empty
-			}
-			pinned, err := imageresolver.Pin(ctx, step.imageResolver, sc.Image)
-			if err != nil {
-				logger.Info("sidecar-image-resolve-skipped", lager.Data{
-					"sidecar": sc.Name,
-					"image":   sc.Image,
-					"reason":  err.Error(),
-				})
-				continue
-			}
-			containerSpec.Sidecars[i].Image = pinned
-		}
+	err = step.resolveSidecarImages(ctx, logger, state, containerSpec.Sidecars)
+	if err != nil {
+		return false, err
 	}
 
 	// Emit sidecar plan events so the UI can render nested sidecar steps.
@@ -682,6 +652,48 @@ func (step *TaskStep) buildProcessIO(delegate TaskDelegate, sidecars []atc.Sidec
 		}
 	}
 	return pio
+}
+
+// resolveSidecarImages points each sidecar's image_artifact at the image ref
+// the build registered under that name, then pins every sidecar image to a
+// digest when an image resolver is configured. It edits sidecars in place.
+func (step *TaskStep) resolveSidecarImages(ctx context.Context, logger lager.Logger, state RunState, sidecars []atc.SidecarConfig) error {
+	// Resolve sidecar image artifact references from the build repository
+	for i, sc := range sidecars {
+		if sc.ImageArtifact == "" {
+			continue
+		}
+		imageRef, found := state.ArtifactRepository().ImageRefFor(build.ArtifactName(sc.ImageArtifact))
+		if !found {
+			return fmt.Errorf("sidecar %q: image_artifact %q not found in artifact repository", sc.Name, sc.ImageArtifact)
+		}
+		sidecars[i].Image = imageRef
+		sidecars[i].ImageArtifact = "" // resolved
+	}
+
+	// Pin sidecar images to digests via OCI registry resolution (best-effort).
+	// If resolution fails (e.g. auth not available for private registries),
+	// fall through to the original tag-based reference and let the kubelet
+	// pull it using pod-level imagePullSecrets.
+	if step.imageResolver != nil {
+		for i, sc := range sidecars {
+			if sc.Image == "" || sc.ImageArtifact != "" {
+				continue // skip artifact refs (already resolved) or empty
+			}
+			pinned, err := imageresolver.Pin(ctx, step.imageResolver, sc.Image)
+			if err != nil {
+				logger.Info("sidecar-image-resolve-skipped", lager.Data{
+					"sidecar": sc.Name,
+					"image":   sc.Image,
+					"reason":  err.Error(),
+				})
+				continue
+			}
+			sidecars[i].Image = pinned
+		}
+	}
+
+	return nil
 }
 
 // loadSidecars reads sidecar definition files from the build's artifacts
