@@ -11,14 +11,7 @@ import (
 
 var _ = Describe("PipelineRun", func() {
 	It("hydrates run ownership through pipeline scoped objects", func() {
-		var templateID, runID, childID int
-		Expect(dbConn.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) VALUES ($1, 'run-base', true, 1) RETURNING id`, defaultTeam.ID()).Scan(&templateID)).To(Succeed())
-
-		tx, err := dbConn.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash) VALUES ($1, 1, '{}', 'running', 'creator', 'hash') RETURNING id`, templateID).Scan(&runID)).To(Succeed())
-		Expect(tx.QueryRow(`INSERT INTO pipelines(team_id, name, instance_vars, pipeline_run_id, secondary_ordering) VALUES ($1, 'run-base', '{"run":1}', $2, 1) RETURNING id`, defaultTeam.ID(), runID).Scan(&childID)).To(Succeed())
-		Expect(tx.Commit()).To(Succeed())
+		templateID, runID, childID := forgeRun("run-base", "")
 
 		pipeline, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: "run-base", InstanceVars: atc.InstanceVars{"run": float64(1)}})
 		Expect(err).NotTo(HaveOccurred())
@@ -52,20 +45,14 @@ var _ = Describe("PipelineRun", func() {
 	})
 
 	It("hydrates a detached run build's base template from its durable run identity", func() {
-		var templateID, runID, childID, jobID, buildID int
+		var jobID, buildID int
 		// cache_scope is what gives a run payload a task cache scope at all;
 		// this spec is about hydrating that scope, so the template opts in.
-		Expect(dbConn.QueryRow(`INSERT INTO pipelines(team_id, name, template, cache_scope, secondary_ordering) VALUES ($1, 'detached-base', true, 'template', 1) RETURNING id`, defaultTeam.ID()).Scan(&templateID)).To(Succeed())
-
-		tx, err := dbConn.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash) VALUES ($1, 1, '{}', 'running', 'creator', 'hash') RETURNING id`, templateID).Scan(&runID)).To(Succeed())
-		Expect(tx.QueryRow(`INSERT INTO pipelines(team_id, name, instance_vars, pipeline_run_id, secondary_ordering) VALUES ($1, 'detached-base', '{"run":1}', $2, 1) RETURNING id`, defaultTeam.ID(), runID).Scan(&childID)).To(Succeed())
-		Expect(tx.Commit()).To(Succeed())
+		templateID, runID, childID := forgeRun("detached-base", "template")
 
 		Expect(dbConn.QueryRow(`INSERT INTO jobs(name, pipeline_id, config, active) VALUES ('run-job', $1, '{}', true) RETURNING id`, childID).Scan(&jobID)).To(Succeed())
 		Expect(dbConn.QueryRow(`INSERT INTO builds(name, status, team_id, job_id, pipeline_id, pipeline_run_id, run_job_name, run_job_key) VALUES ('1', 'pending', $1, $2, $3, $4, 'run-job', 'entry-key') RETURNING id`, defaultTeam.ID(), jobID, childID, runID).Scan(&buildID)).To(Succeed())
-		_, err = dbConn.Exec(`UPDATE builds SET job_id = NULL, pipeline_id = NULL WHERE id = $1`, buildID)
+		_, err := dbConn.Exec(`UPDATE builds SET job_id = NULL, pipeline_id = NULL WHERE id = $1`, buildID)
 		Expect(err).NotTo(HaveOccurred())
 
 		build, found, err := buildFactory.Build(buildID)
@@ -88,14 +75,8 @@ var _ = Describe("PipelineRun", func() {
 	})
 
 	It("hydrates a live unstamped run check build's base template without stamping run identity", func() {
-		var templateID, runID, childID, resourceID, buildID int
-		Expect(dbConn.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) VALUES ($1, 'live-base', true, 1) RETURNING id`, defaultTeam.ID()).Scan(&templateID)).To(Succeed())
-
-		tx, err := dbConn.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash) VALUES ($1, 1, '{}', 'running', 'creator', 'hash') RETURNING id`, templateID).Scan(&runID)).To(Succeed())
-		Expect(tx.QueryRow(`INSERT INTO pipelines(team_id, name, instance_vars, pipeline_run_id, secondary_ordering) VALUES ($1, 'live-base', '{"run":1}', $2, 1) RETURNING id`, defaultTeam.ID(), runID).Scan(&childID)).To(Succeed())
-		Expect(tx.Commit()).To(Succeed())
+		var resourceID, buildID int
+		templateID, _, childID := forgeRun("live-base", "")
 
 		Expect(dbConn.QueryRow(`INSERT INTO resources(name, pipeline_id, type, config, active) VALUES ('run-resource', $1, 'some-base-resource-type', '{}', true) RETURNING id`, childID).Scan(&resourceID)).To(Succeed())
 		Expect(dbConn.QueryRow(`INSERT INTO builds(name, status, team_id, resource_id, pipeline_id) VALUES ('check', 'pending', $1, $2, $3) RETURNING id`, defaultTeam.ID(), resourceID, childID).Scan(&buildID)).To(Succeed())
@@ -115,14 +96,7 @@ var _ = Describe("PipelineRun", func() {
 	})
 
 	It("excludes payloads from normal pipeline lists while retaining templates and ordinary instances", func() {
-		var templateID, runID int
-		Expect(dbConn.QueryRow(`INSERT INTO pipelines(team_id, name, template, secondary_ordering) VALUES ($1, 'listed-base', true, 1) RETURNING id`, defaultTeam.ID()).Scan(&templateID)).To(Succeed())
-		tx, err := dbConn.Begin()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(tx.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash) VALUES ($1, 1, '{}', 'running', 'creator', 'hash') RETURNING id`, templateID).Scan(&runID)).To(Succeed())
-		_, err = tx.Exec(`INSERT INTO pipelines(team_id, name, instance_vars, pipeline_run_id, secondary_ordering) VALUES ($1, 'listed-base', '{"run":1}', $2, 1)`, defaultTeam.ID(), runID)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(tx.Commit()).To(Succeed())
+		forgeRun("listed-base", "")
 		_, created, err := defaultTeam.SavePipeline(atc.PipelineRef{Name: "ordinary-listed", InstanceVars: atc.InstanceVars{"run": float64(2)}}, atc.Config{}, db.ConfigVersion(0), false)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(created).To(BeTrue())
@@ -160,11 +134,10 @@ var _ = Describe("PipelineRun", func() {
 		_, err = dbConn.Exec(`UPDATE pipelines SET template = true WHERE id = $1`, template.ID())
 		Expect(err).NotTo(HaveOccurred())
 
-		var runID int
-		Expect(dbConn.QueryRow(`INSERT INTO pipeline_runs(template_pipeline_id, number, params, status, created_by, config_hash, completed_at, result_manifest) VALUES ($1, 1, '{}', 'succeeded', 'creator', 'hash', now(), '{}') RETURNING id`, template.ID()).Scan(&runID)).To(Succeed())
+		runID := insertPipelineRun(dbConn, template.ID(), "succeeded")
 
-		var payloadID, payloadResourceID, payloadJobID int
-		Expect(dbConn.QueryRow(`INSERT INTO pipelines(team_id, name, instance_vars, pipeline_run_id, secondary_ordering) VALUES ($1, 'runtime-base', '{"run":1}', $2, 1) RETURNING id`, defaultTeam.ID(), runID).Scan(&payloadID)).To(Succeed())
+		var payloadResourceID, payloadJobID int
+		payloadID := insertRunPayload(dbConn, "runtime-base", runID)
 		Expect(dbConn.QueryRow(`INSERT INTO resources(name, pipeline_id, type, config, active) VALUES ('runtime-resource', $1, 'some-base-resource-type', '{"source":{"source":"runtime"}}', true) RETURNING id`, payloadID).Scan(&payloadResourceID)).To(Succeed())
 		_, err = dbConn.Exec(`INSERT INTO resource_types(name, pipeline_id, type, config, active) VALUES ('runtime-type', $1, 'some-base-resource-type', '{"source":{"source":"runtime"}}', true)`, payloadID)
 		Expect(err).NotTo(HaveOccurred())
