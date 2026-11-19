@@ -11,7 +11,6 @@ package tests
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -198,10 +197,8 @@ func renderWithValues(t *testing.T, values map[string]any) string {
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("helm", "template", "jb", "deploy/chart",
+	out, err := helmAtRoot(t, "template", "jb", "deploy/chart",
 		"-f", "deploy/chart/tests/testdata/required-values.yaml", "-f", path)
-	cmd.Dir = repoRoot(t)
-	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("helm template failed: %v\n%s", err, out)
 	}

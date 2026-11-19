@@ -5,7 +5,6 @@ package tests
 // refuses to start without; the chart names that before anything deploys.
 
 import (
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -33,13 +32,11 @@ func TestAnSSOOnlyDeploymentRendersWithoutLocalUsers(t *testing.T) {
 }
 
 func TestTheRenderFailsWhenTheMainTeamHasNoOwner(t *testing.T) {
-	cmd := exec.Command("helm", "template", "jb", "deploy/chart",
+	out, err := helmAtRoot(t, "template", "jb", "deploy/chart",
 		"-f", "deploy/chart/tests/testdata/required-values.yaml",
 		"--set", "web.localUsers=",
 		"--set", "web.mainTeamLocalUser=",
 	)
-	cmd.Dir = repoRoot(t)
-	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatal("a render with no main team owner succeeded")
 	}

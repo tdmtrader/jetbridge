@@ -2,7 +2,6 @@ package tests
 
 import (
 	networkingv1 "k8s.io/api/networking/v1"
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -226,9 +225,7 @@ func networkPolicies(t *testing.T, rendered string) map[string]*networkingv1.Net
 // renderError renders with raw helm arguments and returns the failure text.
 func renderError(t *testing.T, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("helm", append([]string{"template", "jb", "deploy/chart", "-f", "deploy/chart/tests/testdata/required-values.yaml"}, args...)...)
-	cmd.Dir = repoRoot(t)
-	out, err := cmd.CombinedOutput()
+	out, err := helmAtRoot(t, append([]string{"template", "jb", "deploy/chart", "-f", "deploy/chart/tests/testdata/required-values.yaml"}, args...)...)
 	if err == nil {
 		t.Fatalf("helm template %v succeeded, want a failure", args)
 	}

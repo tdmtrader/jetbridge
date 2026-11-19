@@ -46,12 +46,10 @@ func deploymentProfiles(t *testing.T, root string) map[string]func(*testing.T) s
 		}
 		profiles[strings.TrimSuffix(filepath.Base(file), ".yaml")] = func(t *testing.T) string {
 			t.Helper()
-			cmd := exec.Command("helm", "template", "jb", "deploy/chart",
+			out, err := runHelm(root, "template", "jb", "deploy/chart",
 				"-f", "deploy/chart/tests/testdata/required-values.yaml",
 				"-f", values,
 			)
-			cmd.Dir = root
-			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("helm template -f %s failed: %v\n%s", values, err, out)
 			}

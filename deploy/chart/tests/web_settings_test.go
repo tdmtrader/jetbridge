@@ -4,7 +4,6 @@ package tests
 // value of its own (ADR-0008), rendered as the variable the web reads.
 
 import (
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -110,10 +109,8 @@ func TestTheConcourseHomeSettingsRender(t *testing.T) {
 // renderRollout renders concourse.home's values as Argo does.
 func renderRollout(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command("helm", "template", "concourse", "deploy/chart", "--namespace", "cicd",
+	out, err := helmAtRoot(t, "template", "concourse", "deploy/chart", "--namespace", "cicd",
 		"-f", "deploy/chart/tests/testdata/concourse-home-rollout.yaml")
-	cmd.Dir = repoRoot(t)
-	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the concourse.home rollout values do not render: %v\n%s", err, out)
 	}

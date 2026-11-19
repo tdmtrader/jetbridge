@@ -2,7 +2,6 @@ package tests
 
 import (
 	"encoding/json"
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -99,9 +98,7 @@ func TestStandardCapabilityConfigurationFailsClearly(t *testing.T) {
 }
 
 func TestBareChartDoesNotInventMCPClients(t *testing.T) {
-	cmd := exec.Command("helm", "template", "jb", "deploy/chart")
-	cmd.Dir = repoRoot(t)
-	out, err := cmd.CombinedOutput()
+	out, err := helmAtRoot(t, "template", "jb", "deploy/chart")
 	if err == nil || !strings.Contains(strings.ReplaceAll(string(out), "/", "."), "mcp.clients") {
 		t.Fatalf("expected registration prerequisite: %v %s", err, out)
 	}
