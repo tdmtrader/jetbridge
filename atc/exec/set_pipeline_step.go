@@ -120,15 +120,15 @@ func (step *SetPipelineStep) run(ctx context.Context, state RunState, delegate S
 		return false, nil
 	}
 
-	warnings, errors := configvalidate.Validate(atcConfig)
+	warnings, validationErrors := configvalidate.Validate(atcConfig)
 	for _, warning := range warnings {
 		fmt.Fprintf(stderr, "WARNING: %s\n", warning.Message)
 	}
 
-	if len(errors) > 0 {
+	if len(validationErrors) > 0 {
 		fmt.Fprintln(stderr, "invalid pipeline:")
 
-		for _, e := range errors {
+		for _, e := range validationErrors {
 			fmt.Fprintf(stderr, "- %s", e)
 		}
 
