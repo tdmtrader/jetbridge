@@ -2729,6 +2729,52 @@ var _ = DescribeTable("Input resolving",
 		},
 	}),
 
+	Entry("with passed constraints, a rerun of an older build ranks below the newer builds when a candidate constrains the job", Example{
+		DB: DB{
+			BuildOutputs: []DBRow{
+				{Job: "simple-a", BuildID: 1, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
+
+				{Job: "simple-b", BuildID: 2, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
+				{Job: "simple-b", BuildID: 2, Resource: "resource-y", Version: "ryv1", CheckOrder: 1},
+				{Job: "simple-b", BuildID: 3, Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
+				{Job: "simple-b", BuildID: 3, Resource: "resource-y", Version: "ryv2", CheckOrder: 2},
+				{Job: "simple-b", BuildID: 4, Resource: "resource-x", Version: "rxv1", CheckOrder: 1, RerunOfBuildID: 2},
+				{Job: "simple-b", BuildID: 4, Resource: "resource-y", Version: "ryv3", CheckOrder: 3, RerunOfBuildID: 2},
+			},
+
+			Resources: []DBRow{
+				{Resource: "resource-x", Version: "rxv1", CheckOrder: 1},
+				{Resource: "resource-y", Version: "ryv1", CheckOrder: 1},
+				{Resource: "resource-y", Version: "ryv2", CheckOrder: 2},
+				{Resource: "resource-y", Version: "ryv3", CheckOrder: 3},
+			},
+		},
+
+		// resource-x is resolved through simple-a first, so simple-b's builds
+		// are read through the version-constrained query: build 4 reruns
+		// build 2 and so sorts at build 2's place, below build 3.
+		Inputs: Inputs{
+			{
+				Name:     "resource-x",
+				Resource: "resource-x",
+				Passed:   []string{"simple-a", "simple-b"},
+			},
+			{
+				Name:     "resource-y",
+				Resource: "resource-y",
+				Passed:   []string{"simple-b"},
+			},
+		},
+
+		Result: Result{
+			OK: true,
+			Values: map[string]string{
+				"resource-x": "rxv1",
+				"resource-y": "ryv2",
+			},
+		},
+	}),
+
 	Entry("with a build that has a disabled input of the same resource, still uses the other inputs to resolve", Example{
 		DB: DB{
 			BuildInputs: []DBRow{
