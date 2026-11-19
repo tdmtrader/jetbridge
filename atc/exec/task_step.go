@@ -209,7 +209,6 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	}
 
 	var taskConfigSource TaskConfigSource
-	var taskVars []vars.Variables
 
 	if step.plan.ConfigPath != "" {
 		// external task - construct a source which reads it from file, and apply base resource type defaults.
@@ -224,13 +223,9 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 				ExpectAllKeys: false,
 			}
 		}
-		taskVars = []vars.Variables{state}
 	} else {
 		// embedded task - first we take it
 		taskConfigSource = StaticConfigSource{Config: step.plan.Config}
-
-		// for interpolation - use just cred variables
-		taskVars = []vars.Variables{state}
 	}
 
 	taskConfigSource = BaseResourceTypeDefaultsApplySource{
@@ -242,10 +237,10 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 
 	taskConfigSource = &OverrideParamsConfigSource{ConfigSource: taskConfigSource, Params: step.plan.Params}
 
-	// interpolate template vars
+	// interpolate template vars: whatever the pipeline's 'vars' left, from cred variables
 	taskConfigSource = InterpolateTemplateConfigSource{
 		ConfigSource:  taskConfigSource,
-		Vars:          taskVars,
+		Vars:          []vars.Variables{state},
 		ExpectAllKeys: true,
 	}
 
