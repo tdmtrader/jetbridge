@@ -222,27 +222,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		return false, err
 	}
 
-	if config.Limits == nil {
-		config.Limits = &atc.ContainerLimits{}
-	}
-	if config.Limits.CPU == nil {
-		config.Limits.CPU = step.defaultLimits.CPU
-	}
-	if config.Limits.Memory == nil {
-		config.Limits.Memory = step.defaultLimits.Memory
-	}
-
-	if step.defaultRequests.CPU != nil || step.defaultRequests.Memory != nil {
-		if config.Requests == nil {
-			config.Requests = &atc.ContainerLimits{}
-		}
-		if config.Requests.CPU == nil {
-			config.Requests.CPU = step.defaultRequests.CPU
-		}
-		if config.Requests.Memory == nil {
-			config.Requests.Memory = step.defaultRequests.Memory
-		}
-	}
+	step.applyDefaultResources(&config)
 
 	oteltrace.SpanFromContext(ctx).AddEvent("step.initializing")
 	delegate.Initializing(logger)
@@ -467,6 +447,32 @@ func (step *TaskStep) configSource(state RunState) TaskConfigSource {
 
 	// validate
 	return ValidatingConfigSource{ConfigSource: taskConfigSource}
+}
+
+// applyDefaultResources fills in the limits, and the requests when any
+// default request is set, that the task's config leaves unset.
+func (step *TaskStep) applyDefaultResources(config *atc.TaskConfig) {
+	if config.Limits == nil {
+		config.Limits = &atc.ContainerLimits{}
+	}
+	if config.Limits.CPU == nil {
+		config.Limits.CPU = step.defaultLimits.CPU
+	}
+	if config.Limits.Memory == nil {
+		config.Limits.Memory = step.defaultLimits.Memory
+	}
+
+	if step.defaultRequests.CPU != nil || step.defaultRequests.Memory != nil {
+		if config.Requests == nil {
+			config.Requests = &atc.ContainerLimits{}
+		}
+		if config.Requests.CPU == nil {
+			config.Requests.CPU = step.defaultRequests.CPU
+		}
+		if config.Requests.Memory == nil {
+			config.Requests.Memory = step.defaultRequests.Memory
+		}
+	}
 }
 
 func (step *TaskStep) imageSpec(ctx context.Context, logger lager.Logger, state RunState, delegate TaskDelegate, config atc.TaskConfig) (runtime.ImageSpec, error) {
