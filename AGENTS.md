@@ -25,12 +25,6 @@ with the host `/bin/sh` — bash on macOS — and the only real busybox executio
 real busybox pod. The failure mode is a task that silently never runs while the suite
 stays green.
 
-**A pod `volumeMount` with no matching pod `Volume` passes the entire unit suite and
-breaks every build in a real cluster.** `Container.buildPod` gets mounts and volumes from
-separate functions with no cross-check, and `StorageBackend.BuildFetchInitContainers`
-returns only `[]corev1.Container`, so it physically cannot add the Volume its mount needs.
-When touching either, assert in the same test that every mount name resolves to a Volume.
-
 **`metric.Counter.Delta()` and `metric.Gauge.Max()` are destructive reads** despite
 accessor-shaped names — `Delta()` does `cur.Swap(0)`, `Max()` does `max.Swap(-1)`. A spec
 asserting the same counter twice sees 0 the second time. The flip side: one call at spec
@@ -95,20 +89,12 @@ runner image requires bumping its tag at *every* site in the pipeline plus a
 `set-pipeline`. A `resource_config_scope` FK flake was once chased for six weeks against
 guards CI had never actually executed.
 
-**The chart documents `cacheStore` values the binary rejects.** `deploy/chart/values.yaml`
-offers `artifact` and `pvc`; `atc/worker/jetbridge/config.go` accepts only `hostpath` and
-`emptydir` and fails at web startup. This is real drift, not a doc nit.
-
 ## Local environment
 
 **The K8s tiers are testcontainers-K3s, not KinD** — there are zero `sigs.k8s.io/kind`
 imports in the tree. They are also **not viable on macOS**: containerd-in-Docker is
 unstable under Colima at any memory size, measured identically at 8 GB and 16 GB. Run
 that tier in CI.
-
-**The ATC component intervals are hard-coded and live in the DB `components` table, not
-in CLI flags.** Dropping the three scheduler-path intervals to 2s via SQL took a
-five-test suite from 57.6s to 21.5s.
 
 **`fly clear-resource-cache` hangs forever on piped stdin** — it is the only confirming
 fly command with no `--non-interactive`. Call the API endpoint instead. Before automating
