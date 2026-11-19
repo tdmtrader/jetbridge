@@ -11,7 +11,7 @@ import (
 // The queue is core's own component, so unlike a build it has no row to be
 // verified against: what it asserts is the team and queue it runs for, and
 // the rule is the build form's, its own team and no other. Only atc/landing
-// constructs one; architecture_test.go pins that, because any package that
+// constructs one; run_contract_architecture_test.go pins that, because any package that
 // could name a team here could admit Runs as that team.
 type QueuePrincipal struct {
 	TeamName  string

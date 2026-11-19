@@ -17,7 +17,7 @@ package jetbridge
 // Why the termination is bridged rather than read in-process: the daemon's
 // Kubernetes-backed answer (outputplane.NodePods.Terminated) is "the Pod is
 // gone from the node, or every container has terminated". Linking outputplane
-// here is forbidden (it is an output role package; architecture_test.go), and a
+// here is forbidden (it is an output role package; output_plane_architecture_test.go), and a
 // daemon process cannot read this test's fake API server. So the harness runs
 // the daemon in its standalone mode, and podGoneFromNode below asks the fake API
 // server the same question NodePods.Terminated asks the real one, declaring the

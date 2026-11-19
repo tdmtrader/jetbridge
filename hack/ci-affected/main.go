@@ -37,7 +37,7 @@ import (
 var extraTargets = map[string][]string{
 	"deploy/": {"deploy/chart/tests"},
 	// Scripts and tools under hack/ are read by the root package's
-	// architecture_test.go and by nothing else.
+	// guards and by nothing else.
 	"hack/": {"."},
 }
 
