@@ -171,31 +171,9 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 			return false, fmt.Errorf("create resource cache: %w", err)
 		}
 
-		state.StoreResult(step.planID, GetResult{
-			Name:          step.plan.Name,
-			ResourceCache: resourceCache,
-		})
-
-		state.ArtifactRepository().RegisterArtifact(
-			build.ArtifactName(step.plan.Name),
-			nil,
-			false,
-		)
-
-		// Store the image reference URL so that downstream task steps
-		// can resolve the image without a physical volume.
-		if imageURL := imageURLFromGetPlan(step.plan, version); imageURL != "" {
-			state.ArtifactRepository().RegisterImageRef(
-				build.ArtifactName(step.plan.Name),
-				imageURL,
-			)
-		}
-
-		if step.plan.Resource != "" {
-			delegate.UpdateResourceVersion(logger, step.plan.Resource, versionResult)
-		}
-
-		state.AddLocalVar(step.plan.Name, versionResult.Metadata.AsMap(), false)
+		// With no artifact, the image ref registered here is how downstream
+		// task steps resolve the image without a physical volume.
+		step.recordFetchedVersion(logger, state, delegate, resourceCache, nil, false, version, versionResult)
 
 		trace.SpanFromContext(ctx).AddEvent("step.finished")
 		delegate.Finished(logger, ExitStatus(0), versionResult)
@@ -265,31 +243,7 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 
 	var succeeded bool
 	if processResult.ExitStatus == 0 {
-		state.StoreResult(step.planID, GetResult{
-			Name:          step.plan.Name,
-			ResourceCache: resourceCache,
-		})
-
-		state.ArtifactRepository().RegisterArtifact(
-			build.ArtifactName(step.plan.Name),
-			artifact,
-			fromCache,
-		)
-
-		// Store the image reference URL so that downstream task steps
-		// (including sidecars using image_artifact) can resolve the image.
-		if imageURL := imageURLFromGetPlan(step.plan, version); imageURL != "" {
-			state.ArtifactRepository().RegisterImageRef(
-				build.ArtifactName(step.plan.Name),
-				imageURL,
-			)
-		}
-
-		if step.plan.Resource != "" {
-			delegate.UpdateResourceVersion(logger, step.plan.Resource, versionResult)
-		}
-
-		state.AddLocalVar(step.plan.Name, versionResult.Metadata.AsMap(), false)
+		step.recordFetchedVersion(logger, state, delegate, resourceCache, artifact, fromCache, version, versionResult)
 
 		succeeded = true
 	}
@@ -302,6 +256,45 @@ func (step *GetStep) run(ctx context.Context, state RunState, delegate GetDelega
 	)
 
 	return succeeded, nil
+}
+
+// recordFetchedVersion records a successful get for the rest of the build:
+// its result, its artifact, the image ref downstream task steps (including
+// sidecars using image_artifact) resolve the image by, the resource's new
+// version, and the version's metadata as a local var.
+func (step *GetStep) recordFetchedVersion(
+	logger lager.Logger,
+	state RunState,
+	delegate GetDelegate,
+	resourceCache db.ResourceCache,
+	artifact runtime.Artifact,
+	fromCache bool,
+	version atc.Version,
+	versionResult resource.VersionResult,
+) {
+	state.StoreResult(step.planID, GetResult{
+		Name:          step.plan.Name,
+		ResourceCache: resourceCache,
+	})
+
+	state.ArtifactRepository().RegisterArtifact(
+		build.ArtifactName(step.plan.Name),
+		artifact,
+		fromCache,
+	)
+
+	if imageURL := imageURLFromGetPlan(step.plan, version); imageURL != "" {
+		state.ArtifactRepository().RegisterImageRef(
+			build.ArtifactName(step.plan.Name),
+			imageURL,
+		)
+	}
+
+	if step.plan.Resource != "" {
+		delegate.UpdateResourceVersion(logger, step.plan.Resource, versionResult)
+	}
+
+	state.AddLocalVar(step.plan.Name, versionResult.Metadata.AsMap(), false)
 }
 
 // typeImage is the image the resource type's container runs: a pinned
