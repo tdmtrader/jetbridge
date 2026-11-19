@@ -116,7 +116,8 @@ func TestAnExactExecutionTheGateNoLongerAdmitsIsLeftWhereItIs(t *testing.T) {
 
 	// A Job already unsuspended whose pod's launcher is still asking for its
 	// envelope: the envelope route answers it 503 until the launcher's own
-	// envelope timeout ends it without running the command.
+	// envelope timeout ends it without running the command, leaving the
+	// never-received record (launcher.Run).
 	t.Run("a resumed step Job whose pod awaits its envelope", func(t *testing.T) {
 		clientset := fake.NewSimpleClientset()
 		deletes := countDeletes(clientset)
