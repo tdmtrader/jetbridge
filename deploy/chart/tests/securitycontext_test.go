@@ -83,7 +83,7 @@ func renderChart(t *testing.T, sets ...string) string {
 	for _, s := range sets {
 		args = append(args, "--set", s)
 	}
-	out, err := exec.Command("helm", args...).CombinedOutput()
+	out, err := runHelm("", args...)
 	if err != nil {
 		t.Fatalf("helm template failed: %v\n%s", err, out)
 	}
@@ -215,7 +215,7 @@ func renderChartSetString(t *testing.T, sets ...string) string {
 	for _, s := range sets {
 		args = append(args, "--set-string", s)
 	}
-	out, err := exec.Command("helm", args...).CombinedOutput()
+	out, err := runHelm("", args...)
 	if err != nil {
 		t.Fatalf("helm template failed: %v\n%s", err, out)
 	}

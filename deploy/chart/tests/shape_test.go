@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -462,7 +461,7 @@ func checkClosedObjects(dir string) []string {
 
 // checkBareRender: a render with no values fails, and names what is missing.
 func checkBareRender(dir string) []string {
-	out, err := exec.Command("helm", "template", "jb", dir).CombinedOutput()
+	out, err := runHelm("", "template", "jb", dir)
 	if err == nil {
 		return []string{"a render with no values succeeded; it must fail naming each required value"}
 	}
@@ -544,9 +543,7 @@ func TestOptionalPortsAndDurationsAcceptTheirForms(t *testing.T) {
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			args := append([]string{"template", "jb", "deploy/chart", "-f", "deploy/chart/tests/testdata/required-values.yaml"}, tc.args...)
-			cmd := exec.Command("helm", args...)
-			cmd.Dir = repoRoot(t)
-			out, err := cmd.CombinedOutput()
+			out, err := helmAtRoot(t, args...)
 			if err != nil {
 				t.Fatalf("helm template %v: %v\n%s", tc.args, err, out)
 			}
