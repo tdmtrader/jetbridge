@@ -63,6 +63,7 @@ Jobs whose task config interpolates `((var))` need the value exported
 
 ### Key Notes
 
+- macOS here has no `timeout`, `tac`, `nproc` or `yq` (and `sed -i` is BSD's). Use the Bash tool's timeout or `perl -e 'alarm N; exec @ARGV' cmd …` (single commands only: it signals just what it execs, so wrapping `make` or `go run` orphans children), `tail -r`, `sysctl -n hw.ncpu`, and `perl -pi -e`.
 - Unit tests run in parallel (`-p` flag, 9 procs by default). Do not use `--race` — it causes parallel compilation failures (`fork/exec db.test: no such file or directory`).
 - The `atc/db/worker_cache_test.go` uses `Eventually` with 10s timeouts and a one-hour fallback refresh interval to prove notifications work. These are timing-sensitive — do not reduce timeouts.
 - K8s behavioral tests have a few flaky specs (~3 of ~300) due to GC timing. This is expected.
