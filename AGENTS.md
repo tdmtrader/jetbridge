@@ -36,12 +36,15 @@ production emits `/artifacts/steps/{key}`.
 
 ## Kubernetes runtime
 
-**Production steps always run through `execProcess`; `Process`/`newProcess` is a
-test-only fallback.** `atc/atccmd/wiring_jetbridge.go` wires `K8sExecutor` unconditionally and
-`atc/worker/factory.go` is the only non-test `SetExecutor` caller, so the fallback never
-fires — which makes `Process.Wait`'s delete-pod-on-cancel branch dead code. Read
-`execProcess` when reasoning about pod lifecycle; `process.go` declares `Process` first
-and reads as if it were the main path.
+**Under the exec step runtime every production step runs through `execProcess`;
+`Process`/`newProcess` is a test-only fallback.** `atc/atccmd/wiring_jetbridge.go` sets
+`factory.K8sExecutor` whenever the K8s runtime is configured and `atc/worker/factory.go`
+hands it to every worker it builds, so the fallback (taken only when a container has no
+executor) never fires — which makes `Process.Wait`'s delete-pod-on-cancel branch dead
+code. Under `--kubernetes-step-runtime=job` a step that is not an exact execution runs
+as a batch/v1 Job instead (`step_job.go`, `Container.jobRuntime`), with no exec at all.
+Read `execProcess` or `step_job.go` when reasoning about pod lifecycle; `process.go`
+declares `Process` first and reads as if it were the main path.
 
 **Images are resolved in-process against the OCI registry — no check pod is ever
 created.** This diverges from upstream Concourse. A failed native resolve makes no check
@@ -66,15 +69,15 @@ surfaces at build time as an unresolved-`((var))` error naming the variable, not
 ignored block.
 
 **The `waiting-for-worker` build event is fully plumbed and has zero producers.** It is
-declared in four delegate interfaces, registered in `atc/event/types.go`, and rendered by
+declared in four delegate interfaces, registered in `atc/event/parser.go`, and rendered by
 both fly and Elm — but `atc/worker/pool.go` takes no delegate, so nothing can emit it. Do
 not build UI or assertions on it.
 
 **Task caches on hostPath are never reclaimed.** Any step with `caches:` auto-selects
 hostPath whenever the artifact-daemon host path is set (it is, by chart default), and
-nothing deletes those directories: the sweeper skips `/caches/`, there is no DELETE
-route, and `atc/gc/task_cache_collector.go` only removes DB rows. Treat that node disk as
-monotonic growth.
+nothing deletes those directories: the sweeper walks only `steps/`, the web never sends
+the daemon a DELETE, and `atc/gc/task_cache_collector.go` only removes DB rows. Treat
+that node disk as monotonic growth.
 
 ## Build, chart and deploy
 
