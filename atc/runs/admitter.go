@@ -232,7 +232,7 @@ func (a *admitter) ObserveRun(ctx context.Context, runID int, principal Principa
 // the runs of the team that owns its template.
 //
 // The fence is written by AcceptRunCancellation and nothing else, which
-// architecture_test.go pins; this is one more caller of it, in the shape the
+// run_contract_architecture_test.go pins; this is one more caller of it, in the shape the
 // HTTP cancel route uses. All three of its outcomes -- accepted, already
 // requested, already terminal -- are nil here: a caller that asked for a run
 // to stop has what it asked for in each, and a step cancelling a child on its
