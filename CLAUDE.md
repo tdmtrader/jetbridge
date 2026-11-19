@@ -19,7 +19,7 @@ Unit and integration tests start their own PostgreSQL: each runner runs `initdb`
 |---------|-------------|------|---------------|
 | `make test-unit` | ~112 suites under `ginkgo -r -p` (73 Ginkgo, the rest plain `go test`): root, agent, atc, cmd, fly, go-concourse, hangar, skymarshal, tracing and more; everything but the skipped integration/brine tiers | ~20 min | PostgreSQL binaries on PATH |
 | `make test-elm` | Elm frontend (~3100 tests) | ~30 sec | `yarn install` |
-| `make test-brine-guards` | Brine guard tests (nested `atc/worker/jetbridge/brine` module, no cluster) | ~1 sec | None |
+| `make test-brine-guards` | Builds and vets the nested `atc/worker/jetbridge/brine` module, then its guard tests (no cluster) | ~20 sec | None |
 | `make test-quick` | Unit + Elm + brine guards | ~22 min | PostgreSQL binaries on PATH, yarn |
 | `make test-fly-integration` | Fly CLI against mock ATC (601 specs) | ~30 sec | None |
 | `make test-k8s-behavioral` | Full K8s behavioral (2 parallel K3s containers, `K8S_PROCS=4` for more) | ~2-3 hrs | Docker, Helm, kubectl |
