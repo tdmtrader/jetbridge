@@ -1,7 +1,6 @@
 package tests
 
 import (
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -72,9 +71,7 @@ func TestAStepPodGrantFieldCannotCarryASeparator(t *testing.T) {
 		for _, s := range sets {
 			args = append(args, "--set", s)
 		}
-		cmd := exec.Command("helm", args...)
-		cmd.Dir = repoRoot(t)
-		out, err := cmd.CombinedOutput()
+		out, err := helmAtRoot(t, args...)
 		if err == nil || !strings.Contains(string(out), "stepPodGrants") {
 			t.Errorf("a %s with a separator rendered (err %v): %s", field, err, firstLines(string(out), 3))
 		}
@@ -122,11 +119,9 @@ func TestAPrivilegedStepPodGrantRendersThePrivilegeKey(t *testing.T) {
 }
 
 func TestAStepPodGrantNeedsAServiceAccountOrPrivilege(t *testing.T) {
-	cmd := exec.Command("helm", "template", "jb", "deploy/chart", "-f", "deploy/chart/tests/testdata/required-values.yaml",
+	if out, err := helmAtRoot(t, "template", "jb", "deploy/chart", "-f", "deploy/chart/tests/testdata/required-values.yaml",
 		"--set", "kubernetes.stepPodGrants[0].name=empty",
-		"--set", "kubernetes.stepPodGrants[0].owner=main/p/j")
-	cmd.Dir = repoRoot(t)
-	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "stepPodGrants[0]") {
+		"--set", "kubernetes.stepPodGrants[0].owner=main/p/j"); err == nil || !strings.Contains(string(out), "stepPodGrants[0]") {
 		t.Errorf("a grant with neither a ServiceAccount nor privilege rendered (err %v): %s", err, firstLines(string(out), 3))
 	}
 }
