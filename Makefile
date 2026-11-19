@@ -45,12 +45,14 @@ test-k8s-behavioral:
 	GINKGO="$$(mktemp -d)/ginkgo" && go build -o "$$GINKGO" github.com/onsi/ginkgo/v2/ginkgo && \
 		exec "$$GINKGO" --procs=$${K8S_PROCS:-2} -v --timeout=3h ./topgun/k8s_behavioral/
 
-# Brine guard tests (~1 sec)
-# Requires: nothing -- no cluster, no build. Nested module (its own go.mod), so
-# root go test never reaches it; run with a cd into it.
+# Brine guard tests (~20 sec, most of it compiling)
+# Requires: nothing -- no cluster. Nested module (its own go.mod), so root
+# go build, go vet and go test never reach it; run with a cd into it. It
+# builds and vets the whole module first: the guard tests compile only
+# steps/, and nothing else would notice the adapter no longer compiling.
 test-brine-guards:
 	@echo "==> Running brine guard tests..."
-	cd atc/worker/jetbridge/brine && go test ./steps/ -run 'Guard|Import|TempDir|ActiveFeatureCorpus|Definition|NoStepLine' -count=1
+	cd atc/worker/jetbridge/brine && go build ./... && go vet ./... && go test ./steps/ -run 'Guard|Import|TempDir|ActiveFeatureCorpus|Definition|NoStepLine' -count=1
 
 .PHONY: check-docker-tools
 check-docker-tools:
