@@ -529,13 +529,11 @@ var _ = Describe("VolumeRepository", func() {
 			Context("when volume is in destroying state", func() {
 				BeforeEach(func() {
 					handles = []string{"some-handle1", "some-handle2"}
-					result, err := psql.Insert("volumes").SetMap(map[string]any{
+					result := insertVolumeRow(map[string]any{
 						"state":       "destroying",
 						"handle":      "123-456-abc-def",
 						"worker_name": defaultWorker.Name(),
-					}).RunWith(dbConn).Exec()
-
-					Expect(err).ToNot(HaveOccurred())
+					})
 					Expect(result.RowsAffected()).To(Equal(int64(1)))
 				})
 				It("should destroy", func() {
@@ -556,13 +554,11 @@ var _ = Describe("VolumeRepository", func() {
 			Context("when handles are empty list", func() {
 				BeforeEach(func() {
 					handles = []string{}
-					result, err := psql.Insert("volumes").SetMap(map[string]any{
+					result := insertVolumeRow(map[string]any{
 						"state":       "destroying",
 						"handle":      "123-456-abc-def",
 						"worker_name": defaultWorker.Name(),
-					}).RunWith(dbConn).Exec()
-
-					Expect(err).ToNot(HaveOccurred())
+					})
 					Expect(result.RowsAffected()).To(Equal(int64(1)))
 				})
 				It("should destroy", func() {
@@ -583,13 +579,11 @@ var _ = Describe("VolumeRepository", func() {
 			Context("when volume is in create/creating state", func() {
 				BeforeEach(func() {
 					handles = []string{"some-handle1", "some-handle2"}
-					result, err := psql.Insert("volumes").SetMap(map[string]any{
+					result := insertVolumeRow(map[string]any{
 						"state":       "creating",
 						"handle":      "123-456-abc-def",
 						"worker_name": defaultWorker.Name(),
-					}).RunWith(dbConn).Exec()
-
-					Expect(err).ToNot(HaveOccurred())
+					})
 					Expect(result.RowsAffected()).To(Equal(int64(1)))
 				})
 				It("should not destroy", func() {
@@ -612,24 +606,22 @@ var _ = Describe("VolumeRepository", func() {
 			BeforeEach(func() {
 				handles = []string{"some-handle1", "some-handle2"}
 
-				result, err := psql.Insert("volumes").SetMap(
+				result := insertVolumeRow(
 					map[string]any{
 						"state":       "destroying",
 						"handle":      "some-handle1",
 						"worker_name": defaultWorker.Name(),
 					},
-				).RunWith(dbConn).Exec()
-				Expect(err).ToNot(HaveOccurred())
+				)
 				Expect(result.RowsAffected()).To(Equal(int64(1)))
 
-				result, err = psql.Insert("volumes").SetMap(
+				result = insertVolumeRow(
 					map[string]any{
 						"state":       "destroying",
 						"handle":      "some-handle2",
 						"worker_name": defaultWorker.Name(),
 					},
-				).RunWith(dbConn).Exec()
-				Expect(err).ToNot(HaveOccurred())
+				)
 				Expect(result.RowsAffected()).To(Equal(int64(1)))
 			})
 
@@ -666,36 +658,32 @@ var _ = Describe("VolumeRepository", func() {
 			BeforeEach(func() {
 				today = time.Now()
 
-				_, err = psql.Insert("volumes").SetMap(map[string]any{
+				insertVolumeRow(map[string]any{
 					"handle":      "some-handle-1",
 					"state":       db.VolumeStateCreated,
 					"worker_name": defaultWorker.Name(),
-				}).RunWith(dbConn).Exec()
-				Expect(err).NotTo(HaveOccurred())
+				})
 
-				_, err = psql.Insert("volumes").SetMap(map[string]any{
+				insertVolumeRow(map[string]any{
 					"handle":        "some-handle-2",
 					"state":         db.VolumeStateCreated,
 					"worker_name":   otherWorker.Name(),
 					"missing_since": today,
-				}).RunWith(dbConn).Exec()
-				Expect(err).NotTo(HaveOccurred())
+				})
 
-				_, err = psql.Insert("volumes").SetMap(map[string]any{
+				insertVolumeRow(map[string]any{
 					"handle":        "some-handle-3",
 					"state":         db.VolumeStateFailed,
 					"worker_name":   otherWorker.Name(),
 					"missing_since": today.Add(-5 * time.Minute),
-				}).RunWith(dbConn).Exec()
-				Expect(err).NotTo(HaveOccurred())
+				})
 
-				_, err = psql.Insert("volumes").SetMap(map[string]any{
+				insertVolumeRow(map[string]any{
 					"handle":        "some-handle-4",
 					"state":         db.VolumeStateDestroying,
 					"worker_name":   defaultWorker.Name(),
 					"missing_since": today.Add(-10 * time.Minute),
-				}).RunWith(dbConn).Exec()
-				Expect(err).NotTo(HaveOccurred())
+				})
 			})
 
 			Context("when no created/failed volumes have expired", func() {
@@ -747,29 +735,25 @@ var _ = Describe("VolumeRepository", func() {
 			BeforeEach(func() {
 				today = time.Now()
 
-				_, err = psql.Insert("volumes").SetMap(map[string]any{
+				insertVolumeRow(map[string]any{
 					"handle":      "alive-handle",
 					"state":       db.VolumeStateCreated,
 					"worker_name": defaultWorker.Name(),
-				}).RunWith(dbConn).Exec()
-				Expect(err).NotTo(HaveOccurred())
+				})
 
-				var parentID int
-				err = psql.Insert("volumes").SetMap(map[string]any{
+				parentID := insertVolumeRowReturningID(map[string]any{
 					"handle":        "parent-handle",
 					"state":         db.VolumeStateCreated,
 					"worker_name":   defaultWorker.Name(),
 					"missing_since": today.Add(-10 * time.Minute),
-				}).Suffix("RETURNING id").RunWith(dbConn).QueryRow().Scan(&parentID)
-				Expect(err).NotTo(HaveOccurred())
+				})
 
-				_, err = psql.Insert("volumes").SetMap(map[string]any{
+				insertVolumeRow(map[string]any{
 					"handle":      "child-handle",
 					"state":       db.VolumeStateCreated,
 					"worker_name": defaultWorker.Name(),
 					"parent_id":   parentID,
-				}).RunWith(dbConn).Exec()
-				Expect(err).NotTo(HaveOccurred())
+				})
 
 				gracePeriod = 3 * time.Minute
 			})
@@ -807,34 +791,28 @@ var _ = Describe("VolumeRepository", func() {
 		)
 
 		BeforeEach(func() {
-			result, err := psql.Insert("volumes").SetMap(map[string]any{
+			result := insertVolumeRow(map[string]any{
 				"state":       db.VolumeStateDestroying,
 				"handle":      "some-handle1",
 				"worker_name": defaultWorker.Name(),
-			}).RunWith(dbConn).Exec()
-
-			Expect(err).ToNot(HaveOccurred())
+			})
 			Expect(result.RowsAffected()).To(Equal(int64(1)))
 
-			result, err = psql.Insert("volumes").SetMap(map[string]any{
+			result = insertVolumeRow(map[string]any{
 				"state":       db.VolumeStateDestroying,
 				"handle":      "some-handle2",
 				"worker_name": defaultWorker.Name(),
-			}).RunWith(dbConn).Exec()
-
-			Expect(err).ToNot(HaveOccurred())
+			})
 			Expect(result.RowsAffected()).To(Equal(int64(1)))
 
 			today = time.Date(2018, 9, 24, 0, 0, 0, 0, time.UTC)
 
-			result, err = psql.Insert("volumes").SetMap(map[string]any{
+			result = insertVolumeRow(map[string]any{
 				"state":         db.VolumeStateCreated,
 				"handle":        "some-handle3",
 				"worker_name":   defaultWorker.Name(),
 				"missing_since": today,
-			}).RunWith(dbConn).Exec()
-
-			Expect(err).ToNot(HaveOccurred())
+			})
 			Expect(result.RowsAffected()).To(Equal(int64(1)))
 		})
 
@@ -949,22 +927,18 @@ var _ = Describe("VolumeRepository", func() {
 		)
 
 		BeforeEach(func() {
-			result, err := psql.Insert("volumes").SetMap(map[string]any{
+			result := insertVolumeRow(map[string]any{
 				"state":       db.VolumeStateDestroying,
 				"handle":      "some-handle1",
 				"worker_name": defaultWorker.Name(),
-			}).RunWith(dbConn).Exec()
-
-			Expect(err).ToNot(HaveOccurred())
+			})
 			Expect(result.RowsAffected()).To(Equal(int64(1)))
 
-			result, err = psql.Insert("volumes").SetMap(map[string]any{
+			result = insertVolumeRow(map[string]any{
 				"state":       db.VolumeStateCreated,
 				"handle":      "some-handle2",
 				"worker_name": defaultWorker.Name(),
-			}).RunWith(dbConn).Exec()
-
-			Expect(err).ToNot(HaveOccurred())
+			})
 			Expect(result.RowsAffected()).To(Equal(int64(1)))
 		})
 
@@ -1027,3 +1001,27 @@ var _ = Describe("VolumeRepository", func() {
 		})
 	})
 })
+
+// insertVolumeRow is the one place the volume repository specs write a volumes
+// row by hand, for states and parents the specs need without going through a
+// worker.
+func insertVolumeRow(values map[string]any) sql.Result {
+	GinkgoHelper()
+	result, err := volumeRowInsert(values).RunWith(dbConn).Exec()
+	Expect(err).ToNot(HaveOccurred())
+	return result
+}
+
+// insertVolumeRowReturningID is insertVolumeRow for a spec that needs the new
+// row's id, such as a parent volume.
+func insertVolumeRowReturningID(values map[string]any) int {
+	GinkgoHelper()
+	var id int
+	err := volumeRowInsert(values).Suffix("RETURNING id").RunWith(dbConn).QueryRow().Scan(&id)
+	Expect(err).ToNot(HaveOccurred())
+	return id
+}
+
+func volumeRowInsert(values map[string]any) sq.InsertBuilder {
+	return psql.Insert("volumes").SetMap(values)
+}
