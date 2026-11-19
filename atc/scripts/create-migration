@@ -9,3 +9,10 @@ migration_cli="$(go env GOPATH)/bin/migrate"
 go build -tags 'postgres' -o "$migration_cli" ./db/migration/cli
 
 "$migration_cli" generate -d ./db/migration/migrations/ -n"$1" -t "${2-sql}"
+
+# migrate-preflight.sh cannot ask the binary for the head migration, so it
+# carries it as a literal; the "targets the head migration" spec in
+# db/migration/baseline_test.go fails until it matches. Write it here.
+head=$(ls ./db/migration/migrations/ | sed -n 's/^\([0-9][0-9]*\)_.*/\1/p' | sort -n | tail -1)
+perl -pi -e "s/^JETBRIDGE_VERSION=\\d+\$/JETBRIDGE_VERSION=$head/" ../docs/migration/migrate-preflight.sh
+echo "docs/migration/migrate-preflight.sh: JETBRIDGE_VERSION=$head"
