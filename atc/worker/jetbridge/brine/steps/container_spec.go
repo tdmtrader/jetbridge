@@ -75,7 +75,7 @@ func ContainerSpecDefinitions() []brine.StepDefinition {
 				}
 
 				process, err := container.Run(in.Ctx,
-					runtime.ProcessSpec{Path: "/bin/sh", Env: in.ProcessEnv},
+					runtime.ProcessSpec{Path: "/bin/sh", Env: in.ProcessEnv, User: in.ProcessUser},
 					runtime.ProcessIO{},
 				)
 				if err != nil {
