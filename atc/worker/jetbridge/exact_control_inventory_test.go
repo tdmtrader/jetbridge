@@ -52,18 +52,18 @@ var commandOrPodSites = map[string]string{
 		"retry path through it at all",
 	"container.go:createPod->":      "createPod's own declaration",
 	"container.go:createPausePod->": "createPausePod's own declaration",
-	"process.go:Wait->ExecInPod": "the one place a step's command is issued. Controlled " +
+	"exec_process.go:Wait->ExecInPod": "the one place a step's command is issued. Controlled " +
 		"executions never retry after recording start; reconnect reads the original outcome. " +
 		"A start the Run could not retain is issued as the stopped delivery, which never names " +
 		"the producer. Ordinary executions may retry a failed dial before the transport carried a byte",
-	"process.go:Wait->recreatePausePod": "the exec retry's replacement of a pause Pod that died " +
+	"exec_process.go:Wait->recreatePausePod": "the exec retry's replacement of a pause Pod that died " +
 		"before the command started",
-	"process.go:waitForRunning->recreatePausePod": "the same replacement from the readiness " +
+	"exec_readiness.go:waitForRunning->recreatePausePod": "the same replacement from the readiness " +
 		"watch, sharing recreatePausePod's one-shot guard",
-	"process.go:recreatePausePod->": "the one-shot replacement itself. Spent once per step " +
+	"exec_readiness.go:recreatePausePod->": "the one-shot replacement itself. Spent once per step " +
 		"whatever the outcome, refused outright once the transport went live, and refused for a " +
 		"capture-held source",
-	"process.go:recreatePausePod->createPausePod": "recreatePausePod's own creation, after its " +
+	"exec_readiness.go:recreatePausePod->createPausePod": "recreatePausePod's own creation, after its " +
 		"guards",
 	"process_relocation.go:relocateUnboundPod->createPausePod": "a relocation's replacement of a " +
 		"pause Pod that was never bound to a node, deleted under a precondition on the unbound " +
