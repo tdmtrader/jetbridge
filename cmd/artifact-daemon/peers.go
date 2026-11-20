@@ -498,6 +498,20 @@ func extractTarToRoot(r io.Reader, root *os.Root) error {
 	return refuseEscapingSymlinks(root)
 }
 
+// sanitizeMode strips setuid/setgid bits and enforces a minimum permission
+// floor so the daemon can always read artifacts it extracted. Directories get
+// at least 0755 (traversable + listable), files get at least 0644 (readable).
+func sanitizeMode(typeflag byte, mode os.FileMode) os.FileMode {
+	mode &^= os.ModeSetuid | os.ModeSetgid
+	switch typeflag {
+	case tar.TypeDir:
+		mode |= 0755
+	case tar.TypeReg:
+		mode |= 0644
+	}
+	return mode
+}
+
 // refuseEscapingSymlinks fails the extraction if any symlink now on disk
 // resolves outside root, following intermediate symlinks the way a consumer's
 // kernel will. It reads the ACTUAL layout (fs.WalkDir does not descend into
