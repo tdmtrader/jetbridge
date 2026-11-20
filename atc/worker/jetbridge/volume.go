@@ -224,7 +224,7 @@ func (v *Volume) StreamIn(ctx context.Context, path string, enc compression.Comp
 // DEPRECATED FOR ARTIFACT READS. This method execs into the pod the volume is
 // bound to (v.podName), which breaks as soon as the reaper deletes that pod
 // after the step's exit-status annotation is written (see
-// atc/worker/jetbridge/reaper.go and atc/worker/jetbridge/process.go:932-940).
+// atc/worker/jetbridge/reaper.go and atc/worker/jetbridge/exec_process.go, annotateExitStatus).
 //
 // Step producers must wrap their output volumes via Worker.ArtifactFromVolume
 // before registering in build.Repository, so downstream StreamOut calls

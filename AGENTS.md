@@ -43,8 +43,8 @@ hands it to every worker it builds, so the fallback (taken only when a container
 executor) never fires — which makes `Process.Wait`'s delete-pod-on-cancel branch dead
 code. Under `--kubernetes-step-runtime=job` a step that is not an exact execution runs
 as a batch/v1 Job instead (`step_job.go`, `Container.jobRuntime`), with no exec at all.
-Read `execProcess` or `step_job.go` when reasoning about pod lifecycle; `process.go`
-declares `Process` first and reads as if it were the main path.
+Read `execProcess` (`exec_process.go`, `exec_readiness.go`) or `step_job.go` when
+reasoning about pod lifecycle; `Process` lives apart in `direct_process.go`.
 
 **Images are resolved in-process against the OCI registry — no check pod is ever
 created.** This diverges from upstream Concourse. A failed native resolve makes no check

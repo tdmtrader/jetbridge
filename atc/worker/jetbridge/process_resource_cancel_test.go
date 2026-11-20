@@ -15,8 +15,9 @@ package jetbridge
 // that runs on a developer machine. This is that test, and it is
 // platform-independent because it stops at the exec boundary: it discriminates
 // the fix via the cancel exec alone. The last two cases cover the ctx.Err()
-// substitution next to it in process.go: a cancellation replaces what a
-// torn-down transport said, never an exit the command actually reached.
+// substitution next to it in execProcess.Wait (exec_process.go): a
+// cancellation replaces what a torn-down transport said, never an exit the
+// command actually reached.
 
 import (
 	"bytes"

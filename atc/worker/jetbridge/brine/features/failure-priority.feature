@@ -3,12 +3,11 @@ Feature: Failure detection and deletion
 
   Literal Failed/ImagePullBackOff, Pending/CrashLoopBackOff without restart
   history, and Succeeded-without-container-status inputs go through the
-  classification both runtime paths open-code in process.go: isPodOOMKilled,
-  then isPodFailedFast, then interruptionErrorForPod, then podExitCode,
-  written out once in Process.pollUntilDone and again in
-  execProcess.waitForRunning. There is no shared policy table — podStateFor,
-  which had factored those four into one, went with the rest of pod_status.go
-  in commit 388692eb54. These are not manufactured API events.
+  classification podStateFor in pod_status.go holds: isPodOOMKilled, then
+  isPodFailedFast, then interruptionErrorForPod, then podExitCode.
+  Process.pollUntilDone (direct_process.go), execProcess.waitForRunning
+  (exec_readiness.go) and jobProcess.followPod (job_process.go) all call it.
+  These are not manufactured API events.
 
   Live startup, OOM-priority and compatibility-process cases cover actual
   kubelet failures and execution; they retain their own premises. The

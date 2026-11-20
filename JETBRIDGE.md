@@ -618,7 +618,7 @@ kubectl -n concourse exec deploy/concourse-jetbridge-web -- df -h /concourse/cac
 | `atc/worker/jetbridge/daemon_client.go` | HTTP client for the artifact daemon |
 | `atc/worker/jetbridge/errors.go` | Transient error classification and retry |
 | `atc/worker/jetbridge/reaper.go` | Pod and volume garbage collection |
-| `atc/worker/jetbridge/process.go` | Process abstraction over K8s exec |
+| `atc/worker/jetbridge/exec_process.go`, `atc/worker/jetbridge/exec_readiness.go` | Process abstraction over K8s exec |
 | `atc/worker/jetbridge/volume.go` | Volume interface implementation |
 | `atc/worker/jetbridge/watch.go` | Pod status watching |
 | `atc/worker/jetbridge/worker.go` | Worker interface implementation |

@@ -4,14 +4,14 @@ Feature: Runtime cleanup and diagnostic API wiring
   Real API deletion drives both production exec startup and direct compatibility.
   No pod or node status is supplied. Node cordoning is desired configuration;
   node absence is verified independently before the runtime reads it.
-  Literal pressure, restart history and failure priority go through the checks
-  process.go open-codes twice — isPodOOMKilled ahead of isPodFailedFast ahead
-  of interruptionErrorForPod, with writeNodeDiagnostics for node pressure — in
-  Process.pollUntilDone and execProcess.waitForRunning. The pod-status and
-  node-diagnostic policy tables that once held them (podStateFor,
-  writeNodeStatus) were reverted in commit 388692eb54, so nothing pure covers
-  them today. Real image-pull, OOM, eviction, completion and timeout behavior
-  remains in the live features.
+  Literal pressure, restart history and failure priority go through
+  podStateFor in pod_status.go -- isPodOOMKilled ahead of isPodFailedFast
+  ahead of interruptionErrorForPod, then podExitCode -- which
+  Process.pollUntilDone (direct_process.go), execProcess.waitForRunning
+  (exec_readiness.go) and jobProcess.followPod (job_process.go) all call.
+  reportPodFailure, beside it, adds writeNodeDiagnostics for node pressure
+  when the failure is an interruption. Real image-pull, OOM, eviction,
+  completion and timeout behavior remains in the live features.
 
   Scenario: Legacy compatibility: A cancelled build takes its pod with it
     Given a Kubernetes worker "process-worker" with a database behind it

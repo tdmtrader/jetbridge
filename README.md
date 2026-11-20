@@ -133,7 +133,7 @@ Key file: [`reaper.go`](atc/worker/jetbridge/reaper.go)
 | `config.go` | K8s flags, cache/artifact config, image mappings |
 | `errors.go` | Transient error classification and retry |
 | `reaper.go` | Pod and volume garbage collection |
-| `process.go` | Process abstraction over K8s exec |
+| `exec_process.go`, `exec_readiness.go` | Process abstraction over K8s exec |
 | `volume.go` | Volume interface implementation |
 | `watch.go` | Pod status watching |
 | `worker.go` | Worker interface implementation |
