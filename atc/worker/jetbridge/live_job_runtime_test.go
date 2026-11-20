@@ -176,7 +176,16 @@ func TestLiveJobRuntimeResourceCommand(t *testing.T) {
 		t.Errorf("answer = %q, want %q", stdout.String(), want)
 	}
 	if !strings.Contains(stderr.String(), "checking") {
-		t.Errorf("stderr = %q: the command's log did not reach the step's stderr", stderr.String())
+		// Whether the kubelet holds the line says whose loss it is: the
+		// follow's (the log has it) or the pod's (it never reached the log).
+		var kept []byte
+		pods, logErr := clientset.CoreV1().Pods(cfg.Namespace).List(ctx, metav1.ListOptions{LabelSelector: "batch.kubernetes.io/job-name=" + jobName})
+		if logErr == nil && len(pods.Items) == 1 {
+			kept, logErr = clientset.CoreV1().Pods(cfg.Namespace).
+				GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{Container: "main"}).DoRaw(ctx)
+		}
+		t.Errorf("stderr = %q: the command's log did not reach the step's stderr (the kubelet's log of main: %q, %v)",
+			stderr.String(), kept, logErr)
 	}
 
 	job, err := clientset.BatchV1().Jobs(cfg.Namespace).Get(ctx, jobName, metav1.GetOptions{})
