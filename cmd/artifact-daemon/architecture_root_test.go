@@ -315,7 +315,7 @@ func TestArchitecture_RegistryReadsGoThroughTheHandle(t *testing.T) {
 	// listed here. Their ambient surface is the sibling guard's business, and
 	// slice 8's.
 	known := map[string]string{
-		"server.go:Server.resolveOne": "step 2 stats a steps/ path BEFORE any registry value exists, to decide whether to register it at all — a read that precedes the lookup cannot travel through a value it does not yet have",
+		"resolve.go:Server.resolveOne": "step 2 stats a steps/ path BEFORE any registry value exists, to decide whether to register it at all — a read that precedes the lookup cannot travel through a value it does not yet have",
 	}
 
 	ambientRead := map[string]bool{"Stat": true, "Lstat": true, "Open": true, "ReadFile": true, "ReadDir": true}

@@ -73,7 +73,7 @@ var destructiveInventory = map[string]struct {
 }{
 	// ---- the artifact daemon's destructive paths ----
 
-	"artifact-daemon/server.go | Server.handleDeleteArtifact | s.root.RemoveAll(osName())": {1, admission{
+	"artifact-daemon/artifacts.go | Server.handleDeleteArtifact | s.root.RemoveAll(osName())": {1, admission{
 		guard:           "refuseIfCaptureHeld",
 		ledgerGuard:     "refuseControlDirectory",
 		ledgerGuardedIn: "validateRequestKey",
@@ -84,7 +84,7 @@ var destructiveInventory = map[string]struct {
 			"atc/worker/jetbridge/storage_daemonset.go and is Phase 4's; until it lands the " +
 			"init container destroys this path's bytes without passing through here at all.",
 	}},
-	"artifact-daemon/server.go | Server.handleStreamIn | stepsRoot.RemoveAll(key)": {1, admission{
+	"artifact-daemon/artifacts.go | Server.handleStreamIn | stepsRoot.RemoveAll(key)": {1, admission{
 		guard:           "refuseIfCaptureHeld",
 		ledgerGuard:     "refuseControlDirectory",
 		ledgerGuardedIn: "validateRequestKey",
@@ -92,17 +92,17 @@ var destructiveInventory = map[string]struct {
 			"is relative to steps/ and could not name the real control directory; the refusal " +
 			"at the door costs a name nothing may create anyway.",
 	}},
-	"artifact-daemon/server.go | Server.handleStreamIn | stepsRoot.RemoveAll(tmpName)": {1, admission{
+	"artifact-daemon/artifacts.go | Server.handleStreamIn | stepsRoot.RemoveAll(tmpName)": {1, admission{
 		why: "removes the temp directory this call just created, on every error path.",
 	}},
-	"artifact-daemon/server.go | Server.copyArtifact | parent.RemoveAll(base)": {1, admission{
+	"artifact-daemon/resolve.go | Server.copyArtifact | parent.RemoveAll(base)": {1, admission{
 		guard: "refuseIfCaptureHeldPath", guardedIn: "Server.resolveOne",
 		ledgerGuard:     "refuseControlDirectory",
 		ledgerGuardedIn: "validateResolveDest",
 		why: "copyArtifact clears the resolve DESTINATION. The destination is caller-supplied " +
 			"and is checked once in resolveOne, which covers all three resolve branches.",
 	}},
-	"artifact-daemon/server.go | Server.copyArtifact | parent.RemoveAll(tmp)": {3, admission{
+	"artifact-daemon/resolve.go | Server.copyArtifact | parent.RemoveAll(tmp)": {3, admission{
 		why: "removes the temp copy this call just created, on each error path.",
 	}},
 	"artifact-daemon/peers.go | PeerResolver.FetchInto | parent.RemoveAll(base)": {1, admission{
@@ -151,10 +151,10 @@ var destructiveInventory = map[string]struct {
 		why: "evicts an entry whose stored location no longer exists on disk. The bytes are " +
 			"already gone; the remap/reuse rule lives in Registry.RegisterAlias.",
 	}},
-	"artifact-daemon/server.go | Server.handleHeadResourceCache | s.registry.Remove(key)": {1, admission{
+	"artifact-daemon/resource_cache.go | Server.handleHeadResourceCache | s.registry.Remove(key)": {1, admission{
 		why: "evicts an entry whose stored location no longer exists on disk.",
 	}},
-	"artifact-daemon/server.go | Server.handleGetResourceCache | s.registry.Remove(key)": {1, admission{
+	"artifact-daemon/resource_cache.go | Server.handleGetResourceCache | s.registry.Remove(key)": {1, admission{
 		why: "evicts an entry whose stored location no longer exists on disk.",
 	}},
 
