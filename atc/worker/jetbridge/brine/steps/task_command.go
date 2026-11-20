@@ -258,7 +258,7 @@ func runTask(in TaskCluster, handle, script string, container runtime.Container)
 	// has a Stdout and a sidecar with no writer, and the sidecar's lines are
 	// its own stream, never the build log this scenario reads.
 	sidecarLogs := in.sidecarLogWriters()
-	// Stdin must be nil for the step to be supervised (process.go supervised()).
+	// Stdin must be nil for the step to be supervised (exec_process.go supervised()).
 	processDir := ""
 	if in.application != nil {
 		if in.application.postgres {

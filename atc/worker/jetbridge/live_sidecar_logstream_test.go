@@ -24,7 +24,7 @@ import (
 //	 the wait to 5 seconds. If exceeded, proceed without waiting (sidecar
 //	 streams do not block process completion)."
 //
-// The exec-mode bounded wait (execProcess.Wait, process.go) only engages when
+// The exec-mode bounded wait (execProcess.Wait, exec_process.go) only engages when
 // ProcessIO.SidecarWriters has a dedicated writer for the sidecar. The sidecar
 // here runs effectively forever (sleep 86400), so its log stream never EOFs and
 // the per-sidecar streaming goroutine blocks in io.Copy. Without the 5s bound,

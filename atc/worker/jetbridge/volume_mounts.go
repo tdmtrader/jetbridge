@@ -45,8 +45,9 @@ func buildVolumeMounts(workerName, namespace string, executor PodExecutor, handl
 		// Skip output volumes when an input already covers the same path.
 		// The input volume is the one actually mounted in the K8s pod
 		// (buildVolumeMounts skips the duplicate output), so both
-		// registerOutputs (task_step.go) and recordOutputLocations
-		// (process.go) must agree on using the same volume handle.
+		// registerOutputs (task_step.go) and
+		// execProcess.uploadOutputsToArtifactStore (exec_process.go) must
+		// agree on using the same volume handle.
 		if inputMountPaths[filepath.Clean(path)] {
 			continue
 		}

@@ -38,7 +38,7 @@ import (
 // already does, and only the runner -- plain sh, which waits for it and writes
 // its exit -- stays in the exec session with SIGHUP ignored. Nothing else
 // signals an ordinary task's command: an abort or timeout deletes the whole
-// pod (process.go), which reaches every session in it.
+// pod (exec_process.go), which reaches every session in it.
 //
 // setsid is started as a non-job-controlled background child so it cannot
 // already be a process group leader and fork away from the status the runner

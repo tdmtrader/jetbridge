@@ -43,7 +43,7 @@ import (
 // release channel rather than cancelling — engineBuild.Run returns on that
 // arm and the plan's goroutine simply dies with the process, so the step's
 // context is never marked done. Cancelling here would model an abort, which
-// legitimately tears the pause pod down (process.go), and the test would be
+// legitimately tears the pause pod down (exec_process.go), and the test would be
 // asserting the opposite of the runtime's actual contract. So web 1's exec
 // transport is wrapped (severingExecutor): it closes the stream on its own
 // context and then does nothing more, as a dead web does nothing more.

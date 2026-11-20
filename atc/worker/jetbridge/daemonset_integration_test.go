@@ -1611,9 +1611,9 @@ func TestDaemonSetMode_ConcurrentBuildsShareCache(t *testing.T) {
 // when a task declares both an input and output at the same path (e.g.
 // inputs: [{name: repo}], outputs: [{name: repo}]), only the input volume
 // is created by buildVolumeMountsForSpec (the output volume is skipped).
-// This ensures that registerOutputs (task_step.go) and recordOutputLocations
-// (process.go) both use the same volume handle, so downstream steps can
-// resolve the artifact correctly.
+// This ensures that registerOutputs (task_step.go) and
+// execProcess.uploadOutputsToArtifactStore (exec_process.go) both use the
+// same volume handle, so downstream steps can resolve the artifact correctly.
 func TestDaemonSetMode_OverlappingInputOutputRecordsInputVolume(t *testing.T) {
 	locator := NewArtifactLocator()
 
