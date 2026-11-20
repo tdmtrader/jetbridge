@@ -44,8 +44,9 @@ func productionFiles(t *testing.T) map[string]*ast.File {
 	return out
 }
 
-// AC4 — the duplicate extractor is gone and must not come back. server.go
-// consumes archives only through the shared extractor.
+// AC4 — the duplicate extractor is gone and must not come back. The one
+// tar.NewReader in production code is the shared extractor's, in peers.go;
+// every other file consumes archives through it.
 func TestArchitecture_ServerHasNoTarReader(t *testing.T) {
 	files := productionFiles(t)
 
@@ -66,13 +67,11 @@ func TestArchitecture_ServerHasNoTarReader(t *testing.T) {
 	if len(readers) == 0 {
 		t.Fatal("found no tar.NewReader anywhere — the token moved and this guard is inert")
 	}
-	for _, name := range readers {
-		if name == "server.go" {
-			t.Errorf("server.go builds a tar.NewReader again; archives are consumed through "+
-				"extractTarToRoot. Found in: %v", readers)
-		}
+	if len(readers) != 1 || readers[0] != "peers.go" {
+		t.Errorf("tar.NewReader is built outside peers.go; archives are consumed through "+
+			"extractTarToRoot. Found in: %v", readers)
 	}
-	t.Logf("tar.NewReader present in %v; server.go is not among them", readers)
+	t.Logf("tar.NewReader present in %v and nowhere else", readers)
 }
 
 // AC7 — a symlink is never created without the target being validated first.
