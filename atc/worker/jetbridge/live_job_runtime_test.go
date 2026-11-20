@@ -674,12 +674,19 @@ func TestLiveJobRuntimeExactTaskUndeliveredStart(t *testing.T) {
 		done <- waited{result, err}
 	}()
 
-	// The node holds the start; the Run does not.
+	// The node holds the start; the Run does not. Run returns once the Job
+	// is made: its pod is the Job controller's to create, after that.
 	deadline := time.Now().Add(3 * time.Minute)
 	for {
-		classified, _ := f.classifyOnPodNode(t, ctx, jobName)
-		if classified.Classification == executioncontrol.ClassificationExecuting {
-			break
+		pods, err := f.clientset.CoreV1().Pods(f.namespace).List(ctx, metav1.ListOptions{LabelSelector: "batch.kubernetes.io/job-name=" + jobName})
+		if err != nil || len(pods.Items) > 1 {
+			t.Fatalf("the Job owns %d pods (%v), want at most 1", len(pods.Items), err)
+		}
+		if len(pods.Items) == 1 {
+			classified, _ := f.classifyOnPodNode(t, ctx, jobName)
+			if classified.Classification == executioncontrol.ClassificationExecuting {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the node never recorded the start (stderr: %s)", stderr.String())
