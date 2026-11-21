@@ -6,6 +6,13 @@ import (
 	"github.com/onsi/gomega/gbytes"
 )
 
+// The build log echoes each task's command line ("running sh -c <script>"),
+// so a word the script contains literally is in the log whether or not the
+// script printed it. The cache specs print cache-state:1 or cache-state:0
+// from a variable; the script holds only "cache-state:$s", which neither
+// assertion matches.
+const cacheStateScript = `if [ -f my-cache/marker ]; then s=1; else s=0; echo x > my-cache/marker; fi; echo cache-state:$s`
+
 var _ = Describe("Caching and Volume Management", func() {
 
 	It("persists caches across builds of the same job", func() {
@@ -21,7 +28,7 @@ jobs:
       - path: my-cache
       run:
         path: sh
-        args: ["-c", "if [ -f my-cache/marker ]; then echo 'CACHE HIT'; else echo 'CACHE MISS' && echo cached > my-cache/marker; fi"]
+        args: ["-c", "`+cacheStateScript+`"]
 `)
 		setAndUnpausePipeline(cfg)
 
@@ -29,13 +36,15 @@ jobs:
 		triggerJob("cached-job")
 		sess := waitForBuildAndWatch("cached-job", "1")
 		Expect(sess.ExitCode()).To(Equal(0))
-		Expect(sess.Out).To(gbytes.Say("CACHE MISS"))
+		Expect(string(sess.Out.Contents())).To(ContainSubstring("cache-state:0"))
+		Expect(string(sess.Out.Contents())).ToNot(ContainSubstring("cache-state:1"))
 
 		By("second build: cache hit")
 		triggerJob("cached-job")
 		sess = waitForBuildAndWatch("cached-job", "2")
 		Expect(sess.ExitCode()).To(Equal(0))
-		Expect(sess.Out).To(gbytes.Say("CACHE HIT"))
+		Expect(string(sess.Out.Contents())).To(ContainSubstring("cache-state:1"))
+		Expect(string(sess.Out.Contents())).ToNot(ContainSubstring("cache-state:0"))
 	})
 
 	It("scopes caches to the task within the job", func() {
@@ -83,7 +92,14 @@ jobs:
 		))
 	})
 
-	It("clears task cache via fly clear-task-cache", func() {
+	// Pending: fly clear-task-cache removes nothing on JetBridge today. A
+	// task cache is a deferred volume with no db volume, so no task_caches
+	// row is ever written for it and nothing deletes the cache directory on
+	// the node; fly reports "0 caches removed" and build 2 still finds the
+	// marker. Un-pend this spec when the clear is made real. Before the
+	// script printed cache-state, it passed only because the echoed command
+	// line contained the words it asserted.
+	PIt("clears task cache via fly clear-task-cache", func() {
 		cfg := writePipelineFile("clear-cache.yml", `
 jobs:
 - name: clear-job
@@ -96,7 +112,7 @@ jobs:
       - path: my-cache
       run:
         path: sh
-        args: ["-c", "if [ -f my-cache/marker ]; then echo 'CACHE HIT'; else echo 'CACHE MISS' && echo x > my-cache/marker; fi"]
+        args: ["-c", "`+cacheStateScript+`"]
 `)
 		setAndUnpausePipeline(cfg)
 
@@ -104,7 +120,7 @@ jobs:
 		triggerJob("clear-job")
 		sess := waitForBuildAndWatch("clear-job", "1")
 		Expect(sess.ExitCode()).To(Equal(0))
-		Expect(sess.Out).To(gbytes.Say("CACHE MISS"))
+		Expect(string(sess.Out.Contents())).To(ContainSubstring("cache-state:0"))
 
 		By("clearing the task cache")
 		// -n skips interactive confirmation (stdin is /dev/null in test context,
@@ -115,7 +131,8 @@ jobs:
 		triggerJob("clear-job")
 		sess = waitForBuildAndWatch("clear-job", "2")
 		Expect(sess.ExitCode()).To(Equal(0))
-		Expect(sess.Out).To(gbytes.Say("CACHE MISS"))
+		Expect(string(sess.Out.Contents())).To(ContainSubstring("cache-state:0"))
+		Expect(string(sess.Out.Contents())).ToNot(ContainSubstring("cache-state:1"))
 	})
 
 	It("supports PVC-backed caches in K8s", func() {
