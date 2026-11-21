@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -46,6 +47,13 @@ type Reaper struct {
 	// stepJobsForbiddenNoted is set once this process has said that its Role
 	// cannot collect step Jobs (see stepJobsForbidden).
 	stepJobsForbiddenNoted atomic.Bool
+	// stepEnvSecretsForbiddenNoted is set once this process has said that its
+	// Role cannot delete step params Secrets (see stepEnvSecretsForbidden).
+	stepEnvSecretsForbiddenNoted atomic.Bool
+	// stepEnvSecretsCollected is the departing handles whose params Secret
+	// the last pass took (collectStepEnvSecrets).
+	stepEnvSecretsMu        sync.Mutex
+	stepEnvSecretsCollected map[string]bool
 }
 
 // SetBuildLookup sets the source of truth for which builds are still running.
@@ -159,6 +167,9 @@ func (r *Reaper) Run(ctx context.Context) error {
 		return fmt.Errorf("updating containers missing since: %w", err)
 	}
 
+	// Before the database lets go of a task container, its params Secret.
+	r.collectStepEnvSecrets(ctx, logger, workerName, handleToPod)
+
 	// Trigger DB-side container destruction for containers whose runtime
 	// resource (pod) no longer exists.
 	err = r.destroyer.DestroyContainers(workerName, handles)
@@ -237,6 +248,70 @@ func (r *Reaper) stepJobsForbidden(logger lager.Logger, err error, jobCall bool)
 	if r.stepJobsForbiddenNoted.CompareAndSwap(false, true) {
 		logger.Info("step-jobs-not-collected", lager.Data{
 			"reason": "the Role lacks batch/jobs list and delete; step Jobs left by the job step runtime will not be collected",
+			"error":  err.Error(),
+		})
+	}
+	return true
+}
+
+// stepEnvSecretOrphanGrace is how long a task container must have been
+// missing from the worker before its params Secret is taken: far longer than
+// the moment between a Secret's creation and its pod's, which is the only time
+// a container that will have a pod is without one after its Secret exists.
+const stepEnvSecretOrphanGrace = time.Minute
+
+// collectStepEnvSecrets deletes, by name, the params Secret of every task
+// container that is leaving the database: destroying, or missing for longer
+// than stepEnvSecretOrphanGrace. A Secret is normally deleted with the pod or
+// step Job that owns it; this is for one a web left with no owner, by dying
+// between making it and making its pod or pointing it at the pod. Such a
+// container may have no pod at all, and then the database drops it without
+// it ever reaching the destroying pass below (RemoveDestroyingContainers,
+// RemoveMissingContainers), so it is collected here, first.
+//
+// No list: each handle names its Secret. A pod seen without the annotation
+// reads none and costs no call, and a handle is called on once while it stays
+// departing, not on every pass.
+func (r *Reaper) collectStepEnvSecrets(ctx context.Context, logger lager.Logger, workerName string, handleToPod map[string]metav1.ObjectMeta) {
+	departing, err := r.containerRepository.FindDepartingContainers(workerName, db.ContainerTypeTask, stepEnvSecretOrphanGrace)
+	if err != nil {
+		logger.Error("failed-to-find-departing-task-containers", err)
+		return
+	}
+	r.stepEnvSecretsMu.Lock()
+	defer r.stepEnvSecretsMu.Unlock()
+	collected := make(map[string]bool, len(departing))
+	for _, handle := range departing {
+		if r.stepEnvSecretsCollected[handle] {
+			collected[handle] = true
+			continue
+		}
+		if meta, seen := handleToPod[handle]; seen && meta.Annotations[stepEnvSecretAnnotation] == "" {
+			collected[handle] = true
+			continue
+		}
+		if err := deleteStepEnvSecret(ctx, r.clientset, r.cfg.Namespace, handle); err != nil {
+			if !r.stepEnvSecretsForbidden(logger, err) {
+				logger.Error("failed-to-delete-step-env-secret", err, lager.Data{"handle": handle, "secret": stepEnvSecretName(handle)})
+			}
+			continue
+		}
+		collected[handle] = true
+	}
+	r.stepEnvSecretsCollected = collected
+}
+
+// stepEnvSecretsForbidden reports whether err is the API server refusing this
+// web the delete of a step's params Secret, and says so once per process. A
+// Role without it (a chart older than this web) let this web make no such
+// Secret either, so there is nothing of its own to collect.
+func (r *Reaper) stepEnvSecretsForbidden(logger lager.Logger, err error) bool {
+	if !apierrors.IsForbidden(err) {
+		return false
+	}
+	if r.stepEnvSecretsForbiddenNoted.CompareAndSwap(false, true) {
+		logger.Info("step-env-secrets-not-collected", lager.Data{
+			"reason": "the Role lacks secrets delete; a task step's params Secret left without an owner will not be collected",
 			"error":  err.Error(),
 		})
 	}

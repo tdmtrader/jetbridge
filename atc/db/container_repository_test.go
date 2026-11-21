@@ -492,6 +492,34 @@ var _ = Describe("ContainerRepository", func() {
 		})
 	})
 
+	Describe("FindDepartingContainers", func() {
+		BeforeEach(func() {
+			now := time.Now()
+			for handle, row := range map[string]map[string]any{
+				"task-destroying":     {"state": atc.ContainerStateDestroying, "meta_type": "task"},
+				"task-long-missing":   {"state": atc.ContainerStateCreated, "meta_type": "task", "missing_since": now.Add(-10 * time.Minute)},
+				"task-just-missing":   {"state": atc.ContainerStateCreated, "meta_type": "task", "missing_since": now.Add(-10 * time.Second)},
+				"task-present":        {"state": atc.ContainerStateCreated, "meta_type": "task"},
+				"check-destroying":    {"state": atc.ContainerStateDestroying, "meta_type": "check"},
+				"check-long-missing":  {"state": atc.ContainerStateCreated, "meta_type": "check", "missing_since": now.Add(-10 * time.Minute)},
+				"other-worker-task":   {"state": atc.ContainerStateDestroying, "meta_type": "task", "worker_name": otherWorker.Name()},
+				"task-failed-missing": {"state": atc.ContainerStateFailed, "meta_type": "task", "missing_since": now.Add(-10 * time.Minute)},
+			} {
+				row["handle"] = handle
+				if _, ok := row["worker_name"]; !ok {
+					row["worker_name"] = defaultWorker.Name()
+				}
+				Expect(insertContainerRow(row).RowsAffected()).To(Equal(int64(1)))
+			}
+		})
+
+		It("returns the worker's containers of the type that are destroying or missing for longer than the grace", func() {
+			handles, err := containerRepository.FindDepartingContainers(defaultWorker.Name(), db.ContainerTypeTask, time.Minute)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(handles).To(ConsistOf("task-destroying", "task-long-missing", "task-failed-missing"))
+		})
+	})
+
 	Describe("RemoveMissingContainers", func() {
 		var (
 			today        time.Time
