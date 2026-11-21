@@ -669,8 +669,8 @@ func (p *jobProcess) abandonExactJob(ctx context.Context, err error) error {
 type exactLogs struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
-	streamed bool
-	drainLog func()
+	follow   logFollow
+	drainLog func(logFollow)
 }
 
 func (logs *exactLogs) abandon() {
@@ -678,8 +678,8 @@ func (logs *exactLogs) abandon() {
 	<-logs.done
 }
 
-// drain lets a follow end on its own once main terminated, and reads the
-// whole log once if it never opened.
+// drain lets a follow end on its own once main terminated, then appends what
+// it did not deliver from one plain read of the finished log, as Wait does.
 func (logs *exactLogs) drain() {
 	select {
 	case <-logs.done:
@@ -687,9 +687,7 @@ func (logs *exactLogs) drain() {
 		logs.cancel()
 		<-logs.done
 	}
-	if !logs.streamed {
-		logs.drainLog()
-	}
+	logs.drainLog(logs.follow)
 	logs.cancel()
 }
 
@@ -700,17 +698,15 @@ func (p *jobProcess) followExactLogs(ctx context.Context, podName string) (*exac
 	}
 	logCtx, cancel := context.WithCancel(ctx)
 	logs := &exactLogs{cancel: cancel, done: make(chan struct{})}
-	logs.drainLog = func() {
+	logs.drainLog = func(follow logFollow) {
 		if p.processIO.Stdout == nil {
 			return
 		}
-		if err := readContainerLogs(ctx, p.clientset, p.config.Namespace, podName, mainContainerName, p.processIO.Stdout); err != nil && p.processIO.Stderr != nil {
-			fmt.Fprintf(p.processIO.Stderr, "\nwarning: the command's log could not be read: %v\n", err)
-		}
+		completeContainerLog(ctx, p.clientset, p.config.Namespace, podName, mainContainerName, p.processIO.Stdout, p.processIO.Stderr, follow)
 	}
 	go func() {
 		defer close(logs.done)
-		logs.streamed = p.streamLogs(logCtx, podName, p.processIO.Stdout, sidecarWriters)
+		logs.follow = p.streamLogs(logCtx, podName, p.processIO.Stdout, sidecarWriters)
 	}()
 	return logs, nil
 }
