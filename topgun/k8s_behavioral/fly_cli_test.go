@@ -45,11 +45,6 @@ run:
 `)
 			sess := fly.Start("execute", "-c", taskFile, "-i", "my-input="+inputDir)
 			<-sess.Exited
-			combinedOutput := string(sess.Out.Contents()) + string(sess.Err.Contents())
-			if strings.Contains(combinedOutput, "volume repository not configured") ||
-				strings.Contains(combinedOutput, "ArtifactStoreVolume") {
-				Skip("fly execute -i requires volume repository or StreamIn support (not available in JetBridge K8s runtime)")
-			}
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say("INPUT_DATA"))
 		})
@@ -110,14 +105,6 @@ run:
 
 			sess := fly.Start("execute", "-c", taskFile, "-j", inPipeline("assoc-job"))
 			<-sess.Exited
-			if sess.ExitCode() != 0 {
-				combinedOutput := string(sess.Out.Contents()) + string(sess.Err.Contents())
-				if strings.Contains(combinedOutput, "volume repository not configured") ||
-					strings.Contains(combinedOutput, "errored") ||
-					strings.Contains(combinedOutput, "build inputs") {
-					Skip("fly execute -j requires build inputs/artifact support (not available in JetBridge K8s runtime)")
-				}
-			}
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say("ASSOCIATED"))
 		})
@@ -224,18 +211,9 @@ jobs:
 			if _, err := exec.LookPath("curl"); err != nil {
 				Skip("fly curl requires curl binary in PATH")
 			}
-			// fly curl shells out to the system curl binary which may not be
-			// in fly's PATH, or may fail with self-signed TLS certs.
+			// fly curl shells out to the system curl binary.
 			sess := fly.Start("curl", "/api/v1/info")
 			<-sess.Exited
-			if sess.ExitCode() != 0 {
-				output := string(sess.Out.Contents()) + string(sess.Err.Contents())
-				if strings.Contains(output, "executable file not found") ||
-					strings.Contains(output, "SSL certificate") ||
-					strings.Contains(output, "curl") {
-					Skip("fly curl not functional in this environment")
-				}
-			}
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say("version"))
 		})

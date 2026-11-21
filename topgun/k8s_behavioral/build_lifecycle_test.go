@@ -190,9 +190,7 @@ jobs:
 		By("rerunning the build")
 		rerunSess := fly.Start("rerun-build", "-j", inPipeline("rerun-job"), "-b", "1")
 		<-rerunSess.Exited
-		if rerunSess.ExitCode() != 0 {
-			Skip("fly rerun-build not available in this version")
-		}
+		Expect(rerunSess.ExitCode()).To(Equal(0), string(rerunSess.Err.Contents()))
 
 		By("waiting for the rerun build to appear")
 		Eventually(func() int {
