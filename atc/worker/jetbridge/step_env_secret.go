@@ -199,6 +199,11 @@ func (c *Container) createStepPod(ctx context.Context, pod *corev1.Pod) (*corev1
 	}
 	created, err := c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
+		// A pod of this name is there after all, and it may be reading this
+		// Secret: it is left alone, and so is the Secret.
+		if apierrors.IsAlreadyExists(err) {
+			return nil, err
+		}
 		if delErr := deleteStepEnvSecret(ctx, c.clientset, c.config.Namespace, c.handle); delErr != nil {
 			lagerctx.FromContext(ctx).Info("step-env-secret-left-for-the-reaper", lager.Data{
 				"secret": stepEnvSecretName(c.handle), "error": delErr.Error(),

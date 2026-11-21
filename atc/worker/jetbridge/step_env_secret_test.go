@@ -464,3 +464,46 @@ func TestAStepParamNameNeedNotBeAValidSecretKey(t *testing.T) {
 		}
 	}
 }
+
+// A pod read that fails for any reason but NotFound says nothing about
+// whether the pod is there: the step fails, retryable, and the Secret a live
+// pod may still be about to read is not touched.
+func TestAFailedPodReadOnReattachLeavesTheSecretAlone(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	container := execRuntimeContainer(t, clientset, db.ContainerTypeTask, taskSpecWithParams())
+	pod, err := container.buildPod(runtime.ProcessSpec{Path: "/bin/deploy"}, []string{"sh", "-c", pauseCommand}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod.Status.Phase = corev1.PodPending
+	if err := clientset.Tracker().Add(pod); err != nil {
+		t.Fatal(err)
+	}
+	clientset.PrependReactor("get", "pods", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+		return true, nil, apierrors.NewServiceUnavailable("the API server is restarting")
+	})
+	_, err = container.Run(context.Background(), runtime.ProcessSpec{Path: "/bin/deploy"}, runtime.ProcessIO{Stderr: &bytes.Buffer{}})
+	var transient *TransientError
+	if !errors.As(err, &transient) {
+		t.Fatalf("Run = %v, want a transient error", err)
+	}
+	if got := secretActions(clientset); len(got) != 0 {
+		t.Errorf("a failed pod read touched the Secret: %v", got)
+	}
+}
+
+// A pod create that finds the pod already there leaves the Secret it may be
+// reading.
+func TestAPodCreateThatFindsThePodThereKeepsTheSecret(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	clientset.PrependReactor("create", "pods", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+		return true, nil, apierrors.NewAlreadyExists(schema.GroupResource{Resource: "pods"}, "p")
+	})
+	container := execRuntimeContainer(t, clientset, db.ContainerTypeTask, taskSpecWithParams())
+	if _, err := container.createPausePod(context.Background(), runtime.ProcessSpec{Path: "/bin/deploy"}); !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("createPausePod = %v, want AlreadyExists", err)
+	}
+	if _, err := clientset.CoreV1().Secrets("test-ns").Get(context.Background(), "step-env-step-handle", metav1.GetOptions{}); err != nil {
+		t.Errorf("the Secret was deleted under a pod that exists: %v", err)
+	}
+}
