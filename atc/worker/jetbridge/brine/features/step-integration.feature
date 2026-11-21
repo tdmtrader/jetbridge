@@ -2,7 +2,7 @@
 Feature: A step from end to end — its rows, its pod, its artifacts
 
   These scenarios use real PostgreSQL and a real Kubernetes API to inspect
-  persisted rows, accepted pod specs, names, labels and secret references.
+  persisted rows, accepted pod specs, names, labels and params Secrets.
   Pod-construction actions call Container.Run but do not wait for execution;
   they use the production SPDY executor and allocate no host workspace.
 
@@ -273,21 +273,24 @@ Feature: A step from end to end — its rows, its pod, its artifacts
 
   # CF-05. A credential that reaches the pod as a literal is a credential in
   # `kubectl get pod -o yaml`, in every audit log, and in the etcd snapshot.
+  # Every task param goes in the step's own Secret, step-env-<handle>, under
+  # a key of the runtime's; the step's own env stays literal.
   @CF-05
-  Scenario: A secret env var reaches the pod as a reference, never as a literal
+  Scenario: A task param reaches the pod as a reference to the step's own Secret, never as a literal
     Given a Kubernetes worker "k8s-worker-1" with a database behind it
     And the worker tracks integration containers and artifacts
     And a task step with handle "secret-env-handle" and no pipeline or job
-    And the step sets the environment "DB_PASS=s3cret"
     And the step sets the environment "STATIC=hello"
-    And the step reads "DB_PASS" from the secret "db-password" key "value" in namespace "concourse-main"
+    And the step has the param "DB_PASS" set to "s3cret"
     When the step's container is created
     And the step's pause pod is created
-    Then the pod reads "DB_PASS" from the secret "db-password" key "value"
+    Then the pod reads "DB_PASS" from the secret "step-env-secret-env-handle" key "p0"
     And the pod sets "STATIC" to the literal "hello"
+    And the pod's spec holds no "s3cret"
+    And the step's params Secret holds "s3cret" under "p0", owned by its pod
 
   @CF-05
-  Scenario: With no secrets declared every env var stays a literal
+  Scenario: A step with no params creates no Secret
     Given a Kubernetes worker "k8s-worker-1" with a database behind it
     And the worker tracks integration containers and artifacts
     And a task step with handle "no-secret-env-handle" and no pipeline or job
@@ -295,6 +298,7 @@ Feature: A step from end to end — its rows, its pod, its artifacts
     When the step's container is created
     And the step's pause pod is created
     Then the pod sets "FOO" to the literal "bar"
+    And the step has no params Secret
 
   # ==========================================================================
   # Resolving a node to an address

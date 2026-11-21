@@ -44,8 +44,7 @@ func (sl VariableLookupFromSecrets) Get(ref vars.Reference) (any, bool, error) {
 // lookup path (Vault's kv2 helper calls path.Join; credhub and dummy build
 // their prefixes with it) would collapse the segment. Slashes alone are
 // legitimate: ((vault:foo/bar)) names a secret beneath the prefix. This is
-// the one gate: every var lookup reaches a backend through Get or
-// GetSecretRef.
+// the one gate: every var lookup reaches a backend through Get.
 func (sl VariableLookupFromSecrets) checkLookup(ref vars.Reference) error {
 	if seg, found := vars.DotSegment(ref.Path); found {
 		return fmt.Errorf("invalid var '%s': path segment '%s' is not allowed", ref, seg)
@@ -87,40 +86,6 @@ func (sl VariableLookupFromSecrets) get(path string) (any, bool, error) {
 		return result, true, nil
 	}
 	return nil, false, nil
-}
-
-// GetSecretRef returns the K8s Secret coordinates for a resolved variable,
-// if the underlying Secrets backend implements SecretRefProvider. It replicates
-// the same lookup-path resolution as Get to find the matching secret path.
-func (sl VariableLookupFromSecrets) GetSecretRef(ref vars.Reference) (*vars.SecretRef, bool) {
-	provider, ok := sl.Secrets.(SecretRefProvider)
-	if !ok {
-		return nil, false
-	}
-	if sl.checkLookup(ref) != nil {
-		return nil, false
-	}
-
-	if len(sl.LookupPaths) == 0 {
-		_, _, found, err := GetWithParams(sl.Secrets, ref.Path, sl.Context)
-		if err != nil || !found {
-			return nil, false
-		}
-		return provider.GetSecretRef(ref.Path, ref.Fields)
-	}
-
-	for _, rule := range sl.LookupPaths {
-		secretPath, err := rule.VariableToSecretPath(ref.Path)
-		if err != nil {
-			continue
-		}
-		_, _, found, err := GetWithParams(sl.Secrets, secretPath, sl.Context)
-		if err != nil || !found {
-			continue
-		}
-		return provider.GetSecretRef(secretPath, ref.Fields)
-	}
-	return nil, false
 }
 
 func (sl VariableLookupFromSecrets) List() ([]vars.Reference, error) {

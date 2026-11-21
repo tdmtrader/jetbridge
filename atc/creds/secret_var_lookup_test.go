@@ -84,12 +84,6 @@ func (s *recordingSecrets) Get(path string) (any, *time.Time, bool, error) {
 	return val, nil, ok, nil
 }
 
-// GetSecretRef makes recordingSecrets a SecretRefProvider, so the native
-// reference path runs its lookup too.
-func (s *recordingSecrets) GetSecretRef(path string, _ []string) (*vars.SecretRef, bool) {
-	return &vars.SecretRef{Name: path}, true
-}
-
 func (s *recordingSecrets) NewSecretLookupPaths(team, pipeline string, _ bool) []creds.SecretLookupPath {
 	return s.lookupPaths(team, pipeline)
 }
@@ -200,14 +194,4 @@ var _ = Describe("secret paths stay under the team's prefix", func() {
 		Entry("joined prefix rules, pipeline", joinedPrefixRules, "team", "..", "pipeline"),
 		Entry("joined prefix rules, team", joinedPrefixRules, "..", "", "team"),
 	)
-
-	It("leaves a refused name without a native secret reference", func() {
-		secrets.found["/concourse/team/secret"] = "stolen"
-		secrets.found["/concourse/secret"] = "stolen"
-
-		ref, found := creds.NewVariables(secrets, params, false).(creds.VariableLookupFromSecrets).GetSecretRef(vars.Reference{Path: "../secret"})
-		Expect(found).To(BeFalse())
-		Expect(ref).To(BeNil())
-		Expect(secrets.asked).To(BeEmpty())
-	})
 })
