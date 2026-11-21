@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -57,6 +58,28 @@ func assertNoLiveParamValue(t *testing.T, what string, object any) {
 	}
 	if strings.Contains(string(encoded), "s3cr") {
 		t.Errorf("%s holds the param value: %s", what, encoded)
+	}
+}
+
+// assertLiveParamRefs requires each param to be in the main container's env,
+// read from the step's Secret: a param missing from the spec altogether is a
+// failure, not a pass.
+func assertLiveParamRefs(t *testing.T, env []corev1.EnvVar, handle string) {
+	t.Helper()
+	for _, name := range []string{"TOKEN", "EMPTY"} {
+		found := false
+		for _, entry := range env {
+			if entry.Name != name {
+				continue
+			}
+			found = true
+			if entry.Value != "" || entry.ValueFrom == nil || entry.ValueFrom.SecretKeyRef == nil || entry.ValueFrom.SecretKeyRef.Name != "step-env-"+handle {
+				t.Errorf("%s = %+v, want a secretKeyRef to step-env-%s", name, entry, handle)
+			}
+		}
+		if !found {
+			t.Errorf("the main container has no %s entry: %+v", name, env)
+		}
 	}
 }
 
@@ -123,11 +146,7 @@ func TestLiveATaskParamIsReadFromTheStepsOwnSecret(t *testing.T) {
 		t.Fatalf("the step pod: %v", err)
 	}
 	assertNoLiveParamValue(t, "the stored Pod", pod)
-	for _, env := range pod.Spec.Containers[0].Env {
-		if env.Name == "TOKEN" && (env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil || env.ValueFrom.SecretKeyRef.Name != "step-env-"+handle) {
-			t.Errorf("TOKEN = %+v, want a secretKeyRef to step-env-%s", env, handle)
-		}
-	}
+	assertLiveParamRefs(t, pod.Spec.Containers[0].Env, handle)
 	assertLiveStepSecret(t, clientset, cfg.Namespace, handle, "Pod", pod.UID)
 
 	if err := clientset.CoreV1().Pods(cfg.Namespace).Delete(ctx, handle, metav1.DeleteOptions{}); err != nil {
@@ -171,6 +190,7 @@ func TestLiveJobRuntimeTaskParamIsReadFromTheStepsOwnSecret(t *testing.T) {
 		t.Fatalf("the step Job: %v", err)
 	}
 	assertNoLiveParamValue(t, "the stored Job", job)
+	assertLiveParamRefs(t, job.Spec.Template.Spec.Containers[0].Env, handle)
 	pods, err := clientset.CoreV1().Pods(cfg.Namespace).List(ctx, metav1.ListOptions{LabelSelector: "batch.kubernetes.io/job-name=" + jobName})
 	if err != nil || len(pods.Items) != 1 {
 		t.Fatalf("the Job owns %d pods (%v), want 1", len(pods.Items), err)
