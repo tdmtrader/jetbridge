@@ -46,7 +46,11 @@ main container reads every param from it.
   made owned by the suspended step Job, before the unsuspend. The garbage
   collector takes it with its owner; the reaper deletes, by name, the Secret
   of every task container leaving the database, for one a web left unowned by
-  dying in between, and never one whose handle has a step Job.
+  dying in between, and never one whose handle has a step Job. A pass with
+  any candidate costs one Jobs LIST and one DELETE per candidate: each
+  departing task container (destroying, or missing for over a minute) whose
+  pod last said it reads a Secret or was not seen in the last 30 minutes --
+  after a web restart, every one -- on every pass while it departs.
 - **Never a literal.** A Secret that cannot be made fails the step, naming
   the missing Role rule, or the param values' total over the 1 MiB of values
   a Secret holds (`corev1.MaxSecretSize`; keys are not counted), and both
@@ -78,6 +82,21 @@ namespace, which holds web's own Secrets (its keys, its database and
 credential-manager settings) and the chart's others. A separate
 `kubernetes.namespace` is the narrower option: it confines the grant to the
 namespace of step pods and their params Secrets.
+
+## Accepted race
+
+A web clears a container's `missing_since` before it makes its Secret, so a
+container that gets a Secret is departing again only after a later pass fails
+to list its pod. A reaper pass that read the departing set just before that,
+or listed the step Jobs just before a Job was made, can still issue its DELETE
+just after the Secret is made: the window is that pass's time between its
+read and its DELETE, normally well under a second, against the moment between
+a Secret and its pod or the unsuspend of its Job. The step then fails with
+`CreateContainerConfigError` once the 30-second kubelet grace is spent, and a
+retry of the step makes it afresh; it does not repeat, since the pass after
+sees the container present. Closing it needs a read of the Secret or pod
+before the DELETE (or a DELETE precondition, which needs the UID), and web
+holds no `get` on Secrets by design.
 
 ## Limits
 
