@@ -1404,8 +1404,8 @@ var _ = Describe("TaskStep", func() {
 
 			It("creates the specs with the fetched image", func() {
 				Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
-					ImageArtifact: fetchedImageArtifact,
-					ResourceType:  "image",
+					ImageArtifact:    fetchedImageArtifact,
+					FetchedImageType: "docker",
 				}))
 			})
 

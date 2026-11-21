@@ -362,8 +362,15 @@ func (delegate *buildStepDelegate) FetchImage(
 		ImageURL:      imageURL,
 		Privileged:    privileged,
 	}
+	// No registry reference: the get produced a rootfs artifact, which a
+	// JetBridge step pod cannot run. The custom type's name goes on as
+	// ResourceType only so an operator's base resource type mapping can name
+	// an image for it, and FetchedImageType says which type produced the
+	// artifact, so that the runtime refuses the step when nothing maps the
+	// name, instead of pulling the name as an image.
 	if imageURL == "" {
 		spec.ResourceType = getPlan.Get.Name
+		spec.FetchedImageType = getPlan.Get.Type
 	}
 
 	return spec, result.ResourceCache, nil

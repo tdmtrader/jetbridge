@@ -24,3 +24,15 @@ func TestABaseResourceTypeResolvesToItsPinnedImage(t *testing.T) {
 		t.Fatalf("Image(time) = %q", got)
 	}
 }
+
+// A type name no mapping holds is pulled by that name: a deployment can
+// pre-load an image as <type>:latest, or resolve it through a registry
+// mirror or a short-name search, so an undeclared type such as
+// github-release runs wherever a node can resolve it. The runtime refuses
+// only a name that stands for an image fetched through another resource
+// type (runtime.ImageSpec.FetchedImageType), never a name as such.
+func TestAnUnmappedResourceTypeNameIsPulledByName(t *testing.T) {
+	if got := imageresolver.Image("", "github-release", nil); got != "github-release" {
+		t.Fatalf("Image(github-release) = %q", got)
+	}
+}
