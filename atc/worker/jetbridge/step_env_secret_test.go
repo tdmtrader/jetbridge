@@ -526,6 +526,24 @@ func TestTheKubeletMayLagOnTheStepsOwnSecretForABoundedTime(t *testing.T) {
 		{"a pod with no params Secret", pod(time.Second, false, "CreateContainerConfigError", "failed to sync secret cache"), false},
 		{"another terminal reason", pod(time.Second, true, "ErrImagePull", `secret "step-env-h" not found`), false},
 		{"nothing waiting", pod(time.Second, true, "ContainerCreating", ""), false},
+		// The unsynced-cache message names no Secret: it is the step's own
+		// only when the pod reads no other.
+		{"the secret cache not synced, the pod mounting another Secret", func() *corev1.Pod {
+			p := pod(time.Second, true, "CreateContainerConfigError", "failed to sync secret cache: timed out waiting for the condition")
+			p.Spec.Volumes = []corev1.Volume{{Name: "tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "tls"}}}}
+			return p
+		}(), false},
+		{"the secret cache not synced, main reading another Secret", func() *corev1.Pod {
+			p := pod(time.Second, true, "CreateContainerConfigError", "failed to sync secret cache: timed out waiting for the condition")
+			p.Spec.Containers = []corev1.Container{{Name: mainContainerName, Env: []corev1.EnvVar{{Name: "X", ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "other"}, Key: "k"}}}}}}
+			return p
+		}(), false},
+		{"a sidecar waiting on a Secret", func() *corev1.Pod {
+			p := pod(time.Second, true, "CreateContainerConfigError", `secret "step-env-h" not found`)
+			p.Status.ContainerStatuses[0].Name = "db"
+			return p
+		}(), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			left, pending := stepEnvSecretSyncPending(tc.pod, now)
@@ -597,6 +615,40 @@ func TestAStepJobPodWaitsOutTheKubeletsLagOnItsSecret(t *testing.T) {
 				t.Fatalf("Wait = %+v, %v; want CreateContainerConfigError once the grace is spent", result, err)
 			}
 		})
+	}
+}
+
+// A pause pod whose own Secret never syncs fails when the grace runs out, with
+// no further event, and long before the startup timeout.
+func TestAPausePodWhoseSecretNeverSyncsFailsAtTheGrace(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	podUIDs(clientset)
+	container := execRuntimeContainer(t, clientset, db.ContainerTypeTask, runtime.ContainerSpec{Params: taskParams()})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/deploy"}, runtime.ProcessIO{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	pods := clientset.CoreV1().Pods("test-ns")
+	p, err := pods.Get(context.Background(), container.podName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.CreationTimestamp = metav1.NewTime(time.Now().Add(-(stepEnvSecretSyncGrace - 2*time.Second)))
+	p.Status = corev1.PodStatus{Phase: corev1.PodPending, ContainerStatuses: []corev1.ContainerStatus{{Name: mainContainerName, State: corev1.ContainerState{
+		Waiting: &corev1.ContainerStateWaiting{Reason: "CreateContainerConfigError", Message: `secret "step-env-step-handle" not found`},
+	}}}}
+	if _, err := pods.Update(context.Background(), p, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err = process.Wait(ctx)
+	if err == nil || !strings.Contains(err.Error(), "CreateContainerConfigError") {
+		t.Fatalf("Wait = %v, want CreateContainerConfigError once the grace is spent", err)
+	}
+	if waited := time.Since(started); waited > 10*time.Second {
+		t.Errorf("Wait failed after %s, not when the grace ran out", waited)
 	}
 }
 

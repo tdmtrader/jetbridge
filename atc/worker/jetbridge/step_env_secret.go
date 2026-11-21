@@ -151,6 +151,15 @@ func (c *Container) replaceStepEnvSecret(ctx context.Context, owner *metav1.Owne
 	if err != nil {
 		return err
 	}
+	// A container its worker had lost (a pod gone while no web watched it)
+	// is departing, and the reaper takes the Secret of a departing task
+	// container. It stops departing before its Secret is made, so no pass
+	// that reads the departing set from here on takes the new one.
+	if c.dbContainer != nil {
+		if err := c.dbContainer.MarkPresent(); err != nil {
+			return fmt.Errorf("marking container %q present before making its params Secret: %w", c.handle, err)
+		}
+	}
 	if err := deleteStepEnvSecret(ctx, c.clientset, c.config.Namespace, c.handle); err != nil {
 		return stepEnvSecretError("replace", secret, err)
 	}
@@ -285,12 +294,21 @@ func (c *Container) refuseLiteralParams(pod *corev1.Pod) error {
 // which it retries.
 const stepEnvSecretSyncGrace = 30 * time.Second
 
-// stepEnvSecretSyncPending reports whether every container of pod that is
-// waiting in a terminal state is waiting only for the kubelet to read the
-// step's own params Secret, while the pod is younger than
-// stepEnvSecretSyncGrace, and how much of the grace is left. Anything else --
-// another reason, another Secret, a pod with no params Secret, an older pod --
-// is not pending and is judged as before.
+// stepEnvSecretSyncPending reports whether the main container is the only
+// container of pod waiting in a terminal state, and is waiting only for the
+// kubelet to read the step's own params Secret, while the pod is younger than
+// stepEnvSecretSyncGrace; and how much of the grace is left. Anything else --
+// another reason, another container, another Secret, a pod with no params
+// Secret, an older pod -- is not pending and is judged as before.
+//
+// The kubelet names the Secret when it cannot find it (secret "<name>" not
+// found), but not when its secret cache has not synced ("failed to sync
+// secret cache: ..."; the cache-based manager's error carries the resource
+// and the cause, not the object -- from the kubelet's text as remembered:
+// k8s.io/kubernetes is not in this module's cache to check). That message is
+// tolerated only when the pod reads no Secret but its own: no Secret volume,
+// no projected Secret, no envFrom Secret, and every secretKeyRef of main
+// names the step's Secret.
 func stepEnvSecretSyncPending(pod *corev1.Pod, now time.Time) (time.Duration, bool) {
 	name := pod.Annotations[stepEnvSecretAnnotation]
 	if name == "" || pod.CreationTimestamp.IsZero() {
@@ -305,14 +323,48 @@ func stepEnvSecretSyncPending(pod *corev1.Pod, now time.Time) (time.Duration, bo
 		if cs.State.Waiting == nil || !terminalWaitingReasons[cs.State.Waiting.Reason] {
 			continue
 		}
+		if cs.Name != mainContainerName || cs.State.Waiting.Reason != "CreateContainerConfigError" {
+			return 0, false
+		}
 		message := cs.State.Waiting.Message
-		if cs.State.Waiting.Reason != "CreateContainerConfigError" ||
-			!(strings.Contains(message, `"`+name+`"`) || strings.Contains(message, "failed to sync secret cache")) {
+		names := strings.Contains(message, `"`+name+`"`)
+		unsynced := strings.Contains(message, "failed to sync secret cache") && readsOnlySecret(pod, name)
+		if !names && !unsynced {
 			return 0, false
 		}
 		pending = true
 	}
 	return left, pending
+}
+
+// readsOnlySecret reports whether the only Secret pod reads is name.
+func readsOnlySecret(pod *corev1.Pod, name string) bool {
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Secret != nil {
+			return false
+		}
+		if volume.Projected != nil {
+			for _, source := range volume.Projected.Sources {
+				if source.Secret != nil {
+					return false
+				}
+			}
+		}
+	}
+	containers := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
+	for _, container := range containers {
+		for _, from := range container.EnvFrom {
+			if from.SecretRef != nil {
+				return false
+			}
+		}
+		for _, env := range container.Env {
+			if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil && env.ValueFrom.SecretKeyRef.Name != name {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // deleteStepEnvSecret deletes a handle's params Secret, if there is one.

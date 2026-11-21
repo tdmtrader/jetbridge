@@ -130,6 +130,9 @@ type CreatedContainer interface {
 	Destroying() (DestroyingContainer, error)
 	LastHijack() time.Time
 	UpdateLastHijack() error
+	// MarkPresent clears the container's missing_since: its worker is about
+	// to give it a runtime object again, so it is not departing.
+	MarkPresent() error
 }
 
 type createdContainer struct {
@@ -202,6 +205,28 @@ func (container *createdContainer) Destroying() (DestroyingContainer, error) {
 		container.metadata,
 		container.conn,
 	), nil
+}
+
+func (container *createdContainer) MarkPresent() error {
+	rows, err := psql.Update("containers").
+		Set("missing_since", nil).
+		Where(sq.Eq{
+			"id":    container.id,
+			"state": atc.ContainerStateCreated,
+		}).
+		RunWith(container.conn).
+		Exec()
+	if err != nil {
+		return err
+	}
+	affected, err := rows.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return errContainerDisappeared
+	}
+	return nil
 }
 
 func (container *createdContainer) UpdateLastHijack() error {
