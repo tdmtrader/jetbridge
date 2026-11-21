@@ -198,8 +198,9 @@ jobs:
     # dies with EPERM before a single scenario runs. Verified 2026-09-19 in
     # the v11 image under the default profile, root and non-root; only a
     # privileged container passes. Privileged is the one lever a task config
-    # exposes, and this is a single-tenant home cluster. The live tier's RBAC
-    # is the chart's rbac.brineLive value.
+    # exposes, and this is a single-tenant home cluster. The live tier runs
+    # as jetbridge-brine-live, which home-infra declares outside the chart
+    # (deploy/test-runner.md); rbac.brineLive is a removed key.
     privileged: true
     config:
       platform: linux
