@@ -1,11 +1,11 @@
 package behavioral_test
 
 import (
+	"regexp"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/onsi/gomega/gbytes"
 )
 
 var _ = Describe("Error Handling and Edge Cases", func() {
@@ -211,14 +211,18 @@ jobs:
       image_resource: {type: registry-image, source: {repository: busybox}}
       run:
         path: sh
-        args: ["-c", "for i in $(seq 1 500); do echo LOG_LINE_$i; done && echo LAST_LINE"]
+        args: ["-c", "for i in $(seq 1 500); do echo LOG_LINE_$i; done && echo last-line:$(expr 250 '*' 2)"]
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("long-log-job")
 
 		sess := waitForBuildAndWatch("long-log-job")
 		Expect(sess.ExitCode()).To(Equal(0))
-		Expect(sess.Out).To(gbytes.Say("LAST_LINE"))
+		// The echoed script holds only "LOG_LINE_$i" and "last-line:$(expr",
+		// so neither assertion can match it.
+		output := string(sess.Out.Contents())
+		Expect(regexp.MustCompile(`LOG_LINE_[0-9]+\b`).FindAllString(output, -1)).To(HaveLen(500))
+		Expect(output).To(MatchRegexp(`LOG_LINE_500\s+last-line:500\b`))
 	})
 
 	It("handles an empty plan gracefully", func() {

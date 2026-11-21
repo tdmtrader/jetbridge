@@ -491,6 +491,10 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("start\\[  raw-with-spaces  \\]end"))
 		})
 
+		// load_var prints nothing itself: reveal: true lets a later step print
+		// the value unredacted. The producer assembles the value from parts,
+		// so the literal never appears in any echoed command line except the
+		// consumer's, whose args carry it only through ((.:revealed)).
 		It("10.12: reveal: true shows the loaded value in build output", func() {
 			pipelineFile := writePipelineFile("lv-reveal.yml", `
 jobs:
@@ -503,7 +507,7 @@ jobs:
       outputs: [{name: vals}]
       run:
         path: sh
-        args: ["-c", "echo -n revealed-secret-42 > vals/secret.txt"]
+        args: ["-c", "printf '%s-%s-%s' revealed secret $(expr 6 '*' 7) > vals/secret.txt"]
   - load_var: revealed
     file: vals/secret.txt
     reveal: true
@@ -513,14 +517,14 @@ jobs:
       image_resource: {type: registry-image, source: {repository: busybox}}
       run:
         path: echo
-        args: ["lv-reveal-done"]
+        args: ["loaded:((.:revealed))"]
 `)
 			setAndUnpausePipeline(pipelineFile)
 			triggerJob("lv-reveal-job")
 
 			session := waitForBuildAndWatch("lv-reveal-job")
 			Expect(session).To(gexec.Exit(0))
-			Expect(session.Out).To(gbytes.Say("revealed-secret-42"))
+			Expect(session.Out).To(gbytes.Say(`loaded:revealed-secret-42`))
 		})
 
 		It("10.13: loaded var is usable in subsequent task params", func() {

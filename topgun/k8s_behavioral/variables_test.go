@@ -62,6 +62,10 @@ jobs:
 		Expect(sess.Out).To(gbytes.Say("FROM_VAR_FILE"))
 	})
 
+	// A load_var value is redacted in build output unless revealed, so the
+	// consumer compares it with the same value assembled from parts and
+	// prints a computed token; neither script holds the value or the token
+	// literally, so the echoed command lines cannot satisfy the assertion.
 	It("uses load_var to set local variables at runtime", func() {
 		cfg := writePipelineFile("load-var.yml", `
 jobs:
@@ -74,7 +78,7 @@ jobs:
       outputs: [{name: out}]
       run:
         path: sh
-        args: ["-c", "mkdir -p out && echo RUNTIME_VALUE > out/val"]
+        args: ["-c", "mkdir -p out && printf '%s_%s' RUNTIME VALUE > out/val"]
   - load_var: my-var
     file: out/val
     format: raw
@@ -82,16 +86,18 @@ jobs:
     config:
       platform: linux
       image_resource: {type: registry-image, source: {repository: busybox}}
+      params:
+        LOADED: ((.:my-var))
       run:
-        path: echo
-        args: ["((.:my-var))"]
+        path: sh
+        args: ["-c", "[ \"$LOADED\" = \"$(printf '%s_%s' RUNTIME VALUE)\" ] && echo loaded-ok:$(expr 0 + 1)"]
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("loadvar-job")
 
 		sess := waitForBuildAndWatch("loadvar-job")
 		Expect(sess.ExitCode()).To(Equal(0))
-		Expect(sess.Out).To(gbytes.Say("RUNTIME_VALUE"))
+		Expect(sess.Out).To(gbytes.Say(`loaded-ok:1`))
 	})
 
 	// Pending: the suite's helm install (helmDeployConcourse in

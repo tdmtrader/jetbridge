@@ -2,8 +2,11 @@ package behavioral_test
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
+
+	"github.com/concourse/concourse/atc"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -344,12 +347,18 @@ jobs:
 		sess := waitForBuildAndWatch("comment-job")
 		Expect(sess.ExitCode()).To(Equal(0))
 
-		By("setting a build comment")
-		sess = fly.Start("set-build-comment", "-j", inPipeline("comment-job"), "-b", "1", "-m", "test comment")
-		<-sess.Exited
-		// set-build-comment may not be available in all versions
-		if sess.ExitCode() == 0 {
-			Expect(sess.ExitCode()).To(Equal(0))
-		}
+		// fly has no set-build-comment command (the call this spec made
+		// failed as an unknown command, unchecked); the comment is set
+		// through the API the web UI uses.
+		By("setting a build comment through the API")
+		var build atc.Build
+		apiGetJSON(fmt.Sprintf("/api/v1/teams/main/pipelines/%s/jobs/comment-job/builds/1", pipelineName), &build)
+		status, body := apiPutJSON(fmt.Sprintf("/api/v1/builds/%d/comment", build.ID), atc.SetBuildCommentBody{Comment: "test comment"})
+		Expect(status).To(Equal(http.StatusOK), string(body))
+
+		By("reading the comment back")
+		var commented atc.Build
+		apiGetJSON(fmt.Sprintf("/api/v1/builds/%d", build.ID), &commented)
+		Expect(commented.Comment).To(Equal("test comment"))
 	})
 })

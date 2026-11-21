@@ -233,14 +233,14 @@ jobs:
       inputs: [{name: files}]
       run:
         path: sh
-        args: ["-c", "echo FILE_COUNT=$(ls files/ | wc -l)"]
+        args: ["-c", "echo file-count:$(ls files/ | wc -l | tr -d ' ')"]
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("many-files-job")
 
 		sess := waitForBuildAndWatch("many-files-job")
 		Expect(sess.ExitCode()).To(Equal(0))
-		Expect(sess.Out).To(gbytes.Say("FILE_COUNT="))
+		Expect(sess.Out).To(gbytes.Say(`file-count:100\b`))
 	})
 
 	It("preserves binary file content through artifact flow", func() {
@@ -323,14 +323,14 @@ jobs:
       inputs: [{name: empty}]
       run:
         path: sh
-        args: ["-c", "echo ITEMS=$(ls empty/ | wc -l)"]
+        args: ["-c", "echo item-count:$(ls empty/ | wc -l | tr -d ' ')"]
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("empty-job")
 
 		sess := waitForBuildAndWatch("empty-job")
 		Expect(sess.ExitCode()).To(Equal(0))
-		Expect(sess.Out).To(gbytes.Say("ITEMS="))
+		Expect(sess.Out).To(gbytes.Say(`item-count:0\b`))
 	})
 
 	It("flows artifacts across parallel tasks on different nodes", func() {
