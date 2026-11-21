@@ -10,17 +10,20 @@ import (
 )
 
 type resourceConfigCollector struct {
-	configFactory db.ResourceConfigFactory
-	gracePeriod   time.Duration
+	configFactory      db.ResourceConfigFactory
+	gracePeriod        time.Duration
+	historyGracePeriod time.Duration
 }
 
 func NewResourceConfigCollector(
 	configFactory db.ResourceConfigFactory,
 	gracePeriod time.Duration,
+	historyGracePeriod time.Duration,
 ) *resourceConfigCollector {
 	return &resourceConfigCollector{
-		configFactory: configFactory,
-		gracePeriod:   gracePeriod,
+		configFactory:      configFactory,
+		gracePeriod:        gracePeriod,
+		historyGracePeriod: historyGracePeriod,
 	}
 }
 
@@ -35,5 +38,5 @@ func (rcuc *resourceConfigCollector) Run(ctx context.Context) error {
 		metric.GCResourceConfigCollectorDuration(time.Since(start))
 	}()
 
-	return rcuc.configFactory.CleanUnreferencedConfigs(rcuc.gracePeriod)
+	return rcuc.configFactory.CleanUnreferencedConfigs(rcuc.gracePeriod, rcuc.historyGracePeriod)
 }

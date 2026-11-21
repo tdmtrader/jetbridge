@@ -146,7 +146,7 @@ var _ = Describe("ContainerRepository", func() {
 						RunWith(dbConn).Exec()
 					Expect(err).NotTo(HaveOccurred())
 
-					err = resourceConfigFactory.CleanUnreferencedConfigs(0)
+					err = resourceConfigFactory.CleanUnreferencedConfigs(0, 0)
 					Expect(err).NotTo(HaveOccurred())
 				})
 
