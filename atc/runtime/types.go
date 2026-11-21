@@ -413,6 +413,16 @@ type ImageSpec struct {
 	// ResourceType is the name of the base resource type to use for the image.
 	ResourceType string
 
+	// FetchedImageType, when set, names the resource type whose get produced
+	// ImageArtifact: an image fetched through a type other than registry-image,
+	// so a rootfs artifact and no registry reference. ResourceType then holds
+	// the name of the custom type that image is for, so that an operator's
+	// base resource type mapping can name a runnable image for it; with no
+	// ResourceType (a task's image_resource) nothing may map it. A runtime
+	// that runs only registry images refuses such a spec unless a mapping
+	// names an image, instead of pulling the type's name as an image.
+	FetchedImageType string
+
 	// Privileged indicates whether the container should be privileged. The
 	// precise meaning of "privileged" is runtime specific.
 	Privileged bool

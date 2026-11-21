@@ -243,9 +243,10 @@ var _ = Describe("BuildStepDelegate", func() {
 
 			It("returns an image spec containing the artifact", func() {
 				Expect(imageSpec).To(Equal(runtime.ImageSpec{
-					ImageArtifact: volume,
-					ResourceType:  "image",
-					Privileged:    false,
+					ImageArtifact:    volume,
+					ResourceType:     "image",
+					FetchedImageType: "docker",
+					Privileged:       false,
 				}))
 			})
 
@@ -277,9 +278,10 @@ var _ = Describe("BuildStepDelegate", func() {
 
 				It("returns a privileged image spec", func() {
 					Expect(imageSpec).To(Equal(runtime.ImageSpec{
-						ImageArtifact: volume,
-						ResourceType:  "image",
-						Privileged:    true,
+						ImageArtifact:    volume,
+						ResourceType:     "image",
+						FetchedImageType: "docker",
+						Privileged:       true,
 					}))
 				})
 			})
@@ -336,6 +338,11 @@ var _ = Describe("BuildStepDelegate", func() {
 
 					By("ResourceType is set to the custom type name so imageresolver.Image can map it")
 					Expect(imageSpec.ResourceType).To(Equal("git-with-ado"))
+				})
+
+				It("names the type whose get produced the artifact, so an unmapped name is refused rather than pulled", func() {
+					Expect(fetchErr).ToNot(HaveOccurred())
+					Expect(imageSpec.FetchedImageType).To(Equal("git"))
 				})
 
 				It("still includes the artifact", func() {
@@ -406,6 +413,7 @@ var _ = Describe("BuildStepDelegate", func() {
 				It("does not set ResourceType since ImageURL is sufficient", func() {
 					Expect(fetchErr).ToNot(HaveOccurred())
 					Expect(imageSpec.ResourceType).To(BeEmpty())
+					Expect(imageSpec.FetchedImageType).To(BeEmpty())
 				})
 			})
 

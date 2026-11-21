@@ -768,8 +768,9 @@ var _ = Describe("GetStep", func() {
 
 		It("runs with the correct ImageSpec", func() {
 			Expect(chosenContainer.Spec.ImageSpec).To(Equal(runtime.ImageSpec{
-				ImageArtifact: fetchedImageArtifact,
-				ResourceType:  "some-custom-type",
+				ImageArtifact:    fetchedImageArtifact,
+				ResourceType:     "some-custom-type",
+				FetchedImageType: "another-custom-type",
 			}))
 		})
 

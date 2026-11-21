@@ -194,5 +194,13 @@ func (d *taskDelegate) FetchImage(
 		return runtime.ImageSpec{}, err
 	}
 
+	// The get is named "image" above, so the name FetchImage puts on a
+	// fetched rootfs is no resource type's: an operator mapping for "image"
+	// would hand every such task one image. A task's image_resource is
+	// never mapped; the runtime refuses it, naming its declared type.
+	if imageSpec.FetchedImageType != "" {
+		imageSpec.ResourceType = ""
+	}
+
 	return imageSpec, nil
 }

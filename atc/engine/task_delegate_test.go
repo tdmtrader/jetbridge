@@ -529,11 +529,14 @@ var _ = Describe("TaskDelegate", func() {
 			Expect(taskDelegateCacheAssociationCount(fixture, realBuild, persistedResourceCache)).To(Equal(1))
 		})
 
-		It("returns an image spec containing the artifact", func() {
+		// A docker image_resource yields a rootfs artifact. The spec names
+		// the declared type that fetched it and no resource type: "image" is
+		// only the get's name, and no operator mapping may stand in for it.
+		It("returns an image spec containing the artifact and the type that fetched it, with no resource type", func() {
 			Expect(imageSpec).To(Equal(runtime.ImageSpec{
-				ImageArtifact: volume,
-				ResourceType:  "image",
-				Privileged:    false,
+				ImageArtifact:    volume,
+				FetchedImageType: "docker",
+				Privileged:       false,
 			}))
 		})
 

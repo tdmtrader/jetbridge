@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -581,16 +582,9 @@ func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string
 		}
 	}
 
-	image := imageresolver.Image(c.containerSpec.ImageSpec.ImageURL, c.containerSpec.ImageSpec.ResourceType, c.config.ResourceTypeImages)
-	if image == "" {
-		typeName := c.containerSpec.ImageSpec.ResourceType
-		if typeName == "" {
-			typeName = "(unknown)"
-		}
-		return nil, privilegeAllowance{}, fmt.Errorf(
-			"empty image for resource type %q: configure --resource-type-image %s=<image>",
-			typeName, typeName,
-		)
+	image, err := stepPodImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)
+	if err != nil {
+		return nil, privilegeAllowance{}, err
 	}
 
 	dir := processSpec.Dir
@@ -1067,6 +1061,54 @@ func (c *Container) buildPodAnnotations() map[string]string {
 // applySecretRefs replaces literal Value entries with ValueFrom.SecretKeyRef
 // for env vars that have a matching entry in secretEnv. This prevents secret
 // values from appearing in the pod spec.
+// stepPodImage is the registry image a step pod runs for spec.
+//
+// A name with no URL is pulled as the image its mapping gives it, or by that
+// name when no mapping holds it (an undeclared type a node can resolve, say a
+// pre-loaded <type>:latest). The exception is an image fetched through a
+// resource type other than registry-image (spec.FetchedImageType): that get
+// produced a rootfs artifact a pod cannot run, and the name it carries is a
+// custom type's, never an image. Only an operator mapping for that name makes
+// it runnable; otherwise the step is refused before any pod exists.
+func stepPodImage(spec runtime.ImageSpec, resourceTypeImages map[string]string) (string, error) {
+	if spec.ImageURL == "" && spec.FetchedImageType != "" {
+		if spec.ResourceType == "" {
+			return "", fmt.Errorf(
+				"task image_resource of type %q yields no registry image: a step pod can only run an image "+
+					"that a registry-image type names; use type: registry-image",
+				spec.FetchedImageType,
+			)
+		}
+		mapping := resourceTypeImages
+		if mapping == nil {
+			mapping = imageresolver.DefaultResourceTypeImages
+		}
+		if mapped, ok := mapping[spec.ResourceType]; ok {
+			return mapped, nil
+		}
+		return "", fmt.Errorf(
+			"resource type %q has no registry image: its image was produced by resource type %q, and a step pod "+
+				"can only run an image that a registry-image type or a direct image: names. Declare %q with "+
+				"type: registry-image or a direct image:, or map it with --kubernetes-base-resource-type %s=<image> "+
+				"(chart kubernetes.baseResourceTypes)",
+			spec.ResourceType, spec.FetchedImageType, spec.ResourceType, spec.ResourceType,
+		)
+	}
+
+	image := imageresolver.Image(spec.ImageURL, spec.ResourceType, resourceTypeImages)
+	if image != "" {
+		return image, nil
+	}
+	if spec.ImageArtifact != nil {
+		return "", errors.New(
+			"the task's image: artifact is not a registry image: only a registry-image get's output " +
+				"carries one, and a task output or another type's get is a rootfs or OCI artifact, " +
+				"which a step pod cannot run",
+		)
+	}
+	return "", errors.New("the step names no image: no image reference, resource type or image artifact")
+}
+
 func applySecretRefs(envList []corev1.EnvVar, secretEnv map[string]vars.SecretRef) {
 	if len(secretEnv) == 0 {
 		return
