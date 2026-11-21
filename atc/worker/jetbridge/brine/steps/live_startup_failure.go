@@ -13,11 +13,11 @@ import (
 	"github.com/concourse/concourse/atc/metric"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
-	"github.com/concourse/concourse/vars"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 )
 
 // The kubelet, not a status setter, supplies the original Pending/current-waiting
@@ -66,15 +66,17 @@ func diagnoseLiveStartupProcess(in LiveTaskPlan, rec *brine.Recorder, cause, mod
 		pullImage = "busybox:" + w.Namespace + "-unavailable"
 		spec.ImageSpec.ImageURL = "docker:///" + pullImage
 	case "a missing required secret":
+		// The step's params Secret is withheld: the runtime's create of it is
+		// answered and nothing is made, so the pod names a Secret that does
+		// not exist. Nothing is manufactured; the kubelet finds it missing.
 		handle, expected = "rf04-configerr", "CreateContainerConfigError"
-		const secret = "missing-startup-secret"
+		secret := "step-env-" + handle
 		if _, err := w.Clientset.CoreV1().Secrets(w.Namespace).Get(w.Ctx, secret, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 			return ProcessOutcome{}, fmt.Errorf("expected owned namespace to lack required secret %q: %v", secret, err)
 		}
-		spec.Env = []string{"REQUIRED_VALUE=unused"}
-		spec.SecretEnv = map[string]vars.SecretRef{
-			"REQUIRED_VALUE": {Name: secret, Key: "value"},
-		}
+		spec.Params = []runtime.Param{{Name: "REQUIRED_VALUE", Value: "unused"}}
+		w.Clientset = withheldSecrets{w.Clientset}
+		w = w.rebuild()
 	default:
 		return ProcessOutcome{}, fmt.Errorf("unknown real startup failure %q", cause)
 	}
@@ -291,4 +293,25 @@ func diagnoseLiveStartupTimeout(in LiveTaskPlan, rec *brine.Recorder) (ProcessOu
 	return ProcessOutcome{Ctx: w.Ctx, Namespace: w.Namespace, Clientset: w.Clientset, Handle: handle,
 		podUID: string(pod.UID), NodeName: pod.Spec.NodeName,
 		ExitStatus: result.ExitStatus, Err: waitErr, Message: errorMessage(waitErr), Stderr: stderr.String()}, nil
+}
+
+// withheldSecrets is a clientset whose Secret creates are answered and make
+// nothing: the one way to hand the kubelet a step pod whose params Secret is
+// missing without deleting or forging anything.
+type withheldSecrets struct{ kubernetes.Interface }
+
+func (c withheldSecrets) CoreV1() corev1client.CoreV1Interface {
+	return withheldSecretsCore{c.Interface.CoreV1()}
+}
+
+type withheldSecretsCore struct{ corev1client.CoreV1Interface }
+
+func (c withheldSecretsCore) Secrets(namespace string) corev1client.SecretInterface {
+	return withheldSecretInterface{c.CoreV1Interface.Secrets(namespace)}
+}
+
+type withheldSecretInterface struct{ corev1client.SecretInterface }
+
+func (withheldSecretInterface) Create(_ context.Context, secret *corev1.Secret, _ metav1.CreateOptions) (*corev1.Secret, error) {
+	return secret.DeepCopy(), nil
 }

@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/vars"
 )
 
 type SecretsFactory interface {
@@ -44,23 +43,6 @@ func GetWithParams(secrets Secrets, path string, params SecretLookupParams) (any
 		return paramAwareSecret.GetWithParams(path, params)
 	}
 	return secrets.Get(path)
-}
-
-// K8sSecretRef is an alias for vars.SecretRef for backwards compatibility.
-// Use vars.SecretRef directly in new code.
-type K8sSecretRef = vars.SecretRef
-
-// SecretRefProvider is an optional interface that credential managers may
-// implement to advertise that they can provide native Kubernetes Secret
-// references for a given secret path. When available, the runtime can emit
-// ValueFrom.SecretKeyRef in the pod spec instead of a literal Value.
-//
-// fields are the variable reference's fields, i.e. the "password" of
-// ((db.password)). A backend that stores a multi-key secret must report the
-// key the fields select, otherwise the emitted reference points at the wrong
-// key -- which is worse than the leak it replaces.
-type SecretRefProvider interface {
-	GetSecretRef(path string, fields []string) (*vars.SecretRef, bool)
 }
 
 // if the provided secrets implements SecretsWithParams, it calls NewSecretLookupPathsWithParams on it with the provided params, otherwise NewSecretLookupPaths is called

@@ -13,7 +13,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/hangar"
 	"github.com/concourse/concourse/hangar/output"
-	"github.com/concourse/concourse/vars"
 	"go.opentelemetry.io/otel/propagation"
 )
 
@@ -204,11 +203,6 @@ type ContainerSpec struct {
 	// apart can store Params where a reader of the container's spec does not
 	// see them.
 	Params []Param
-	// SecretEnv maps environment variable names to K8s Secret coordinates.
-	// When the runtime supports it, these are emitted as ValueFrom.SecretKeyRef
-	// in the pod spec instead of literal values, so the secret never appears
-	// in the pod spec.
-	SecretEnv map[string]vars.SecretRef
 	// Type is the type of step the Container is for (e.g. task, get, etc.).
 	Type db.ContainerType
 	// StepResourceType is, for a check, get or put, the resource type the

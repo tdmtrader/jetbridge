@@ -2,9 +2,11 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,8 +15,8 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
-	"github.com/concourse/concourse/vars"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -28,7 +30,7 @@ import (
 //	podname_integration_test.go    9 cases  (PN-07 and the pod-name seam)
 //	artifact_integration_test.go   8 cases  (artifact passing between steps)
 //	resource_test.go               now in live/git-resource.feature
-//	secret_env_test.go             2 cases  (SecretEnv -> SecretKeyRef)
+//	secret_env_test.go             2 cases  (task params -> the step's own Secret)
 //	node_ip_resolver_test.go       4 cases  (node name -> internal IP)
 //	executor_test.go               3 cases  (see executorDisposition)
 //
@@ -367,14 +369,12 @@ func integrationStepDefinitions() []brine.StepDefinition {
 				return in
 			}),
 
-		Refine[StepDraft]("the step reads {string} from the secret {string} key {string} in namespace {string}",
+		// A task param, as the engine hands it: apart from the step's own
+		// env, in name order.
+		Refine[StepDraft]("the step has the param {string} set to {string}",
 			func(in StepDraft, a Args) StepDraft {
-				if in.Spec.SecretEnv == nil {
-					in.Spec.SecretEnv = map[string]vars.SecretRef{}
-				}
-				in.Spec.SecretEnv[a.String(0)] = vars.SecretRef{
-					Namespace: a.String(3), Name: a.String(1), Key: a.String(2),
-				}
+				in.Spec.Params = append(in.Spec.Params, runtime.Param{Name: a.String(0), Value: a.String(1)})
+				sort.Slice(in.Spec.Params, func(i, j int) bool { return in.Spec.Params[i].Name < in.Spec.Params[j].Name })
 				return in
 			}),
 
@@ -592,6 +592,56 @@ func integrationPodCheckDefinitions() []brine.StepDefinition {
 				}
 				if env.Value != "" {
 					return fmt.Errorf("expected %q to carry no literal value, it carries %q", name, env.Value)
+				}
+				return nil
+			},
+		),
+
+		// The value appears nowhere in what was stored for the pod: no env
+		// value, command, argument, init container or sidecar holds it.
+		Assert[StepRan]("the pod's spec holds no {string}",
+			func(in StepRan, args Args) error {
+				encoded, err := json.Marshal(in.Pod.Spec)
+				if err != nil {
+					return err
+				}
+				if strings.Contains(string(encoded), args.String(0)) {
+					return fmt.Errorf("the pod spec holds %q: %s", args.String(0), encoded)
+				}
+				return nil
+			},
+		),
+
+		// The step's params Secret as the API server stored it: the value
+		// under its key, immutable, owned by the pod that reads it.
+		Assert[StepRan]("the step's params Secret holds {string} under {string}, owned by its pod",
+			func(in StepRan, args Args) error {
+				name := "step-env-" + in.Created.Handle
+				secret, err := in.Created.Cluster.Clientset.CoreV1().Secrets(in.Created.Cluster.Namespace).
+					Get(in.Created.Cluster.Ctx, name, metav1.GetOptions{})
+				if err != nil {
+					return fmt.Errorf("the step's params Secret %q: %w", name, err)
+				}
+				if got := string(secret.Data[args.String(1)]); got != args.String(0) {
+					return fmt.Errorf("Secret %q key %q = %q, want %q", name, args.String(1), got, args.String(0))
+				}
+				if secret.Immutable == nil || !*secret.Immutable {
+					return fmt.Errorf("Secret %q is not immutable", name)
+				}
+				if len(secret.OwnerReferences) != 1 || secret.OwnerReferences[0].Kind != "Pod" || secret.OwnerReferences[0].UID != in.Pod.UID {
+					return fmt.Errorf("Secret %q owners = %+v, want the pod %s", name, secret.OwnerReferences, in.Pod.UID)
+				}
+				return nil
+			},
+		),
+
+		Assert[StepRan]("the step has no params Secret",
+			func(in StepRan, _ Args) error {
+				name := "step-env-" + in.Created.Handle
+				_, err := in.Created.Cluster.Clientset.CoreV1().Secrets(in.Created.Cluster.Namespace).
+					Get(in.Created.Cluster.Ctx, name, metav1.GetOptions{})
+				if !apierrors.IsNotFound(err) {
+					return fmt.Errorf("a step with no params has Secret %q (err %v)", name, err)
 				}
 				return nil
 			},
