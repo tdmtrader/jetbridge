@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"time"
 
@@ -249,8 +251,8 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 	// build inputs take it while holding a job this move then schedules)
 	// does not wait for the move.
 	var resourceID int
-	var oldScopeID sql.NullInt64
-	err := psql.Select("id", "resource_config_scope_id").
+	var oldConfigID, oldScopeID sql.NullInt64
+	err := psql.Select("id", "resource_config_id", "resource_config_scope_id").
 		From("resources").
 		Where(pred, args...).
 		Where(sq.Or{
@@ -262,7 +264,7 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 		Suffix("FOR NO KEY UPDATE").
 		RunWith(tx).
 		QueryRow().
-		Scan(&resourceID, &oldScopeID)
+		Scan(&resourceID, &oldConfigID, &oldScopeID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil
@@ -294,6 +296,26 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 	}
 
 	if moving {
+		// The resource leaves its old history: stamp when, and that it was
+		// the one, before the carry may deprecate it. The old scope is the
+		// resource's team's (the store refuses any other), and so is the new.
+		var teamID int
+		err = tx.QueryRow(`
+			SELECT p.team_id FROM resources r JOIN pipelines p ON p.id = r.pipeline_id WHERE r.id = $1
+		`, resourceID).Scan(&teamID)
+		if err != nil {
+			return false, err
+		}
+
+		err = stampLeftHistories(tx, teamID, []leftHistory{{
+			resourceID: resourceID,
+			configID:   int(oldConfigID.Int64),
+			scopeID:    int(oldScopeID.Int64),
+		}})
+		if err != nil {
+			return false, err
+		}
+
 		err = carryVersionHistoryForward(tx, resourceID, int(oldScopeID.Int64), scope)
 		if err != nil {
 			return false, err
@@ -306,6 +328,90 @@ func setResourceConfigScopeForResource(tx Tx, scope ResourceConfigScope, pred an
 	}
 
 	return true, nil
+}
+
+// leftHistory is a resource leaving the config and scope it pointed at.
+type leftHistory struct {
+	resourceID int
+	configID   int
+	scopeID    int
+}
+
+// stampLeftHistories records resources leaving their version histories, all
+// of one team. Each old config's last_referenced is set to now, the clock the
+// config collector keeps a version history by, and each old live shared
+// scope of the team names the resource that left it last
+// (deprecated_from_resource_id), without being deprecated: the resource may
+// list it and copy its history back (CopyVersionsFromScope), and a resource
+// of the team that returns to the config finds it as it is.
+//
+// Every row is taken FOR NO KEY UPDATE SKIP LOCKED, so this never waits. A
+// pipeline save calls it while holding its pipeline's job rows, and a mover
+// holds scopes while it schedules those jobs. A config row held by someone
+// else is held by whoever is using the config now (a check bumping its
+// clock, a put finding it). A scope row held by someone else (a move, a copy,
+// a last-check update; a version writer holds it only FOR KEY SHARE, which
+// does not conflict) is left unstamped: the history is kept but not listed
+// for this resource. A mover already holds both its scopes, so its own stamp
+// is never skipped.
+func stampLeftHistories(tx Tx, teamID int, leaves []leftHistory) error {
+	if len(leaves) == 0 {
+		return nil
+	}
+
+	configIDs := []int{}
+	for _, leave := range leaves {
+		if leave.configID != 0 {
+			configIDs = append(configIDs, leave.configID)
+		}
+	}
+	if len(configIDs) > 0 {
+		query, args, err := psql.Select("id").
+			From("resource_configs").
+			Where(sq.Eq{"id": configIDs}).
+			OrderBy("id").
+			Suffix("FOR NO KEY UPDATE SKIP LOCKED").
+			ToSql()
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(`
+			WITH stamped AS (`+query+`)
+			UPDATE resource_configs SET last_referenced = now()
+			FROM stamped WHERE resource_configs.id = stamped.id
+		`, args...)
+		if err != nil {
+			return err
+		}
+	}
+
+	// One resource per scope: several leaving one scope in a pipeline save
+	// name the last of them.
+	leftBy := map[int]int{}
+	for _, leave := range leaves {
+		if leave.scopeID != 0 {
+			leftBy[leave.scopeID] = leave.resourceID
+		}
+	}
+	for _, scopeID := range slices.Sorted(maps.Keys(leftBy)) {
+		_, err := tx.Exec(`
+			WITH stamped AS (
+				SELECT id FROM resource_config_scopes
+				WHERE id = $1
+				AND team_id = $3
+				AND resource_id IS NULL
+				AND deprecated_at IS NULL
+				FOR NO KEY UPDATE SKIP LOCKED
+			)
+			UPDATE resource_config_scopes SET deprecated_from_resource_id = $2
+			FROM stamped WHERE resource_config_scopes.id = stamped.id
+		`, scopeID, leftBy[scopeID], teamID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // carryVersionHistoryForward keeps a resource's version history when the image

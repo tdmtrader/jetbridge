@@ -1736,6 +1736,7 @@ func saveResources(tx Tx, resources atc.ResourceConfigs, pipelineID int) (map[st
 		Suffix("ON CONFLICT (name, pipeline_id) DO UPDATE SET config = EXCLUDED.config, active = EXCLUDED.active, nonce = EXCLUDED.nonce, type = EXCLUDED.type, resource_config_id = EXCLUDED.resource_config_id, resource_config_scope_id = EXCLUDED.resource_config_scope_id").
 		Suffix("RETURNING name, id")
 	resourcesToPin := map[string][]byte{}
+	detached := map[string]existingResource{}
 
 	existingResources, err := existingResources(tx, pipelineID)
 	if err != nil {
@@ -1766,6 +1767,7 @@ func saveResources(tx Tx, resources atc.ResourceConfigs, pipelineID int) (map[st
 			}
 			if configsDiffer || resource.Type != existing.Type {
 				values = append(values, nil, nil)
+				detached[resource.Name] = existing
 			} else {
 				values = append(values, existing.ResourceConfigID, existing.ResourceConfigScopeID)
 			}
@@ -1801,11 +1803,49 @@ func saveResources(tx Tx, resources atc.ResourceConfigs, pipelineID int) (map[st
 		resourceNameToID[name] = id
 		resourceIDs = append(resourceIDs, id)
 	}
+
+	err = stampDetachedResources(tx, pipelineID, detached, resourceNameToID)
+	if err != nil {
+		return nil, err
+	}
+
 	err = resetResourcePins(tx, resourceIDs, resourcesToPin, resourceNameToID)
 	if err != nil {
 		return nil, err
 	}
 	return resourceNameToID, nil
+}
+
+// stampDetachedResources records the resources a save detached from their
+// version histories (their source or type changed, or their pipeline was
+// archived and is set again) as having left them, without waiting on any
+// scope or config row (see stampLeftHistories): the save holds its
+// pipeline's job rows, and a mover holds scopes while it schedules them.
+func stampDetachedResources(tx Tx, pipelineID int, detached map[string]existingResource, resourceNameToID map[string]int) error {
+	leaves := []leftHistory{}
+	for name, existing := range detached {
+		leave := leftHistory{resourceID: resourceNameToID[name]}
+		if id, ok := existing.ResourceConfigID.(int64); ok {
+			leave.configID = int(id)
+		}
+		if id, ok := existing.ResourceConfigScopeID.(int64); ok {
+			leave.scopeID = int(id)
+		}
+		if leave.resourceID != 0 && (leave.configID != 0 || leave.scopeID != 0) {
+			leaves = append(leaves, leave)
+		}
+	}
+	if len(leaves) == 0 {
+		return nil
+	}
+
+	var teamID int
+	err := tx.QueryRow(`SELECT team_id FROM pipelines WHERE id = $1`, pipelineID).Scan(&teamID)
+	if err != nil {
+		return err
+	}
+
+	return stampLeftHistories(tx, teamID, leaves)
 }
 
 type existingResource struct {
