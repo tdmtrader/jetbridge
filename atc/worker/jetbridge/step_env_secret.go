@@ -57,9 +57,14 @@ import (
 // delete for a pod that has none.
 const stepEnvSecretAnnotation = "concourse.ci/step-env-secret"
 
-// maxStepEnvSecretBytes is the API server's limit on a Secret's data: the sum
-// of its keys' and values' lengths.
-const maxStepEnvSecretBytes = 1 << 20
+// maxStepEnvSecretBytes is the API server's limit on a Secret: k8s.io/api
+// (corev1.MaxSecretSize) states it as the total bytes of the values in its
+// Data, keys not counted, and the API server refuses a Secret whose values
+// total more. The check below counts exactly that: the params' values, in
+// bytes, and nothing else. (The validation itself lives in k8s.io/kubernetes,
+// which this module does not vendor; the constant and its contract are
+// k8s.io/api's.)
+const maxStepEnvSecretBytes = corev1.MaxSecretSize
 
 // stepEnvSecretName is the name of the Secret that holds a step's params.
 func stepEnvSecretName(handle string) string {
@@ -81,10 +86,10 @@ func stepEnvSecretData(params []runtime.Param) (map[string][]byte, error) {
 	for i, param := range params {
 		key := stepParamKey(i)
 		data[key] = []byte(param.Value)
-		total += len(key) + len(param.Value)
+		total += len(param.Value)
 	}
 	if total > maxStepEnvSecretBytes {
-		return nil, fmt.Errorf("the task's params total %d bytes: a step's params must fit one Kubernetes Secret (%d bytes)", total, maxStepEnvSecretBytes)
+		return nil, fmt.Errorf("the task's param values total %d bytes: a step's param values must fit one Kubernetes Secret (%d bytes)", total, maxStepEnvSecretBytes)
 	}
 	return data, nil
 }

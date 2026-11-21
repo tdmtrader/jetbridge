@@ -291,7 +291,7 @@ func TestARefusedParamsSecretFailsTheStepNamingTheRole(t *testing.T) {
 func TestParamsThatCannotFitOneSecretFailTheStepBeforeAnythingIsMade(t *testing.T) {
 	big := runtime.ContainerSpec{Params: []runtime.Param{
 		{Name: "HALF", Value: strings.Repeat("a", maxStepEnvSecretBytes/2)},
-		{Name: "OTHER", Value: strings.Repeat("b", maxStepEnvSecretBytes/2)},
+		{Name: "OTHER", Value: strings.Repeat("b", maxStepEnvSecretBytes/2+1)},
 	}}
 	for name, container := range map[string]func(*fake.Clientset) *Container{
 		"exec": func(c *fake.Clientset) *Container { return execRuntimeContainer(t, c, db.ContainerTypeTask, big) },
@@ -300,7 +300,7 @@ func TestParamsThatCannotFitOneSecretFailTheStepBeforeAnythingIsMade(t *testing.
 		t.Run(name, func(t *testing.T) {
 			clientset := fake.NewSimpleClientset()
 			_, err := container(clientset).Run(context.Background(), runtime.ProcessSpec{Path: "/bin/deploy"}, runtime.ProcessIO{Stderr: &bytes.Buffer{}})
-			if err == nil || !strings.Contains(err.Error(), "1048580 bytes") || !strings.Contains(err.Error(), "one Kubernetes Secret (1048576 bytes)") {
+			if err == nil || !strings.Contains(err.Error(), "values total 1048577 bytes") || !strings.Contains(err.Error(), "one Kubernetes Secret (1048576 bytes)") {
 				t.Fatalf("Run error = %v, want one naming the size and the limit", err)
 			}
 			for _, action := range clientset.Actions() {
@@ -441,6 +441,17 @@ func TestALiteralParamInTheMainContainerIsRefused(t *testing.T) {
 	pod.Spec.Containers[0].Env = env[:len(env)-1]
 	if err := container.refuseLiteralParams(pod); err == nil || !strings.Contains(err.Error(), `"TOKEN" is not read`) {
 		t.Errorf("refuseLiteralParams = %v, want a refusal of a param read from nowhere", err)
+	}
+}
+
+// The limit is the API server's: the values' bytes, keys not counted, so
+// values of exactly 1 MiB fit.
+func TestParamValuesOfExactlyOneSecretFit(t *testing.T) {
+	if _, err := stepEnvSecretData([]runtime.Param{
+		{Name: "HALF", Value: strings.Repeat("a", maxStepEnvSecretBytes/2)},
+		{Name: "OTHER", Value: strings.Repeat("b", maxStepEnvSecretBytes/2)},
+	}); err != nil {
+		t.Errorf("1 MiB of values is refused: %v", err)
 	}
 }
 
