@@ -69,3 +69,12 @@ func DecodedLogEventHits() int {
 func NewSigningKeyFactoryEncryptingWrites(logger lager.Logger, conn DbConn) SigningKeyFactory {
 	return &signingKeyFactory{logger: logger.Session("signing-key-factory"), conn: conn, encryptOnWrite: true}
 }
+
+// AfterCommit registers fn as a hook that runs once tx has committed.
+func AfterCommit(tx Tx, fn func()) {
+	tx.afterCommit(func(DbConn, lager.Logger) { fn() })
+}
+
+// LeftConfigStampTimeout is the bound on the after-commit stamp of a config
+// a leave could not stamp inside its transaction.
+const LeftConfigStampTimeout = leftConfigStampTimeout

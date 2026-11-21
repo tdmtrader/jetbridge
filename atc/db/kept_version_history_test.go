@@ -280,6 +280,26 @@ var _ = Describe("A version history its last resource left", func() {
 			leaveCommitsThenStamps(func() error { return resource.SetResourceConfigScope(newScope) })
 		})
 
+		It("gives up the after-commit stamp at its bound when the holder never lets go, and the save still succeeds", func() {
+			hold(`SELECT 1 FROM resource_configs WHERE id = $1 FOR SHARE`, oldConfigID)
+
+			started := time.Now()
+			done := make(chan error, 1)
+			go func() {
+				defer GinkgoRecover()
+				done <- saveDetaching()
+			}()
+			var err error
+			Eventually(done).WithTimeout(db.LeftConfigStampTimeout+5*time.Second).Should(Receive(&err), "the save waited on the holder without a bound")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(time.Since(started)).To(BeNumerically(">=", db.LeftConfigStampTimeout-time.Second), "the stamp did not wait for the holder")
+
+			var lastReferenced time.Time
+			Expect(dbConn.QueryRow(`SELECT last_referenced FROM resource_configs WHERE id = $1`, oldConfigID).Scan(&lastReferenced)).To(Succeed())
+			Expect(lastReferenced).To(BeTemporally("<", time.Now().Add(-29*24*time.Hour)), "the stamp went through although the holder never let go")
+			Expect(scenario.Resource("some-resource").ResourceConfigScopeID()).To(BeZero())
+		})
+
 		It("still stamps a scope a version writer holds FOR KEY SHARE", func() {
 			hold(`SELECT 1 FROM resource_config_scopes WHERE id = $1 FOR KEY SHARE`, oldScopeID)
 

@@ -60,9 +60,15 @@ type Tx interface {
 	Stmt(*sql.Stmt) *sql.Stmt
 	EncryptionStrategy() encryption.Strategy
 
-	// afterCommit runs fn once the transaction has committed, with no lock
-	// of it held, on the connection it was begun on. A wrapper that embeds
-	// a Tx keeps it. A transaction that rolls back runs nothing.
+	// afterCommit registers fn to run inside Commit, only once the
+	// transaction has committed successfully, after its own connection has
+	// been released: fn gets the DbConn the transaction was begun on (the
+	// unwrapped one), so whatever it runs takes a fresh pooled connection
+	// and holds none of the transaction's locks. Each hook runs once. A
+	// failed commit, a rollback, a second Commit or a Rollback after Commit
+	// runs nothing. A hook must not panic, and must bound its own waits: the
+	// caller's Commit returns only after every hook has. A wrapper that
+	// embeds a Tx keeps this.
 	afterCommit(fn func(conn DbConn, logger lager.Logger))
 }
 
@@ -244,6 +250,7 @@ func (tx *dbTx) Commit() error {
 	err := tx.Tx.Commit()
 	tx.session.Release()
 	if err != nil {
+		tx.committed = nil
 		return err
 	}
 
@@ -262,6 +269,7 @@ func (tx *dbTx) afterCommit(fn func(DbConn, lager.Logger)) {
 
 func (tx *dbTx) Rollback() error {
 	defer tx.session.Release()
+	tx.committed = nil
 	return tx.Tx.Rollback()
 }
 
