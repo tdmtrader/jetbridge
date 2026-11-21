@@ -435,7 +435,7 @@ web:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `rbac.create` | `true` | Create Role + RoleBinding for the web pod (pod/exec/log CRUD). |
+| `rbac.create` | `true` | Create Role + RoleBinding for the web pod (pod/exec/log CRUD, and `create`, `patch`, `delete` on Secrets for each task step's params Secret, `step-env-<handle>`; never `get`, `list` or `watch`). |
 | `serviceAccount.create` | `true` | Create ServiceAccount for the web pod. |
 | `serviceAccount.annotations` | `{}` | ServiceAccount annotations (e.g. GKE Workload Identity). |
 

@@ -149,3 +149,36 @@ func nodeVerbs(role *rbacv1.ClusterRole) []string {
 func equalStrings(a, b []string) bool {
 	return slices.Equal(a, b)
 }
+
+// A task step's params reach its pod through a Secret of its own,
+// step-env-<handle>, which web creates, points at its owner and deletes. The
+// rule is the same in every permutation: a Run-owned exact execution runs on
+// exec under either step runtime, and the credential manager has nothing to
+// do with it. Web never reads one back, so the Role grants no get, list or
+// watch on Secrets: those would let it read every Secret in the step
+// namespace.
+func TestWebPodManagerRoleWritesButNeverReadsSecrets(t *testing.T) {
+	cases := []struct {
+		name string
+		sets []string
+	}{
+		{"default", nil},
+		{"job step runtime", []string{"kubernetes.stepRuntime=job"}},
+		{"credential manager", []string{"kubernetes.credentialManager.enabled=true"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			role := podManagerRole(t, render(t, tc.sets...))
+			for _, verb := range []string{"create", "patch", "delete"} {
+				if !rulesGrant(role.Rules, "", "secrets", verb) {
+					t.Errorf("pod-manager Role lacks secrets %s: %+v", verb, role.Rules)
+				}
+			}
+			for _, verb := range []string{"get", "list", "watch"} {
+				if rulesGrant(role.Rules, "", "secrets", verb) {
+					t.Errorf("pod-manager Role grants secrets %s: %+v", verb, role.Rules)
+				}
+			}
+		})
+	}
+}
