@@ -442,6 +442,36 @@ var _ = Describe("ATC Connection", func() {
 					})
 
 				})
+
+				Context("when the response is the API's {\"error\": ...} body", func() {
+					BeforeEach(func() {
+						atcServer = ghttp.NewServer()
+
+						connection = NewConnection(atcServer.URL(), nil, tracing)
+
+						atcServer.AppendHandlers(
+							ghttp.CombineHandlers(
+								ghttp.VerifyRequest("DELETE", "/api/v1/teams/main/pipelines/foo"),
+								ghttp.RespondWith(http.StatusNotFound, `{"error":"source scope not found"}`),
+							),
+						)
+					})
+
+					It("returns back a ResourceNotFoundError carrying the server's sentence", func() {
+						err := connection.Send(Request{
+							RequestName: atc.DeletePipeline,
+							Params: rata.Params{
+								"pipeline_name": "foo",
+								"team_name":     atc.DefaultTeamName,
+							},
+						}, nil)
+
+						Expect(err).To(HaveOccurred())
+						_, ok := err.(ResourceNotFoundError)
+						Expect(ok).To(BeTrue())
+						Expect(err.Error()).To(Equal("source scope not found"))
+					})
+				})
 			})
 		})
 

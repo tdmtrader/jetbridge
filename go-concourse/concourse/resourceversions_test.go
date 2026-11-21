@@ -626,4 +626,98 @@ var _ = Describe("ATC Handler Resource Versions", func() {
 			})
 		})
 	})
+
+	Describe("CopyResourceVersions", func() {
+		var (
+			expectedURL = "/api/v1/teams/some-team/pipelines/some-pipeline/resources/some-resource/copy-versions"
+			pipelineRef = atc.PipelineRef{Name: "some-pipeline"}
+		)
+
+		Context("when the copy succeeds", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("PUT", expectedURL),
+						ghttp.VerifyJSON(`{"from_scope_id":42}`),
+						ghttp.RespondWithJSONEncoded(http.StatusOK, atc.CopyVersionsResponse{VersionsCopied: 4}),
+					),
+				)
+			})
+
+			It("returns the number of versions copied", func() {
+				copied, err := team.CopyResourceVersions(pipelineRef, "some-resource", 42)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(copied).To(Equal(4))
+			})
+		})
+
+		Context("when the source history is not one the resource may copy", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("PUT", expectedURL),
+						ghttp.RespondWith(http.StatusNotFound, `{"error":"source scope not found or does not belong to this resource"}`),
+					),
+				)
+			})
+
+			It("returns the sentence the server phrased", func() {
+				// This fails if the 404's body is dropped and every refusal
+				// reads "resource not found".
+				_, err := team.CopyResourceVersions(pipelineRef, "some-resource", 42)
+				Expect(err).To(MatchError("source scope not found or does not belong to this resource"))
+			})
+		})
+
+		Context("when the pipeline or resource does not exist", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("PUT", expectedURL),
+						ghttp.RespondWith(http.StatusNotFound, ""),
+					),
+				)
+			})
+
+			It("says the resource was not found", func() {
+				_, err := team.CopyResourceVersions(pipelineRef, "some-resource", 42)
+				Expect(err).To(MatchError("resource not found"))
+			})
+		})
+
+		Context("when the copy is refused because the current history is shared", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("PUT", expectedURL),
+						ghttp.RespondWith(http.StatusConflict, `{"error":"the resource's current version history is shared with other resources"}`),
+					),
+				)
+			})
+
+			It("returns the sentence the server phrased rather than a raw body", func() {
+				_, err := team.CopyResourceVersions(pipelineRef, "some-resource", 42)
+				Expect(err).To(Equal(concourse.APIRefusalError{
+					Errors: []string{"the resource's current version history is shared with other resources"},
+				}))
+			})
+		})
+
+		Context("when the server fails", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("PUT", expectedURL),
+						ghttp.RespondWith(http.StatusInternalServerError, ""),
+					),
+				)
+			})
+
+			It("returns an error that is not a refusal", func() {
+				_, err := team.CopyResourceVersions(pipelineRef, "some-resource", 42)
+				Expect(err).To(HaveOccurred())
+				Expect(err).NotTo(BeAssignableToTypeOf(concourse.APIRefusalError{}))
+			})
+		})
+	})
 })

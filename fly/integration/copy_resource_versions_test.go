@@ -134,8 +134,25 @@ var _ = Describe("copy-resource-versions", func() {
 				)
 			})
 
-			It("returns an error", func() {
+			It("prints the server's reason and fails", func() {
 				Eventually(sess).Should(gexec.Exit(1))
+				Expect(string(sess.Err.Contents())).To(Equal("error: source scope not found or does not belong to this resource\n"))
+			})
+		})
+
+		Context("when the pipeline or resource does not exist", func() {
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("PUT", expectedURL),
+						ghttp.RespondWith(http.StatusNotFound, ""),
+					),
+				)
+			})
+
+			It("says the resource was not found and fails", func() {
+				Eventually(sess).Should(gexec.Exit(1))
+				Expect(string(sess.Err.Contents())).To(Equal("error: resource not found\n"))
 			})
 		})
 
@@ -149,10 +166,9 @@ var _ = Describe("copy-resource-versions", func() {
 				)
 			})
 
-			It("prints the reason and fails", func() {
+			It("prints the server's reason, not the raw response, and fails", func() {
 				Eventually(sess).Should(gexec.Exit(1))
-				Expect(sess.Err).To(gbytes.Say("409"))
-				Expect(sess.Err).To(gbytes.Say("shared with other resources"))
+				Expect(string(sess.Err.Contents())).To(Equal("error: the resource's current version history is shared with other resources\n"))
 			})
 		})
 	})
