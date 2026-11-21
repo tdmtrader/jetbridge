@@ -82,6 +82,14 @@ resources:
   source:
     create_files:
       chain.txt: "two-level-chain"
+
+# Never triggered: fly set-pipeline refuses a pipeline with no job or with
+# a resource no job uses. The spec drives check-resource itself.
+jobs:
+- name: chained-job
+  plan:
+  - get: chained-resource
+    trigger: false
 `)
 			setAndUnpausePipeline(pipelineFile)
 
