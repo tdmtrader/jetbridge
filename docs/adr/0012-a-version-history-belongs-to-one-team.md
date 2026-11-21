@@ -52,16 +52,19 @@ that resource does not have.
   is still keyed on the config, so those checks take turns. That is an
   accepted coupling of timing only: no state crosses teams through it.
 - Versions are stored once per team. A team's scope that nothing attaches
-  to any more lives as long as its config does, and a config that holds
-  versions lives for the deprecated-scope grace period after its last check
-  or after its last resource left it (a destroyed pipeline's resources are
-  deleted, not left, so their histories count from their last check). The
-  scope stays live: a resource of the team that returns to the config finds
-  it.
+  to any more lives as long as its config does, and a config whose live
+  shared scope holds versions lives for the deprecated-scope grace period
+  after its last check or after its last resource left it (a destroyed
+  pipeline's resources are deleted, not left, so their shared histories
+  count from their last check, and their unique-history scopes go with
+  them). The scope stays live: a resource of the team that returns to the
+  config finds it.
 - A scope remembers the resource that last left it. That resource may copy
   the scope's history into its current scope when no other active resource
-  uses that scope and no active resource type of the team is on its config,
-  or under the rules above. Source and destination are checked to be the
+  uses its current scope and no active resource type of the team is on that
+  scope's config, or under the rules above. That check sees neither a task
+  `image_resource` check of the config nor a teammate a save detached that
+  attaches again; those read what was copied. Source and destination are checked to be the
   resource's team's inside the copy, not only when the list is built. The
   guard for a history teammates share (`ErrCopyIntoSharedScope`) otherwise
   stays.
