@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -178,10 +179,10 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	logCtx, cancelLogs := context.WithCancel(ctx)
 	defer cancelLogs()
 	logDone := make(chan struct{})
-	var mainStreamed bool
+	var mainFollow logFollow
 	go func() {
 		defer close(logDone)
-		mainStreamed = p.streamLogs(logCtx, podName, logWriter, sidecarWriters)
+		mainFollow = p.streamLogs(logCtx, podName, logWriter, sidecarWriters)
 	}()
 
 	state, err := p.followPod(ctx, podName)
@@ -195,20 +196,19 @@ func (p *jobProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		return runtime.ProcessResult{}, wrapIfTransient(err)
 	}
 
-	// Let the log stream drain: it ends on its own when main terminates. A
-	// follow that never opened (the kubelet would not follow) is replaced by
-	// one plain read of the finished container's log, which the kubelet
-	// keeps until the pod is deleted.
+	// Let the log stream drain: it ends on its own when main terminates.
+	// Whatever the follow did -- never opened, delivered nothing, ended short
+	// or was cut here -- one plain read of the finished container's log,
+	// which the kubelet keeps until the pod is deleted, appends what it did
+	// not deliver.
 	select {
 	case <-logDone:
 	case <-time.After(5 * time.Second):
 		cancelLogs()
 		<-logDone
 	}
-	if !mainStreamed && logWriter != nil {
-		if err := readContainerLogs(ctx, p.clientset, p.config.Namespace, podName, mainContainerName, logWriter); err != nil && p.processIO.Stderr != nil {
-			fmt.Fprintf(p.processIO.Stderr, "\nwarning: the command's log could not be read: %v\n", err)
-		}
+	if logWriter != nil {
+		completeContainerLog(ctx, p.clientset, p.config.Namespace, podName, mainContainerName, logWriter, p.processIO.Stderr, mainFollow)
 	}
 
 	if p.answer && p.processIO.Stdout != nil && state.result.ExitStatus == 0 {
@@ -363,11 +363,12 @@ func (p *jobProcess) sidecarLogWriters() (map[string]io.Writer, error) {
 	return sidecarLogWriters(p.container.containerSpec.Sidecars, p.processIO)
 }
 
-// streamLogs follows main's log into w and each sidecar's into its writer.
-// Sidecars are native sidecars, so their streams end when the pod does.
-func (p *jobProcess) streamLogs(ctx context.Context, podName string, w io.Writer, sidecarWriters map[string]io.Writer) bool {
+// streamLogs follows main's log into w and each sidecar's into its writer,
+// and reports what main's follow delivered. Sidecars are native sidecars, so
+// their streams end when the pod does.
+func (p *jobProcess) streamLogs(ctx context.Context, podName string, w io.Writer, sidecarWriters map[string]io.Writer) logFollow {
 	if w == nil {
-		return true
+		return logFollow{}
 	}
 	var sidecars sync.WaitGroup
 	for name, writer := range sidecarWriters {
@@ -377,27 +378,80 @@ func (p *jobProcess) streamLogs(ctx context.Context, podName string, w io.Writer
 			followContainerLogs(ctx, p.clientset, p.config.Namespace, podName, name, writer, p.processIO.Stderr)
 		}(name, writer)
 	}
-	streamed := followContainerLogs(ctx, p.clientset, p.config.Namespace, podName, mainContainerName, w, p.processIO.Stderr)
+	follow := followContainerLogs(ctx, p.clientset, p.config.Namespace, podName, mainContainerName, w, p.processIO.Stderr)
 	waitWithGrace(&sidecars, sidecarLogGrace)
-	return streamed
+	return follow
+}
+
+// logFollow is what one container's log follow delivered: how many bytes of
+// the kubelet's log stream the step's writer accepted, and the last of them.
+// The follow and the plain read that completes it ask for the same stream --
+// the container alone: no timestamps, sinceTime, tailLines or limitBytes,
+// never previous -- so delivered is an offset into the plain read.
+type logFollow struct {
+	delivered int64
+	tail      []byte
+	// ended is set when the follow's stream reached its end on its own: the
+	// copy returned no error and the follow was not cancelled.
+	ended bool
+}
+
+// logFollowTail is how many of the delivered bytes are kept to check that a
+// plain read still lines up with the follow. The kubelet serves only the
+// current file of a rotated log, so a plain read of a log rotated since can
+// hold other bytes at the same offset.
+const logFollowTail = 4096
+
+// add counts p, accepted by the writer, and keeps the last logFollowTail
+// bytes delivered.
+func (f *logFollow) add(p []byte) {
+	f.delivered += int64(len(p))
+	if len(p) >= logFollowTail {
+		f.tail = append(f.tail[:0], p[len(p)-logFollowTail:]...)
+		return
+	}
+	f.tail = append(f.tail, p...)
+	if extra := len(f.tail) - logFollowTail; extra > 0 {
+		f.tail = append(f.tail[:0], f.tail[extra:]...)
+	}
+}
+
+// countingWriter hands writes to w and counts what w accepted. "Accepted" is
+// only as honest as w's count: the engine's dbEventWriter
+// (atc/engine/log_event_writer.go) can hold a dangling fragment and then
+// return (0, err) when saving the log fails, so after a writer error the
+// appended remainder can repeat that held fragment.
+type countingWriter struct {
+	w      io.Writer
+	follow *logFollow
+}
+
+func (c countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.follow.add(p[:max(n, 0)])
+	return n, err
 }
 
 // followContainerLogs streams one container's log with follow, retrying
-// until the container has started, and reports whether a stream was ever
-// opened. A follow that keeps failing is said once on the step's stderr, so
-// a kubelet that cannot follow (an exhausted inotify budget, say) does not
-// pass for a silent command.
-func followContainerLogs(ctx context.Context, clientset kubernetes.Interface, namespace, podName, containerName string, w, stderr io.Writer) bool {
+// until the container has started, and reports what the stream delivered
+// (nothing when none ever opened). Once a stream opens it is never reopened,
+// so what it delivered is one prefix of the log. A follow that keeps failing
+// is said once on the step's stderr, so a kubelet that cannot follow (an
+// exhausted inotify budget, say) does not pass for a silent command.
+func followContainerLogs(ctx context.Context, clientset kubernetes.Interface, namespace, podName, containerName string, w, stderr io.Writer) logFollow {
+	var follow logFollow
 	failures := 0
 	for {
 		req := clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{Follow: true, Container: containerName})
 		stream, err := req.Stream(ctx)
 		if err == nil {
-			if _, copyErr := io.Copy(w, stream); copyErr != nil && stderr != nil && ctx.Err() == nil {
+			_, copyErr := io.Copy(countingWriter{w: w, follow: &follow}, stream)
+			follow.ended = copyErr == nil && ctx.Err() == nil
+			if copyErr != nil && stderr != nil && ctx.Err() == nil {
 				fmt.Fprintf(stderr, "\nwarning: log stream interrupted for %s: %v\n", containerName, copyErr)
 			}
 			stream.Close()
-			return true
+			return follow
 		}
 		failures++
 		if failures == logStreamWarnAfter && stderr != nil && ctx.Err() == nil {
@@ -405,7 +459,7 @@ func followContainerLogs(ctx context.Context, clientset kubernetes.Interface, na
 		}
 		select {
 		case <-ctx.Done():
-			return false
+			return follow
 		case <-time.After(logStreamRetryDelay):
 		}
 	}
@@ -416,16 +470,76 @@ func followContainerLogs(ctx context.Context, clientset kubernetes.Interface, na
 // log is not followable until it has started, which takes a few of them.
 const logStreamWarnAfter = 60
 
-// readContainerLogs reads a finished container's whole log once, without
-// follow: the kubelet keeps it until the pod is deleted.
-func readContainerLogs(ctx context.Context, clientset kubernetes.Interface, namespace, podName, containerName string, w io.Writer) error {
-	stream, err := clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{Container: containerName}).Stream(ctx)
+// logReadBudget bounds the plain read that completes a finished container's
+// log, so a kubelet that stops answering cannot hold a step that has ended.
+const logReadBudget = time.Minute
+
+// completeContainerLog makes w hold the finished container's whole log, as
+// far as the kubelet still has it. It reads the log once without follow --
+// the kubelet keeps it until the pod is deleted -- and appends only what lies
+// beyond the bytes the follow already delivered. It is done whatever the
+// follow did: a follow that ended cleanly is not proof that it had
+// everything.
+//
+// The kubelet serves only the current file of a rotated log. A plain read
+// shorter than what was delivered appends nothing; that is said when the
+// follow was cut, since the end of the output then is not shown. One whose
+// bytes just before the follow's end differ from the follow's (a log
+// rotated since) appends nothing and says so. A failed read is said on
+// stderr and never fails the step; nothing is said once the step itself is
+// aborted.
+func completeContainerLog(ctx context.Context, clientset kubernetes.Interface, namespace, podName, containerName string, w, stderr io.Writer, follow logFollow) {
+	warn := func(format string, args ...any) {
+		if stderr != nil && ctx.Err() == nil {
+			fmt.Fprintf(stderr, format, args...)
+		}
+	}
+	failed := func(err error) {
+		if follow.delivered == 0 {
+			warn("\nwarning: the command's log could not be read: %v\n", err)
+			return
+		}
+		warn("\nwarning: the command's log could not be re-read to confirm the output above is complete: %v\n", err)
+	}
+	shorter := func() {
+		if !follow.ended {
+			warn("\nwarning: the command's log stream was cut and the kubelet has since rotated its log; the end of the output is not shown\n")
+		}
+	}
+	readCtx, cancel := context.WithTimeout(ctx, logReadBudget)
+	defer cancel()
+	stream, err := clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{Container: containerName}).Stream(readCtx)
 	if err != nil {
-		return err
+		failed(err)
+		return
 	}
 	defer stream.Close()
-	_, err = io.Copy(w, stream)
-	return err
+	// Skip what was delivered, holding back its tail to compare.
+	tail := int64(len(follow.tail))
+	if _, err := io.CopyN(io.Discard, stream, follow.delivered-tail); err != nil {
+		if errors.Is(err, io.EOF) {
+			shorter()
+		} else {
+			failed(err)
+		}
+		return
+	}
+	seen := make([]byte, tail)
+	if _, err := io.ReadFull(stream, seen); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			shorter()
+		} else {
+			failed(err)
+		}
+		return
+	}
+	if !bytes.Equal(seen, follow.tail) {
+		warn("\nwarning: the command's finished log no longer matches what was streamed (rotated by the kubelet?); the rest of it is not shown\n")
+		return
+	}
+	if _, err := io.Copy(w, stream); err != nil {
+		failed(err)
+	}
 }
 
 // readAnswer reads the resource command's stdout from the step's answer
