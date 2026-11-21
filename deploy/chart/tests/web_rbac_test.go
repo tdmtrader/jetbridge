@@ -154,9 +154,10 @@ func equalStrings(a, b []string) bool {
 // step-env-<handle>, which web creates, points at its owner and deletes. The
 // rule is the same in every permutation: a Run-owned exact execution runs on
 // exec under either step runtime, and the credential manager has nothing to
-// do with it. Web never reads one back, so the Role grants no get, list or
-// watch on Secrets: those would let it read every Secret in the step
-// namespace.
+// do with it. The Role grants no get, list or watch on Secrets, so web
+// cannot enumerate them; patch and delete still reach any Secret it can name
+// in the step namespace (a patch returns the Secret's body), which is why the
+// rule stays exactly these three verbs.
 func TestWebPodManagerRoleWritesButNeverReadsSecrets(t *testing.T) {
 	cases := []struct {
 		name string
