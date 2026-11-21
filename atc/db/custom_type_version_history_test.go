@@ -222,7 +222,7 @@ var _ = Describe("A custom resource type's image changing", func() {
 			_, err := dbConn.Exec(`UPDATE resource_configs SET last_referenced = now() - interval '2 hours' WHERE id = $1`, oldConfigID)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(resourceConfigFactory.CleanUnreferencedConfigs(0)).To(Succeed())
+			Expect(resourceConfigFactory.CleanUnreferencedConfigs(0, 0)).To(Succeed())
 
 			Expect(versionsOf(newScope.ID())).To(Equal([]string{"v1", "v2", "v3"}))
 			Expect(versionsOf(oldScopeID)).To(Equal([]string{"v1", "v2", "v3"}))
@@ -230,7 +230,7 @@ var _ = Describe("A custom resource type's image changing", func() {
 			By("and the old scope being collected")
 			_, err = dbConn.Exec(`DELETE FROM resource_config_scopes WHERE id = $1`, oldScopeID)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(resourceConfigFactory.CleanUnreferencedConfigs(0)).To(Succeed())
+			Expect(resourceConfigFactory.CleanUnreferencedConfigs(0, 0)).To(Succeed())
 
 			_, found, err := resourceConfigFactory.FindResourceConfigByID(oldConfigID)
 			Expect(err).ToNot(HaveOccurred())

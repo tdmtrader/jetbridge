@@ -23,7 +23,7 @@ type ResourceConfigFactory interface {
 
 	FindResourceConfigByID(int) (ResourceConfig, bool, error)
 
-	CleanUnreferencedConfigs(time.Duration) error
+	CleanUnreferencedConfigs(gracePeriod, historyGracePeriod time.Duration) error
 }
 
 type resourceConfigFactory struct {
@@ -218,7 +218,7 @@ func (f *resourceConfigFactory) FindOrCreateResourceConfig(
 	return rc, nil
 }
 
-func (f *resourceConfigFactory) CleanUnreferencedConfigs(gracePeriod time.Duration) error {
+func (f *resourceConfigFactory) CleanUnreferencedConfigs(gracePeriod, historyGracePeriod time.Duration) error {
 	usedByResourceCachesIds, _, err := sq.
 		Select("resource_config_id").
 		From("resource_caches").
@@ -266,6 +266,13 @@ func (f *resourceConfigFactory) CleanUnreferencedConfigs(gracePeriod time.Durati
 			usedByResourceTypesIds + " UNION " +
 			usedByDeprecatedScopesIds + ")").
 		Where(sq.Expr(fmt.Sprintf("now() - last_referenced > '%d seconds'::interval", int(gracePeriod.Seconds())))).
+		// A config whose scopes hold versions is a version history nothing
+		// uses any more. It is kept for the history grace after it was last
+		// referenced: its last check, or its last resource leaving it.
+		Where(sq.Expr(fmt.Sprintf(
+			"(NOT EXISTS (SELECT 1 FROM resource_config_scopes s JOIN resource_config_versions v ON v.resource_config_scope_id = s.id WHERE s.resource_config_id = resource_configs.id)"+
+				" OR now() - last_referenced > '%d seconds'::interval)",
+			int(historyGracePeriod.Seconds())))).
 		PlaceholderFormat(sq.Dollar).
 		RunWith(f.conn).Exec()
 	if err != nil {

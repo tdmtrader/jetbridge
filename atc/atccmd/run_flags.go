@@ -215,7 +215,7 @@ type RunCommand struct {
 		HijackGracePeriod          time.Duration `long:"hijack-grace-period" default:"5m" description:"Period after which hijacked containers will be garbage collected"`
 		FailedGracePeriod          time.Duration `long:"failed-grace-period" default:"120h" description:"Period after which failed containers will be garbage collected"`
 		VarSourceRecyclePeriod     time.Duration `long:"var-source-recycle-period" default:"5m" description:"Period after which to reap var_sources that are not used."`
-		DeprecatedScopeGracePeriod time.Duration `long:"deprecated-scope-grace-period" default:"720h" description:"Period after which deprecated resource config scopes (from resource type/source changes) will be garbage collected. Default 30 days."`
+		DeprecatedScopeGracePeriod time.Duration `long:"deprecated-scope-grace-period" default:"720h" description:"Period after which deprecated resource config scopes (from resource type/source changes) will be garbage collected, and for which a version history no resource or resource type uses any more is kept after its last check or after its last resource left it. Default 30 days."`
 	} `group:"Garbage Collection" namespace:"gc"`
 
 	DefaultBuildLogsToRetain uint64 `long:"default-build-logs-to-retain" description:"Default build logs to retain, 0 means all"`

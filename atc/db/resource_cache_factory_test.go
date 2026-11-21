@@ -239,7 +239,7 @@ var _ = Describe("ResourceCacheFactory", func() {
 							default:
 								Expect(resourceCacheLifecycle.CleanUsesForFinishedBuilds(logger)).To(Succeed())
 								Expect(resourceCacheLifecycle.CleanUpInvalidCaches(logger)).To(Succeed())
-								Expect(resourceConfigFactory.CleanUnreferencedConfigs(0)).To(Succeed())
+								Expect(resourceConfigFactory.CleanUnreferencedConfigs(0, 0)).To(Succeed())
 							}
 						}
 					}()

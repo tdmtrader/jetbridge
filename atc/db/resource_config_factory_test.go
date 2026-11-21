@@ -61,7 +61,7 @@ var _ = Describe("ResourceConfigFactory", func() {
 
 		Context("when cleaning up with no grace period", func() {
 			It("removes the config immediately", func() {
-				Expect(resourceConfigFactory.CleanUnreferencedConfigs(0)).To(Succeed())
+				Expect(resourceConfigFactory.CleanUnreferencedConfigs(0, 0)).To(Succeed())
 
 				recreated, err := resourceConfigFactory.FindOrCreateResourceConfig(
 					"some-base-resource-type",
@@ -75,7 +75,7 @@ var _ = Describe("ResourceConfigFactory", func() {
 
 		Context("when cleaning up with a grace period", func() {
 			It("spares the config", func() {
-				Expect(resourceConfigFactory.CleanUnreferencedConfigs(time.Hour)).To(Succeed())
+				Expect(resourceConfigFactory.CleanUnreferencedConfigs(time.Hour, time.Hour)).To(Succeed())
 
 				recreated, err := resourceConfigFactory.FindOrCreateResourceConfig(
 					"some-base-resource-type",
@@ -85,6 +85,95 @@ var _ = Describe("ResourceConfigFactory", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(recreated.ID()).To(Equal(resourceConfig.ID()))
 			})
+		})
+	})
+
+	Context("when an unreferenced config holds a version history", func() {
+		// The collector's two clocks: a config whose scope holds versions is
+		// kept for the history grace since it was last referenced, and any
+		// other config for the short grace.
+		const (
+			shortGrace   = 65 * time.Minute
+			historyGrace = 30 * 24 * time.Hour
+		)
+
+		var versioned, unversioned db.ResourceConfig
+		var versionedScopeID int
+
+		ageTo := func(config db.ResourceConfig, age string) {
+			_, err := dbConn.Exec(`UPDATE resource_configs SET last_referenced = now() - $2::interval WHERE id = $1`, config.ID(), age)
+			Expect(err).ToNot(HaveOccurred())
+		}
+		present := func(config db.ResourceConfig) bool {
+			_, found, err := resourceConfigFactory.FindResourceConfigByID(config.ID())
+			Expect(err).ToNot(HaveOccurred())
+			return found
+		}
+		countRows := func(query string, id int) int {
+			var n int
+			Expect(dbConn.QueryRow(query, id).Scan(&n)).To(Succeed())
+			return n
+		}
+
+		BeforeEach(func() {
+			var err error
+			versioned, err = resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-resource-type", atc.Source{"history": "kept"}, nil)
+			Expect(err).ToNot(HaveOccurred())
+			scope, err := versioned.FindOrCreateScope(defaultTeam.ID(), nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(scope.SaveVersions(nil, []atc.Version{{"ref": "v1"}, {"ref": "v2"}})).To(Succeed())
+			versionedScopeID = scope.ID()
+
+			unversioned, err = resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-resource-type", atc.Source{"history": "none"}, nil)
+			Expect(err).ToNot(HaveOccurred())
+			_, err = unversioned.FindOrCreateScope(defaultTeam.ID(), nil)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("keeps a versioned config last referenced two hours ago", func() {
+			ageTo(versioned, "2 hours")
+
+			Expect(resourceConfigFactory.CleanUnreferencedConfigs(shortGrace, historyGrace)).To(Succeed())
+
+			Expect(present(versioned)).To(BeTrue())
+			Expect(countRows(`SELECT count(*) FROM resource_config_versions WHERE resource_config_scope_id = $1`, versionedScopeID)).To(Equal(2))
+		})
+
+		It("deletes a versioned config, its scope and its versions once the history grace has passed", func() {
+			ageTo(versioned, "31 days")
+
+			Expect(resourceConfigFactory.CleanUnreferencedConfigs(shortGrace, historyGrace)).To(Succeed())
+
+			Expect(present(versioned)).To(BeFalse())
+			Expect(countRows(`SELECT count(*) FROM resource_config_scopes WHERE resource_config_id = $1`, versioned.ID())).To(BeZero())
+			Expect(countRows(`SELECT count(*) FROM resource_config_versions WHERE resource_config_scope_id = $1`, versionedScopeID)).To(BeZero())
+		})
+
+		It("still deletes an unversioned config after the short grace", func() {
+			ageTo(unversioned, "2 hours")
+			ageTo(versioned, "2 hours")
+
+			Expect(resourceConfigFactory.CleanUnreferencedConfigs(shortGrace, historyGrace)).To(Succeed())
+
+			Expect(present(unversioned)).To(BeFalse())
+			Expect(present(versioned)).To(BeTrue())
+		})
+
+		It("still keeps a config a deprecated scope references, past the history grace", func() {
+			deprecatedConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(
+				"some-base-resource-type", atc.Source{"history": "deprecated"}, nil)
+			Expect(err).ToNot(HaveOccurred())
+			scope, err := deprecatedConfig.FindOrCreateScope(defaultTeam.ID(), nil)
+			Expect(err).ToNot(HaveOccurred())
+			_, err = dbConn.Exec(`UPDATE resource_config_scopes SET deprecated_at = now() WHERE id = $1`, scope.ID())
+			Expect(err).ToNot(HaveOccurred())
+			ageTo(deprecatedConfig, "31 days")
+
+			Expect(resourceConfigFactory.CleanUnreferencedConfigs(shortGrace, historyGrace)).To(Succeed())
+
+			Expect(present(deprecatedConfig)).To(BeTrue())
 		})
 	})
 
@@ -213,7 +302,7 @@ var _ = Describe("ResourceConfigFactory", func() {
 		})
 
 		It("keeps the old config, so the deprecated scope and its versions survive", func() {
-			Expect(resourceConfigFactory.CleanUnreferencedConfigs(0)).To(Succeed())
+			Expect(resourceConfigFactory.CleanUnreferencedConfigs(0, 0)).To(Succeed())
 
 			deprecated, err := resource.DeprecatedScopes()
 			Expect(err).ToNot(HaveOccurred())
@@ -229,7 +318,7 @@ var _ = Describe("ResourceConfigFactory", func() {
 			_, err := dbConn.Exec(`DELETE FROM resource_config_scopes WHERE id = $1`, oldScopeID)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(resourceConfigFactory.CleanUnreferencedConfigs(0)).To(Succeed())
+			Expect(resourceConfigFactory.CleanUnreferencedConfigs(0, 0)).To(Succeed())
 
 			_, found, err := resourceConfigFactory.FindResourceConfigByID(oldConfigID)
 			Expect(err).ToNot(HaveOccurred())
@@ -308,7 +397,7 @@ var _ = Describe("ResourceConfigFactory", func() {
 					case <-done:
 						return
 					default:
-						Expect(resourceConfigFactory.CleanUnreferencedConfigs(0)).To(Succeed())
+						Expect(resourceConfigFactory.CleanUnreferencedConfigs(0, 0)).To(Succeed())
 					}
 				}
 			}()

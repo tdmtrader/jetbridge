@@ -18,9 +18,10 @@ import (
 var _ = Describe("ResourceConfigCollector", func() {
 	var collector GcCollector
 	var gracePeriod = time.Hour
+	var historyGracePeriod = 30 * 24 * time.Hour
 
 	BeforeEach(func() {
-		collector = gc.NewResourceConfigCollector(resourceConfigFactory, gracePeriod)
+		collector = gc.NewResourceConfigCollector(resourceConfigFactory, gracePeriod, historyGracePeriod)
 	})
 
 	Describe("Run", func() {
@@ -287,11 +288,30 @@ var _ = Describe("ResourceConfigCollector reference discrimination", func() {
 		orphan := newConfig("orphan")
 		ageConfigs()
 
-		Expect(gc.NewResourceConfigCollector(resourceConfigFactory, time.Hour).Run(context.Background())).To(Succeed())
+		Expect(gc.NewResourceConfigCollector(resourceConfigFactory, time.Hour, time.Hour).Run(context.Background())).To(Succeed())
 		expectPresent(orphan, false)
 		for _, config := range []db.ResourceConfig{cached, resource, resourceType} {
 			expectPresent(config, true)
 		}
+	})
+
+	It("keeps an orphan holding a version history for the history grace, beside an unversioned orphan it collects", func() {
+		kept := newConfig("kept-history")
+		scope, err := kept.FindOrCreateScope(usedResource.TeamID(), nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(scope.SaveVersions(nil, []atc.Version{{"ref": "v1"}})).To(Succeed())
+		orphan := newConfig("orphan")
+		ageConfigs()
+
+		collector := gc.NewResourceConfigCollector(resourceConfigFactory, time.Hour, 30*24*time.Hour)
+		Expect(collector.Run(context.Background())).To(Succeed())
+		expectPresent(orphan, false)
+		expectPresent(kept, true)
+
+		_, err = dbConn.Exec("UPDATE resource_configs SET last_referenced = now() - interval '31 days' WHERE id = $1", kept.ID())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(collector.Run(context.Background())).To(Succeed())
+		expectPresent(kept, false)
 	})
 
 	It("reports success when a check-session FK blocks the whole delete, including an eligible orphan", func() {
@@ -312,7 +332,7 @@ var _ = Describe("ResourceConfigCollector reference discrimination", func() {
 		// Characterize the current query: check sessions are absent from its
 		// reference union. ON DELETE RESTRICT aborts the entire statement and
 		// the collector swallows that FK error, so even the orphan survives.
-		Expect(gc.NewResourceConfigCollector(resourceConfigFactory, time.Hour).Run(context.Background())).To(Succeed())
+		Expect(gc.NewResourceConfigCollector(resourceConfigFactory, time.Hour, time.Hour).Run(context.Background())).To(Succeed())
 		expectPresent(pinned, true)
 		expectPresent(orphan, true)
 	})

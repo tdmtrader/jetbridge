@@ -231,12 +231,16 @@ func (cmd *RunCommand) gcComponents(
 	// 5 minutes is arbitrary - this really shouldn't matter a whole lot, but
 	// exposing a config specifically for it is a little risky, since you don't
 	// want to set it too low.
+	//
+	// A config whose scopes hold versions is kept for the deprecated-scope
+	// grace period instead, so a version history nothing uses any more
+	// outlives its last check, or its last resource leaving it, by that long.
 	unreferencedConfigGracePeriod := cmd.GlobalResourceCheckTimeout + 5*time.Minute
 
 	collectors := map[string]component.Runnable{
 		atc.ComponentCollectorBuilds:            gc.NewBuildCollector(dbBuildFactory),
 		atc.ComponentCollectorWorkers:           gc.NewWorkerCollector(dbWorkerLifecycle),
-		atc.ComponentCollectorResourceConfigs:   gc.NewResourceConfigCollector(dbResourceConfigFactory, unreferencedConfigGracePeriod),
+		atc.ComponentCollectorResourceConfigs:   gc.NewResourceConfigCollector(dbResourceConfigFactory, unreferencedConfigGracePeriod, cmd.GC.DeprecatedScopeGracePeriod),
 		atc.ComponentCollectorResourceCaches:    gc.NewResourceCacheCollector(dbResourceCacheLifecycle),
 		atc.ComponentCollectorTaskCaches:        gc.NewTaskCacheCollector(dbTaskCacheLifecycle),
 		atc.ComponentCollectorResourceCacheUses: gc.NewResourceCacheUseCollector(dbResourceCacheLifecycle),
