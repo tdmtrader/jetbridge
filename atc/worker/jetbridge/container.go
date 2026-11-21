@@ -305,6 +305,10 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 				if err := c.readmitPod(ctx, existingPod, c.privilegeAllowanceFor(identity)); err != nil {
 					return nil, err
 				}
+				// The live pod's container read its params when it started;
+				// nothing is made for it. A web that died before pointing the
+				// Secret at the pod has that done now.
+				c.ownStepEnvSecret(ctx, existingPod)
 			}
 		}
 
@@ -527,7 +531,7 @@ func (c *Container) createPod(ctx context.Context, processSpec runtime.ProcessSp
 	if err != nil {
 		return nil, err
 	}
-	return c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	return c.createStepPod(ctx, pod)
 }
 
 // pauseCommand is the shell command used by pause pods. It sleeps
@@ -542,7 +546,7 @@ func (c *Container) createPausePod(ctx context.Context, processSpec runtime.Proc
 	if err != nil {
 		return nil, err
 	}
-	return c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	return c.createStepPod(ctx, pod)
 }
 
 // composePod constructs a Pod spec with the given command and args. All other
@@ -592,10 +596,15 @@ func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string
 		dir = c.containerSpec.Dir
 	}
 
-	env := envVars(c.containerSpec.Env)
-	for _, param := range c.containerSpec.Params {
-		env = append(env, corev1.EnvVar{Name: param.Name, Value: param.Value})
+	// A task's params are read from the step's own Secret, in the place their
+	// literal values used to take: after the step's own env, before the
+	// process's (step_env_secret.go). The size is checked here, before any
+	// call to the API server.
+	if _, err := stepEnvSecretData(c.containerSpec.Params); err != nil {
+		return nil, privilegeAllowance{}, err
 	}
+	env := envVars(c.containerSpec.Env)
+	env = append(env, stepParamEnv(c.handle, c.containerSpec.Params)...)
 	env = append(env, envVars(processSpec.Env)...)
 	applySecretRefs(env, c.containerSpec.SecretEnv)
 
@@ -731,6 +740,9 @@ func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string
 func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, args []string) (*corev1.Pod, error) {
 	pod, allowance, err := c.composePod(processSpec, command, args)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.refuseLiteralParams(pod); err != nil {
 		return nil, err
 	}
 	if err := admitStepPod(pod, c.stepPodRoots(), allowance); err != nil {
@@ -1056,6 +1068,9 @@ func (c *Container) buildPodAnnotations() map[string]string {
 	annotations := map[string]string{}
 	if reserved := captureStepDirectory(c.containerSpec); reserved != "" {
 		annotations[captureStepAnnotation] = reserved
+	}
+	if c.hasStepEnvSecret() {
+		annotations[stepEnvSecretAnnotation] = stepEnvSecretName(c.handle)
 	}
 
 	return annotations

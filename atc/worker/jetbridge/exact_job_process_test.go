@@ -170,6 +170,8 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		// store, and the handler serving it. A spec calls it again for a
 		// web that restarted.
 		newWeb func() *Container
+		// webParams are the task params newWeb's container carries.
+		webParams []runtime.Param
 		// podWatches is how many watches are open on each pod, by name.
 		podWatches map[string]int
 		watchesMu  sync.Mutex
@@ -305,6 +307,7 @@ var _ = Describe("An exact task on the job step runtime", func() {
 		DeferCleanup(harness.Stop)
 
 		events = &eventLog{}
+		webParams = nil
 		witnesses = nil
 		failStartWitnesses = 0
 
@@ -347,6 +350,7 @@ var _ = Describe("An exact task on the job step runtime", func() {
 				Type:      db.ContainerTypeTask,
 				Dir:       "/tmp/build/task",
 				ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				Params:    webParams,
 				ExecutionControl: &runtime.ExecutionControl{
 					Version:    runtime.ExecutionControlVersion,
 					Phase:      runtime.ControlPhaseAdmitted,
@@ -1340,6 +1344,40 @@ var _ = Describe("An exact task on the job step runtime", func() {
 				Expect(err).ToNot(HaveOccurred())
 				return resumed.Spec.Suspend != nil && *resumed.Spec.Suspend
 			}, 10*time.Second, 50*time.Millisecond).Should(BeFalse(), "the resumed Job is still suspended")
+			Eventually(func() int { return fetch("tok-main") }, 10*time.Second, 50*time.Millisecond).Should(Equal(http.StatusOK))
+			terminate(0, launcherRecord(0))
+			var finished waited
+			Eventually(done, 15*time.Second).Should(Receive(&finished))
+			Expect(finished.err).ToNot(HaveOccurred())
+		})
+
+		It("makes the params Secret of a Job a web before it made and died before unsuspending, owned by that Job", func() {
+			webParams = []runtime.Param{{Name: "TOKEN", Value: "s3cr3t-$(X)"}}
+			container = newWeb()
+			job, _, err := container.buildStepJob(runtime.ProcessSpec{Path: "/bin/sh", Args: []string{"-c", "exit 3"}}, true)
+			Expect(err).ToNot(HaveOccurred())
+			made, err := clientset.BatchV1().Jobs("test-ns").Create(ctx, job, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			done := restartWeb()
+			Eventually(func() bool {
+				resumed, err := clientset.BatchV1().Jobs("test-ns").Get(ctx, jobName, metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				return resumed.Spec.Suspend != nil && *resumed.Spec.Suspend
+			}, 10*time.Second, 50*time.Millisecond).Should(BeFalse(), "the resumed Job is still suspended")
+			secret, err := clientset.CoreV1().Secrets("test-ns").Get(ctx, stepEnvSecretName("exact-job-handle"), metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred(), "the resumed Job was unsuspended without its params Secret")
+			Expect(secret.Data).To(Equal(map[string][]byte{"p0": []byte("s3cr3t-$(X)")}))
+			Expect(secret.OwnerReferences).To(Equal([]metav1.OwnerReference{{APIVersion: "batch/v1", Kind: "Job", Name: jobName, UID: made.UID}}))
+			var createdSecret, unsuspended int
+			for i, action := range clientset.Actions() {
+				if action.GetVerb() == "create" && action.GetResource().Resource == "secrets" {
+					createdSecret = i
+				}
+				if patch, ok := action.(k8stesting.PatchAction); ok && action.GetResource().Resource == "jobs" && strings.Contains(string(patch.GetPatch()), `"suspend":false`) {
+					unsuspended = i
+				}
+			}
+			Expect(createdSecret).To(BeNumerically("<", unsuspended), "the Job was unsuspended before its Secret existed")
 			Eventually(func() int { return fetch("tok-main") }, 10*time.Second, 50*time.Millisecond).Should(Equal(http.StatusOK))
 			terminate(0, launcherRecord(0))
 			var finished waited
