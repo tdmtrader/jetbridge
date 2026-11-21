@@ -1,6 +1,7 @@
 package behavioral_test
 
 import (
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -55,7 +56,14 @@ jobs:
 			Expect(session.Out).To(gbytes.Say("custom-type-data"))
 		})
 
-		It("6.2: two-level type chain resolves correctly", func() {
+		// A step pod runs only a registry image. level-a's image is fetched
+		// through level-b, a custom type, so what the fetch yields is a rootfs
+		// artifact, not a registry reference: the chain cannot run on
+		// JetBridge. Until 0.4.7 the check pod pulled the type's NAME
+		// (docker.io/library/level-a:latest) and failed as ErrImagePull; the
+		// runtime still runs level-a's own check and get, then refuses the
+		// chained check before its pod exists, naming level-b as the cause.
+		It("6.2: a type whose image is fetched through a custom type is refused, not pulled by name", func() {
 			By("setting a pipeline with a two-level type chain")
 			pipelineFile := writePipelineFile("custom-type-chain-2.yml", `
 resource_types:
@@ -74,35 +82,34 @@ resources:
   source:
     create_files:
       chain.txt: "two-level-chain"
-
-jobs:
-- name: chain-job
-  plan:
-  - get: chained-resource
-    trigger: false
-  - task: read-chain
-    config:
-      platform: linux
-      image_resource: {type: registry-image, source: {repository: busybox}}
-      inputs:
-      - name: chained-resource
-      run:
-        path: cat
-        args: ["chained-resource/chain.txt"]
 `)
 			setAndUnpausePipeline(pipelineFile)
-			newMockVersionOrSkip("chained-resource", "v1")
-			triggerJob("chain-job")
 
-			session := waitForBuildAndWatch("chain-job")
-			Expect(session).To(gexec.Exit(0))
-			Expect(session.Out).To(gbytes.Say("two-level-chain"))
+			By("checking the chained resource")
+			// level-a's own check and get still run first, so retry on the
+			// transient races newMockVersion retries on.
+			var sess *gexec.Session
+			var output string
+			for attempt := 0; attempt < 3; attempt++ {
+				sess = fly.Start("check-resource", "-r", inPipeline("chained-resource"))
+				<-sess.Exited
+				output = string(sess.Out.Contents()) + string(sess.Err.Contents())
+				if !strings.Contains(output, "pod terminated before exec could run") &&
+					!strings.Contains(output, "container not found") &&
+					!strings.Contains(output, "SQLSTATE 23503") {
+					break
+				}
+				time.Sleep(2 * time.Second)
+			}
+			Expect(sess.ExitCode()).ToNot(Equal(0), output)
+			Expect(output).To(ContainSubstring(`resource type "level-a" has no registry image: its image was produced by resource type "level-b"`))
+			Expect(output).ToNot(ContainSubstring("ErrImagePull"))
 		})
 
-		// Known K8s limitation: three-level type chains (level-a → level-b → level-c)
-		// fail because K8s tries to pull intermediate type names as Docker images.
-		// The check-resource call succeeds (mock resource handles it), but the build
-		// hangs because kubelet cannot pull "level-c" as a container image.
+		// Pending: the same shape as 6.2 one level deeper. level-a and level-b
+		// both get their images through a custom type, which a step pod cannot
+		// run, so this chain is refused like 6.2's and can never pass as
+		// written on JetBridge.
 		It("6.3: three-level type chain resolves correctly", Pending, func() {
 			By("setting a pipeline with a three-level type chain")
 			pipelineFile := writePipelineFile("custom-type-chain-3.yml", `
@@ -144,7 +151,7 @@ jobs:
         args: ["deep-chain/deep.txt"]
 `)
 			setAndUnpausePipeline(pipelineFile)
-			newMockVersionOrSkip("deep-chain", "v1")
+			newMockVersion("deep-chain", "v1")
 			triggerJob("deep-chain-job")
 
 			session := waitForBuildAndWatch("deep-chain-job")

@@ -439,43 +439,6 @@ func newMockVersion(resourceName string, tag string) string {
 	return version
 }
 
-// newMockVersionOrSkip is like newMockVersion but skips the current test
-// (instead of failing) when the check-resource fails due to known K8s
-// limitations with custom type chains.
-//
-// Known skip conditions:
-//   - ErrImagePull: multi-level type chains (e.g., level-a → level-b →
-//     registry-image) where the intermediate type name leaks as Docker image.
-func newMockVersionOrSkip(resourceName string, tag string) string {
-	guid, err := uuid.NewRandom()
-	Expect(err).ToNot(HaveOccurred())
-
-	version := guid.String() + "-" + tag
-
-	for attempt := 0; attempt < 3; attempt++ {
-		sess := fly.Start("check-resource", "-r", inPipeline(resourceName), "-f", "version:"+version)
-		<-sess.Exited
-		if sess.ExitCode() == 0 {
-			return version
-		}
-		output := string(sess.Out.Contents()) + string(sess.Err.Contents())
-		if strings.Contains(output, "pod terminated before exec could run") ||
-			strings.Contains(output, "container not found") ||
-			strings.Contains(output, "SQLSTATE 23503") {
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		if strings.Contains(output, "ErrImagePull") ||
-			strings.Contains(output, "ImagePullBackOff") ||
-			strings.Contains(output, "failed to pull") {
-			Skip("K8s type chain bug: check pod uses type name as image — " + output)
-		}
-		Fail("check-resource failed: " + output)
-	}
-	Fail("check-resource failed after 3 retries due to transient race condition")
-	return version
-}
-
 // ---------------------------------------------------------------------
 // Fly table parsing
 // ---------------------------------------------------------------------

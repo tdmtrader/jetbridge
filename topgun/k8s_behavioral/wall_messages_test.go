@@ -13,10 +13,7 @@ var _ = Describe("Wall Messages", func() {
 		By("setting a wall message")
 		sess := fly.Start("set-wall", "-m", "maintenance window in progress")
 		<-sess.Exited
-		if sess.ExitCode() != 0 {
-			// set-wall may not be available; skip gracefully
-			Skip("fly set-wall not available in this version")
-		}
+		Expect(sess.ExitCode()).To(Equal(0), string(sess.Err.Contents()))
 
 		By("verifying the wall message is visible")
 		status, body := apiGet("/api/v1/wall")
