@@ -264,6 +264,7 @@ func (p *jobProcess) followPod(ctx context.Context, podName string) (jobPodOutco
 	var lastPod *corev1.Pod
 	var unschedulableFirstSeen time.Time
 	var unschedulableNotified, running bool
+	var secretRecheck time.Duration
 	tracker := newPodEventTracker()
 	for {
 		nextCtx := ctx
@@ -274,12 +275,17 @@ func (p *jobProcess) followPod(ctx context.Context, podName string) (jobPodOutco
 		// that falls due must not wait for an event that may never come.
 		cancelNext := context.CancelFunc(func() {})
 		relocating := !unschedulableFirstSeen.IsZero() && lastPod != nil && p.relocatable != nil && p.relocatable(lastPod)
+		rechecking := !relocating && secretRecheck > 0 && lastPod != nil
 		if relocating {
 			nextCtx, cancelNext = context.WithTimeout(nextCtx, max(relocationGrace-time.Since(unschedulableFirstSeen), 0)+10*time.Millisecond)
+		} else if rechecking {
+			// A pod waiting on its params Secret is judged again when the
+			// grace runs out, event or not.
+			nextCtx, cancelNext = context.WithTimeout(nextCtx, secretRecheck+10*time.Millisecond)
 		}
 		pod, err := watcher.Next(nextCtx)
 		cancelNext()
-		if err != nil && relocating && errors.Is(err, context.DeadlineExceeded) && startupCtx.Err() == nil && ctx.Err() == nil {
+		if err != nil && (relocating || rechecking) && errors.Is(err, context.DeadlineExceeded) && startupCtx.Err() == nil && ctx.Err() == nil {
 			pod, err = lastPod, nil
 		}
 		if err != nil && !running && startupCtx.Err() != nil && ctx.Err() == nil {
@@ -304,6 +310,11 @@ func (p *jobProcess) followPod(ctx context.Context, podName string) (jobPodOutco
 		lastPod = pod
 		tracker.emitPodLifecycleEvents(ctx, pod)
 
+		secretRecheck = 0
+		if left, pending := stepEnvSecretSyncPending(pod, time.Now()); pending {
+			secretRecheck = left
+			continue
+		}
 		state := podStateFor(pod)
 		if err := reportPodFailure(ctx, p.clientset, pod, p.processIO.Stderr, state); err != nil {
 			return jobPodOutcome{}, err

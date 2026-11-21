@@ -130,6 +130,7 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 	var unschedulableFirstSeen time.Time
 	var unschedulableNotified bool
 	countsSet := false
+	var secretRecheck time.Duration
 	tracker := newPodEventTracker()
 	for {
 		// An Unschedulable pod is updated once and then left alone, so a move
@@ -139,6 +140,10 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		nextCtx, cancelNext := timeoutCtx, context.CancelFunc(func() {})
 		if !unschedulableFirstSeen.IsZero() && lastPod != nil && p.canRelocate(lastPod) {
 			nextCtx, cancelNext = context.WithTimeout(timeoutCtx, max(relocationGrace-time.Since(unschedulableFirstSeen), 0)+10*time.Millisecond)
+		} else if secretRecheck > 0 && lastPod != nil {
+			// Likewise a pod waiting on its params Secret: when the grace
+			// runs out it is judged again, event or not.
+			nextCtx, cancelNext = context.WithTimeout(timeoutCtx, secretRecheck+10*time.Millisecond)
 		}
 		pod, err := watcher.Next(nextCtx)
 		cancelNext()
@@ -216,6 +221,11 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		// Check for terminal failure states BEFORE checking Running phase,
 		// because CrashLoopBackOff can occur while the pod phase is Running.
 		// OOM first (pod_status.go) — more actionable than CrashLoopBackOff.
+		secretRecheck = 0
+		if left, pending := stepEnvSecretSyncPending(pod, time.Now()); pending {
+			secretRecheck = left
+			continue
+		}
 		state := podStateFor(pod)
 		if err := reportPodFailure(ctx, p.clientset, pod, p.processIO.Stderr, state); err != nil {
 			return err

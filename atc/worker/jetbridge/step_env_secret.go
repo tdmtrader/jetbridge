@@ -39,6 +39,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
@@ -267,6 +269,45 @@ func (c *Container) refuseLiteralParams(pod *corev1.Pod) error {
 		}
 	}
 	return nil
+}
+
+// stepEnvSecretSyncGrace is how long after its creation a step pod may wait
+// on the kubelet reading its own params Secret before that counts as the
+// terminal CreateContainerConfigError it is reported as. The Secret exists
+// before the pod (or before its step Job is unsuspended); what the kubelet
+// reports in that time is its own lag -- its secret cache not synced, or the
+// node authorizer not yet relating the node to the Secret through the pod --
+// which it retries.
+const stepEnvSecretSyncGrace = 30 * time.Second
+
+// stepEnvSecretSyncPending reports whether every container of pod that is
+// waiting in a terminal state is waiting only for the kubelet to read the
+// step's own params Secret, while the pod is younger than
+// stepEnvSecretSyncGrace, and how much of the grace is left. Anything else --
+// another reason, another Secret, a pod with no params Secret, an older pod --
+// is not pending and is judged as before.
+func stepEnvSecretSyncPending(pod *corev1.Pod, now time.Time) (time.Duration, bool) {
+	name := pod.Annotations[stepEnvSecretAnnotation]
+	if name == "" || pod.CreationTimestamp.IsZero() {
+		return 0, false
+	}
+	left := stepEnvSecretSyncGrace - now.Sub(pod.CreationTimestamp.Time)
+	if left <= 0 {
+		return 0, false
+	}
+	pending := false
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting == nil || !terminalWaitingReasons[cs.State.Waiting.Reason] {
+			continue
+		}
+		message := cs.State.Waiting.Message
+		if cs.State.Waiting.Reason != "CreateContainerConfigError" ||
+			!(strings.Contains(message, `"`+name+`"`) || strings.Contains(message, "failed to sync secret cache")) {
+			return 0, false
+		}
+		pending = true
+	}
+	return left, pending
 }
 
 // deleteStepEnvSecret deletes a handle's params Secret, if there is one.

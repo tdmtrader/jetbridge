@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -489,6 +490,145 @@ func TestAFailedPodReadOnReattachLeavesTheSecretAlone(t *testing.T) {
 	}
 	if got := secretActions(clientset); len(got) != 0 {
 		t.Errorf("a failed pod read touched the Secret: %v", got)
+	}
+}
+
+func TestTheKubeletMayLagOnTheStepsOwnSecretForABoundedTime(t *testing.T) {
+	now := time.Now()
+	pod := func(age time.Duration, annotated bool, reason, message string) *corev1.Pod {
+		p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(now.Add(-age)), Annotations: map[string]string{}}}
+		if annotated {
+			p.Annotations[stepEnvSecretAnnotation] = "step-env-h"
+		}
+		p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: mainContainerName, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: reason, Message: message}}}}
+		return p
+	}
+	for _, tc := range []struct {
+		name    string
+		pod     *corev1.Pod
+		pending bool
+	}{
+		{"its Secret not found yet", pod(time.Second, true, "CreateContainerConfigError", `secret "step-env-h" not found`), true},
+		{"the secret cache not synced", pod(time.Second, true, "CreateContainerConfigError", "failed to sync secret cache: timed out waiting for the condition"), true},
+		{"past the grace", pod(stepEnvSecretSyncGrace+time.Second, true, "CreateContainerConfigError", `secret "step-env-h" not found`), false},
+		{"another Secret", pod(time.Second, true, "CreateContainerConfigError", `secret "other" not found`), false},
+		{"a pod with no params Secret", pod(time.Second, false, "CreateContainerConfigError", "failed to sync secret cache"), false},
+		{"another terminal reason", pod(time.Second, true, "ErrImagePull", `secret "step-env-h" not found`), false},
+		{"nothing waiting", pod(time.Second, true, "ContainerCreating", ""), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			left, pending := stepEnvSecretSyncPending(tc.pod, now)
+			if pending != tc.pending {
+				t.Errorf("pending = %v, want %v", pending, tc.pending)
+			}
+			if pending && (left <= 0 || left > stepEnvSecretSyncGrace) {
+				t.Errorf("left = %s", left)
+			}
+		})
+	}
+}
+
+// On the job step runtime: a pod that starts into CreateContainerConfigError
+// for its own Secret, and then runs, is the step's; one still waiting once the
+// grace is spent fails as before, without needing another event.
+func TestAStepJobPodWaitsOutTheKubeletsLagOnItsSecret(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		age     time.Duration
+		recover bool
+	}{
+		{"recovers", 0, true},
+		{"never recovers", stepEnvSecretSyncGrace - 2*time.Second, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clientset := fake.NewSimpleClientset()
+			var podName string
+			jobControllerDouble(clientset, func(job *batchv1.Job) *corev1.Pod {
+				podName = job.Name + "-abcde"
+				p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+					Name: podName, UID: "pod-uid", CreationTimestamp: metav1.NewTime(time.Now().Add(-tc.age)),
+					Annotations: map[string]string{stepEnvSecretAnnotation: "step-env-step-handle"},
+				}}
+				p.Spec = corev1.PodSpec{NodeName: "node-1", Containers: []corev1.Container{{Name: mainContainerName}}}
+				p.Status.Phase = corev1.PodPending
+				p.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: mainContainerName, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+					Reason: "CreateContainerConfigError", Message: `secret "step-env-step-handle" not found`,
+				}}}}
+				return p
+			})
+			container := jobRuntimeContainer(t, clientset, db.ContainerTypeTask, runtime.ContainerSpec{Params: taskParams()})
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/deploy"}, runtime.ProcessIO{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if tc.recover {
+				go func() {
+					time.Sleep(300 * time.Millisecond)
+					p, err := clientset.CoreV1().Pods("test-ns").Get(context.Background(), podName, metav1.GetOptions{})
+					if err != nil {
+						return
+					}
+					done := terminatedJobPod(podName, 0)
+					p.Status = done.Status
+					_, _ = clientset.CoreV1().Pods("test-ns").UpdateStatus(context.Background(), p, metav1.UpdateOptions{})
+				}()
+			}
+			result, err := process.Wait(ctx)
+			if tc.recover {
+				if err != nil || result.ExitStatus != 0 {
+					t.Fatalf("Wait = %+v, %v; want the command's exit once the kubelet read the Secret", result, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "CreateContainerConfigError") {
+				t.Fatalf("Wait = %+v, %v; want CreateContainerConfigError once the grace is spent", result, err)
+			}
+		})
+	}
+}
+
+// The same on the exec step runtime's pause pod.
+func TestAPausePodWaitsOutTheKubeletsLagOnItsSecret(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	podUIDs(clientset)
+	container := execRuntimeContainer(t, clientset, db.ContainerTypeTask, runtime.ContainerSpec{Params: taskParams()})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	process, err := container.Run(ctx, runtime.ProcessSpec{Path: "/bin/deploy"}, runtime.ProcessIO{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	pods := clientset.CoreV1().Pods("test-ns")
+	set := func(status corev1.PodStatus) {
+		t.Helper()
+		p, err := pods.Get(context.Background(), container.podName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.CreationTimestamp = metav1.Now()
+		p.Status = status
+		if _, err := pods.Update(context.Background(), p, metav1.UpdateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set(corev1.PodStatus{Phase: corev1.PodPending, ContainerStatuses: []corev1.ContainerStatus{{Name: mainContainerName, State: corev1.ContainerState{
+		Waiting: &corev1.ContainerStateWaiting{Reason: "CreateContainerConfigError", Message: `secret "step-env-step-handle" not found`},
+	}}}})
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		p, err := pods.Get(context.Background(), container.podName, metav1.GetOptions{})
+		if err != nil {
+			return
+		}
+		p.Status = corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: mainContainerName, Ready: true,
+			State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}}
+		_, _ = pods.Update(context.Background(), p, metav1.UpdateOptions{})
+	}()
+	result, err := process.Wait(ctx)
+	if err != nil || result.ExitStatus != 0 {
+		t.Fatalf("Wait = %+v, %v; want the command's exit once the kubelet read the Secret", result, err)
 	}
 }
 
