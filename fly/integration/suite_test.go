@@ -143,6 +143,9 @@ var _ = BeforeEach(func() {
 })
 
 var _ = AfterEach(func() {
+	// A spec that only reads a prompt leaves fly waiting for an answer that
+	// never comes; it would outlive the suite, and every run would add more.
+	gexec.KillAndWait()
 	atcServer.Close()
 	os.RemoveAll(homeDir)
 })
