@@ -531,9 +531,8 @@ func (step *TaskStep) containerInputs(logger lager.Logger, repository *build.Rep
 }
 
 func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSpec runtime.ImageSpec, config atc.TaskConfig, metadata db.ContainerMetadata) (runtime.ContainerSpec, error) {
-	env := step.metadata.TaskEnv()
-	env = append(env, config.Params.Env()...)
-
+	// The step's own env is what the web generates; the task's params travel
+	// apart from it, so the runtime can keep them out of the pod spec.
 	containerSpec := runtime.ContainerSpec{
 		TeamID:            step.metadata.TeamID,
 		TeamName:          step.metadata.TeamName,
@@ -541,7 +540,8 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 		StepName:          step.plan.Name,
 
 		ImageSpec: imageSpec,
-		Env:       env,
+		Env:       step.metadata.TaskEnv(),
+		Params:    runtime.ParamsFrom(config.Params),
 		Type:      metadata.Type,
 
 		Dir:      metadata.WorkingDirectory,

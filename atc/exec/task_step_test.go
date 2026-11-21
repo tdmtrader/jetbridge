@@ -311,8 +311,12 @@ var _ = Describe("TaskStep", func() {
 			Expect(chosenContainer.Spec.Env).To(ConsistOf(
 				"ATC_EXTERNAL_URL=http://foo.bar",
 				fmt.Sprintf("BUILD_ID=%d", stepMetadata.BuildID),
-				"SECURE=secret-task-param",
 			))
+		})
+
+		It("carries the task's params apart from the step's own env", func() {
+			Expect(chosenContainer.Spec.Params).To(Equal([]runtime.Param{{Name: "SECURE", Value: "secret-task-param"}}))
+			Expect(chosenContainer.Spec.Env).ToNot(ContainElement(ContainSubstring("secret-task-param")))
 		})
 
 		Context("before running the task", func() {
