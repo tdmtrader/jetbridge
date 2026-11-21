@@ -25,6 +25,7 @@ import (
 	"github.com/concourse/concourse/hangar/executioncontrol"
 	"github.com/concourse/concourse/tracing"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -255,6 +256,13 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 		}
 		existingPod, getErr := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
 		needsCreate := getErr != nil // pod doesn't exist
+		// A step with a params Secret makes one only for a pod that is not
+		// there: replacing it under a live pod whose read merely failed could
+		// take it from that pod's main container before it starts.
+		if getErr != nil && !apierrors.IsNotFound(getErr) && c.hasStepEnvSecret() && !c.lookedUp {
+			err = wrapIfTransient(fmt.Errorf("reading the step's pod %q: %w", podName, getErr))
+			return nil, err
+		}
 
 		// A looked-up Container (fly hijack/intercept) carries no
 		// ContainerSpec, so it must never fabricate or replace a pod:
