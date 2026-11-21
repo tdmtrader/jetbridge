@@ -33,10 +33,15 @@ type CopyVersionsResponse struct {
 	VersionsCopied int `json:"versions_copied"`
 }
 
+// DeprecatedScope is a version history a resource used before. DeprecatedAt
+// is empty for a history that is kept live, not deprecated; LastChecked is
+// empty for one never checked.
 type DeprecatedScope struct {
 	ID           int    `json:"id"`
 	DeprecatedAt string `json:"deprecated_at"`
 	ConfigID     int    `json:"config_id"`
+	Versions     int    `json:"versions"`
+	LastChecked  string `json:"last_checked,omitempty"`
 }
 
 // PipelinePage and BuildPage are the bounded format=page views. Legacy list

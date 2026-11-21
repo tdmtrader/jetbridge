@@ -9,7 +9,7 @@ import (
 
 type CopyResourceVersionsCommand struct {
 	Resource    flaghelpers.ResourceFlag `short:"r" long:"resource" required:"true" value-name:"PIPELINE/RESOURCE" description:"Name of the resource to copy versions into"`
-	FromScopeID int                      `long:"from-scope" value-name:"SCOPE_ID" description:"ID of the deprecated scope to copy versions from (use without flag to list available scopes)"`
+	FromScopeID int                      `long:"from-scope" value-name:"SCOPE_ID" description:"ID of the previous version history (scope) to copy versions from (use without flag to list the resource's previous histories)"`
 	Team        flaghelpers.TeamFlag     `long:"team" description:"Name of the team to which the pipeline belongs, if different from the target default"`
 }
 
@@ -33,21 +33,30 @@ func (command *CopyResourceVersionsCommand) Execute(args []string) error {
 	resourceName := command.Resource.ResourceName
 
 	if command.FromScopeID == 0 {
-		// List available deprecated scopes
+		// List the version histories the resource used before: deprecated
+		// ones, and shared ones it left that are kept.
 		scopes, err := team.ListDeprecatedScopes(pipelineRef, resourceName)
 		if err != nil {
 			return err
 		}
 
 		if len(scopes) == 0 {
-			fmt.Println("no deprecated scopes found for this resource")
+			fmt.Println("no previous version histories found for this resource")
 			return nil
 		}
 
-		fmt.Println("deprecated scopes available for version copy:")
+		fmt.Println("previous version histories available to copy:")
 		fmt.Println()
 		for _, scope := range scopes {
-			fmt.Printf("  scope %d  (deprecated at: %s, config id: %d)\n", scope.ID, scope.DeprecatedAt, scope.ConfigID)
+			state := "kept"
+			if scope.DeprecatedAt != "" {
+				state = "deprecated at: " + scope.DeprecatedAt
+			}
+			lastChecked := ""
+			if scope.LastChecked != "" {
+				lastChecked = ", last checked: " + scope.LastChecked
+			}
+			fmt.Printf("  scope %d  (%s, %d versions%s, config id: %d)\n", scope.ID, state, scope.Versions, lastChecked, scope.ConfigID)
 		}
 		fmt.Println()
 		fmt.Println("re-run with --from-scope <SCOPE_ID> to copy versions")

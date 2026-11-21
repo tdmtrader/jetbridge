@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -75,6 +76,7 @@ var _ = Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resource
 			},
 			Resources: atc.ResourceConfigs{
 				{Name: "some-resource", Type: "some-custom-type", Source: resourceSource},
+				{Name: "teammate", Type: dbtest.BaseResourceType, Source: resourceSource},
 			},
 		})
 		fixture.scenario.Run(fixture.builder.WithBaseWorker())
@@ -120,6 +122,8 @@ var _ = Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resource
 
 			// The resource changes to the base type and joins it.
 			Expect(moveTo(baseConfig).ID()).To(Equal(sharedScope.ID()))
+			teammate := fixture.resource("teammate")
+			Expect(teammate.SetResourceConfigScope(sharedScope)).To(Succeed())
 
 			listed, err := fixture.resource("some-resource").DeprecatedScopes()
 			Expect(err).NotTo(HaveOccurred())
@@ -136,6 +140,105 @@ var _ = Describe("PUT /api/v1/teams/:team_name/pipelines/:pipeline_name/resource
 			Expect(string(body)).To(ContainSubstring("shared with other resources"))
 
 			Expect(refs(sharedScope.ID())).To(Equal([]string{"b1", "b2", "b3"}))
+		})
+	})
+
+	Context("when the resource left a shared history for another config", func() {
+		var (
+			oldScopeID int
+			newScope   db.ResourceConfigScope
+		)
+
+		onSource := func(source atc.Source) db.ResourceConfig {
+			config, err := fixture.database.Deps.resourceConfigFactory.FindOrCreateResourceConfig(dbtest.BaseResourceType, source, nil)
+			Expect(err).NotTo(HaveOccurred())
+			return config
+		}
+
+		requestList := func() []map[string]any {
+			if fixture.server == nil {
+				fixture.server = fixture.database.Serve()
+			}
+			path := fmt.Sprintf(
+				"/api/v1/teams/%s/pipelines/%s/resources/some-resource/deprecated-scopes",
+				fixture.team.Name(), fixture.pipeline.Name(),
+			)
+			response, err := client.Get(fixture.server.URL + path)
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			var listed []map[string]any
+			Expect(json.NewDecoder(response.Body).Decode(&listed)).To(Succeed())
+			return listed
+		}
+
+		BeforeEach(func() {
+			old := moveTo(onSource(atc.Source{"credential": "before"}))
+			oldScopeID = old.ID()
+			Expect(old.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v1"}, {"ref": "v2"}})).To(Succeed())
+			_, err := fixture.database.Conn.Exec(`UPDATE resource_config_scopes SET last_check_end_time = '2026-11-01T10:00:00Z' WHERE id = $1`, oldScopeID)
+			Expect(err).NotTo(HaveOccurred())
+
+			newScope = moveTo(onSource(atc.Source{"credential": "after"}))
+			Expect(newScope.SaveVersions(db.SpanContext{}, []atc.Version{{"ref": "v2"}})).To(Succeed())
+		})
+
+		It("lists the history it left, with its version count and last check", func() {
+			listed := requestList()
+			Expect(listed).To(HaveLen(1))
+			Expect(listed[0]).To(HaveKeyWithValue("id", BeNumerically("==", oldScopeID)))
+			Expect(listed[0]).To(HaveKeyWithValue("versions", BeNumerically("==", 2)))
+			Expect(listed[0]).To(HaveKeyWithValue("last_checked", "2026-11-01T10:00:00Z"))
+			Expect(listed[0]).To(HaveKeyWithValue("deprecated_at", ""))
+		})
+
+		It("copies it into the history the resource alone uses", func() {
+			response := requestCopy(oldScopeID)
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+
+			var copied atc.CopyVersionsResponse
+			Expect(json.NewDecoder(response.Body).Decode(&copied)).To(Succeed())
+			Expect(copied.VersionsCopied).To(Equal(1))
+			Expect(refs(newScope.ID())).To(Equal([]string{"v1", "v2"}))
+		})
+
+		It("refuses with Conflict while a teammate uses the current history", func() {
+			Expect(fixture.resource("teammate").SetResourceConfigScope(newScope)).To(Succeed())
+
+			response := requestCopy(oldScopeID)
+			Expect(response.StatusCode).To(Equal(http.StatusConflict))
+			body, err := io.ReadAll(response.Body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("shared with other resources"))
+			Expect(refs(newScope.ID())).To(Equal([]string{"v2"}))
+		})
+
+		It("answers Not Found when the history is collected between the listing and the copy", func() {
+			// The collector, on its own connection, deletes the source scope
+			// and holds it until the copy is waiting for it.
+			collectorConn := postgresRunner.OpenConn()
+			DeferCleanup(collectorConn.Close)
+			collector, err := collectorConn.Begin()
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { _ = collector.Rollback() })
+			_, err = collector.Exec(`DELETE FROM resource_config_scopes WHERE id = $1`, oldScopeID)
+			Expect(err).NotTo(HaveOccurred())
+
+			if fixture.server == nil {
+				fixture.server = fixture.database.Serve()
+			}
+			done := make(chan int, 1)
+			go func() {
+				defer GinkgoRecover()
+				done <- requestCopy(oldScopeID).StatusCode
+			}()
+			Consistently(done, time.Second).ShouldNot(Receive())
+			Expect(collector.Commit()).To(Succeed())
+
+			var status int
+			Eventually(done, 10*time.Second).Should(Receive(&status))
+			Expect(status).To(Equal(http.StatusNotFound))
+			Expect(refs(newScope.ID())).To(Equal([]string{"v2"}))
 		})
 	})
 
