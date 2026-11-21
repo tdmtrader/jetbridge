@@ -19,6 +19,10 @@ Step pod: [control init] [cleanup init] [fetch init] [managed-input init Ã—N] â”
   init (only when a capture is selected), cleanup, fetch, then one
   managed-input init per tree input (a Hangar managed read under a read
   warrant). Sidecars share its network namespace.
+- A task step with params has a **step params Secret**, `step-env-<handle>`,
+  which its main container reads them from; the Secret exists before the pod
+  (exec) or before the step Job is unsuspended (job), and is owned by that
+  pod or Job ([ADR-0013](../adr/0013-a-task-steps-params-live-in-a-secret-of-its-own.md)).
 
 ## Container states
 
