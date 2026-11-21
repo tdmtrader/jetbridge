@@ -173,7 +173,19 @@ interpolated source and params. It lives in the web's memory and the pod's,
 never in a Kubernetes object; the pod presents a projected ServiceAccount
 token bound to itself, with an audience the API server does not accept, and
 the web verifies it with a TokenReview and hands each envelope to one pod.
+A task's params are not in it: they are in its step params Secret.
 _Avoid_: credential bundle, stdin secret
+
+**Step params Secret**:
+The Secret, `step-env-<handle>`, that holds a task step's params under keys
+of the runtime's (`p0`, `p1`, ...), which its main container reads through a
+`secretKeyRef` each, so no param is a literal in the Pod or the step Job. It
+is immutable and replaced on each creation, owned by the pause pod (exec) or
+the step Job (job), and deleted by the reaper with its container when a web
+left it unowned. Only a task with params has one; the step's own env stays
+literal, and a check, get or put has none (ADR-0013). It hides params from
+readers of pods, not from readers of Secrets in the shared step namespace.
+_Avoid_: env secret, credential secret, secret env
 
 **Answer directory**:
 Under the `job` step runtime, the directory on the node's artifact host
