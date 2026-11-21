@@ -361,9 +361,12 @@ type leftHistory struct {
 // checked, may be past the history grace. So each config skipped here is
 // stamped again once the transaction has committed, by a plain UPDATE that
 // waits for the holder with nothing of this transaction held, and whose
-// failure is logged, not returned: the leave has committed. A collector pass
-// that starts in the instant between that commit and that UPDATE, on a
-// config already past the grace, can still delete it.
+// failure is logged, not returned: the leave has committed. The UPDATE waits
+// for leftConfigStampTimeout at most, so a holder that never lets go parks
+// the leaving call (and its pooled connection) only that long; then the
+// stamp is skipped and logged. A collector pass that starts in the instant
+// between that commit and that UPDATE, or after a skipped stamp, on a config
+// already past the grace, can still delete it.
 //
 // A scope row someone else holds (a move, a copy, a last-check update; a
 // version writer holds it only FOR KEY SHARE, which does not conflict) is
@@ -462,15 +465,25 @@ func stampLeftHistories(tx Tx, teamID int, leaves []leftHistory) error {
 	return nil
 }
 
+// leftConfigStampTimeout bounds stampConfigsAfterCommit's wait for a
+// config's holder. The leaving call (a save, a check's move, a put) waits that
+// long at most, holding one pooled connection.
+const leftConfigStampTimeout = 10 * time.Second
+
 // stampConfigsAfterCommit sets the last_referenced of configs a committed
 // leave could not stamp (see stampLeftHistories). It waits for whoever holds
-// them, holding nothing itself. A config already gone is left gone.
+// them, holding nothing itself, for leftConfigStampTimeout at most; past that
+// the stamp is skipped and logged, like any other failure. A config already
+// gone is left gone.
 func stampConfigsAfterCommit(conn DbConn, logger lager.Logger, configIDs []int) {
+	ctx, cancel := context.WithTimeout(context.Background(), leftConfigStampTimeout)
+	defer cancel()
+
 	_, err := psql.Update("resource_configs").
 		Set("last_referenced", sq.Expr("now()")).
 		Where(sq.Eq{"id": configIDs}).
 		RunWith(conn).
-		Exec()
+		ExecContext(ctx)
 	if err != nil && logger != nil {
 		logger.Error("failed-to-stamp-left-resource-configs", err, lager.Data{"resource-config-ids": configIDs})
 	}
