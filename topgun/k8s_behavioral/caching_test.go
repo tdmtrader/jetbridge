@@ -60,7 +60,7 @@ jobs:
       - path: my-cache
       run:
         path: sh
-        args: ["-c", "echo scope-a > my-cache/who && cat my-cache/who"]
+        args: ["-c", "printf '%s-%s' scope a > my-cache/who && echo cache-who:$(cat my-cache/who)"]
 - name: scope-b
   plan:
   - task: use-cache
@@ -71,25 +71,26 @@ jobs:
       - path: my-cache
       run:
         path: sh
-        args: ["-c", "if [ -f my-cache/who ]; then cat my-cache/who; else echo 'NO CACHE'; fi"]
+        args: ["-c", "echo cache-who:$(cat my-cache/who 2>/dev/null || printf '%s' no-file)"]
 `)
 		setAndUnpausePipeline(cfg)
 
+		// Each script prints cache-who:<what it read>; the scripts hold only
+		// "cache-who:$(cat", so the echoed command lines match neither
+		// assertion.
 		By("running job A to populate its cache")
 		triggerJob("scope-a")
 		sess := waitForBuildAndWatch("scope-a")
 		Expect(sess.ExitCode()).To(Equal(0))
+		Expect(string(sess.Out.Contents())).To(ContainSubstring("cache-who:scope-a"))
 
 		By("running job B which should have its own separate cache")
 		triggerJob("scope-b")
 		sess = waitForBuildAndWatch("scope-b")
 		Expect(sess.ExitCode()).To(Equal(0))
 		output := string(sess.Out.Contents())
-		// scope-b should NOT see scope-a's cache
-		Expect(output).To(SatisfyAny(
-			ContainSubstring("NO CACHE"),
-			ContainSubstring("scope-b"),
-		))
+		Expect(output).ToNot(ContainSubstring("cache-who:scope-a"), "scope-b read scope-a's cache")
+		Expect(output).To(ContainSubstring("cache-who:no-file"))
 	})
 
 	// Pending: fly clear-task-cache removes nothing on JetBridge today. A
@@ -148,14 +149,15 @@ jobs:
       - path: persistent-cache
       run:
         path: sh
-        args: ["-c", "echo data > persistent-cache/file && ls persistent-cache/"]
+        args: ["-c", "expr 6 '*' 7 > persistent-cache/file && echo cache-content:$(cat persistent-cache/file)"]
 `)
 		setAndUnpausePipeline(cfg)
 		triggerJob("pvc-job")
 
 		sess := waitForBuildAndWatch("pvc-job")
 		Expect(sess.ExitCode()).To(Equal(0))
-		Expect(sess.Out).To(gbytes.Say("file"))
+		// Computed, so the echoed script ("cache-content:$(cat") cannot match.
+		Expect(sess.Out).To(gbytes.Say(`cache-content:42\b`))
 	})
 
 	It("verifies K8s volume mounts for cached paths", func() {

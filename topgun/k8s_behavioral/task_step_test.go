@@ -788,7 +788,7 @@ jobs:
       - name: workspace
       run:
         path: sh
-        args: ["-c", "echo rundir=$(pwd)"]
+        args: ["-c", "echo rundir:$(basename $(pwd))"]
         dir: workspace
 `)
 			setAndUnpausePipeline(pipelineFile)
@@ -796,8 +796,8 @@ jobs:
 
 			session := waitForBuildAndWatch("rundir-job")
 			Expect(session).To(gexec.Exit(0))
-			Expect(session.Out).To(gbytes.Say("rundir="))
-			Expect(session.Out).To(gbytes.Say("workspace"))
+			// Computed: the echoed script holds only "rundir:$(basename".
+			Expect(session.Out).To(gbytes.Say(`rundir:workspace\b`))
 		})
 
 		It("5.24: run.user sets execution user", func() {

@@ -82,6 +82,29 @@ func apiGet(path string) (int, []byte) {
 	return resp.StatusCode, body
 }
 
+// apiPutJSON performs an authenticated HTTP PUT of body, marshalled as
+// JSON, and returns the status code and raw response body.
+func apiPutJSON(path string, body interface{}) (int, []byte) {
+	GinkgoHelper()
+
+	payload, err := json.Marshal(body)
+	Expect(err).ToNot(HaveOccurred())
+
+	req, err := http.NewRequest("PUT", config.ATCURL+path, strings.NewReader(string(payload)))
+	Expect(err).ToNot(HaveOccurred())
+	req.Header.Set("Authorization", "Bearer "+fetchToken().AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := insecureHTTPClient().Do(req)
+	Expect(err).ToNot(HaveOccurred())
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	Expect(err).ToNot(HaveOccurred())
+
+	return resp.StatusCode, respBody
+}
+
 // apiGetJSON performs an authenticated HTTP GET and unmarshals the JSON
 // response into the provided target.
 func apiGetJSON(path string, target interface{}) {
