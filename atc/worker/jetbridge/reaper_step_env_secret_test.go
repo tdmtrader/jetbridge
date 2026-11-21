@@ -16,6 +16,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/gc"
+	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -148,7 +149,7 @@ var _ = Describe("the reaper and a task step's params Secret", func() {
 
 	It("calls nothing for a pod that reads no Secret, a check, or a live task container", func() {
 		literal := destroying(db.ContainerTypeTask)
-		stepPod(literal, nil)
+		stepPod(literal, map[string]string{secretAnnotation: ""})
 		destroying(db.ContainerTypeCheck)
 		live := container(db.ContainerTypeTask).Handle()
 		stepPod(live, map[string]string{secretAnnotation: "step-env-" + live})
@@ -191,7 +192,7 @@ var _ = Describe("the reaper and a task step's params Secret", func() {
 
 	It("costs no call for a departing container whose pod it saw read no Secret, and asks for one it never saw", func() {
 		seen := container(db.ContainerTypeTask).Handle()
-		stepPod(seen, nil)
+		stepPod(seen, map[string]string{secretAnnotation: ""})
 		Expect(reaper.Run(ctx)).To(Succeed())
 		Expect(clientset.CoreV1().Pods(namespace).Delete(ctx, seen, metav1.DeleteOptions{})).To(Succeed())
 		missingFor(seen, 10*time.Minute)
@@ -208,6 +209,58 @@ var _ = Describe("the reaper and a task step's params Secret", func() {
 			}
 		}
 		Expect(deleted).To(Equal([]string{"step-env-" + unseen}))
+	})
+
+	It("asks for the Secret of a handle whose pod an older web made, which says nothing about params", func() {
+		old := container(db.ContainerTypeTask).Handle()
+		stepPod(old, nil)
+		Expect(reaper.Run(ctx)).To(Succeed())
+		Expect(clientset.CoreV1().Pods(namespace).Delete(ctx, old, metav1.DeleteOptions{})).To(Succeed())
+		missingFor(old, 10*time.Minute)
+		// This web replaces the older one's pod, makes the Secret, and dies.
+		secret(old)
+
+		Expect(reaper.Run(ctx)).To(Succeed())
+
+		Expect(secretExists(old)).To(BeFalse(), "an older web's pod was taken to say its handle reads no Secret")
+	})
+
+	It("keeps a pod-less destroying container for another pass when the step Jobs cannot be listed", func() {
+		podless := destroying(db.ContainerTypeTask)
+		secret(podless)
+		failed := false
+		clientset.PrependReactor("list", "jobs", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+			if failed {
+				return false, nil, nil
+			}
+			failed = true
+			return true, nil, apierrors.NewServiceUnavailable("the API server is restarting")
+		})
+
+		Expect(reaper.Run(ctx)).To(Succeed())
+		Expect(secretExists(podless)).To(BeTrue())
+		Expect(reaper.Run(ctx)).To(Succeed())
+
+		Expect(secretExists(podless)).To(BeFalse(), "the destroying row was dropped in the pass that could not tell, and its Secret with it")
+	})
+
+	It("never lets a task container a web is making a Secret for depart", func() {
+		handle := "step-returning"
+		worker := jetbridge.NewWorker(dbWorker, clientset, jetbridge.NewConfig(namespace, ""), jetbridge.WorkerDeps{})
+		step, _, err := worker.FindOrCreateContainer(ctx, db.NewFixedHandleContainerOwner(handle),
+			db.ContainerMetadata{Type: db.ContainerTypeTask},
+			runtime.ContainerSpec{TeamID: 1, Type: db.ContainerTypeTask, ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+				Params: []runtime.Param{{Name: "TOKEN", Value: "s3cr3t"}}}, nil)
+		Expect(err).ToNot(HaveOccurred())
+		// Its pod went while no web watched; the build resumes minutes later.
+		missingFor(handle, 10*time.Minute)
+
+		_, err = step.Run(ctx, runtime.ProcessSpec{Path: "/bin/true"}, runtime.ProcessIO{})
+		Expect(err).ToNot(HaveOccurred())
+
+		departing, err := database.ContainerRepository.FindDepartingContainers(workerName, db.ContainerTypeTask, time.Minute)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(departing).ToNot(ContainElement(handle), "a container given a Secret is still departing, so a reaper pass may take it")
 	})
 
 	It("says once that it may not delete them, and goes on with the pass", func() {

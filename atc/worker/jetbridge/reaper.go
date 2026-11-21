@@ -177,15 +177,20 @@ func (r *Reaper) Run(ctx context.Context) error {
 		return fmt.Errorf("updating containers missing since: %w", err)
 	}
 
-	// Before the database lets go of a task container, its params Secret.
-	r.collectStepEnvSecrets(ctx, logger, workerName)
+	// Before the database lets go of a task container, its params Secret. A
+	// destroying row whose Secret is not settled is kept for the next pass,
+	// and a pass that could not tell drops no destroying row at all: for a
+	// container with no pod, that row is the only trace of the Secret.
+	unsettled, settled := r.collectStepEnvSecrets(ctx, logger, workerName)
 
 	// Trigger DB-side container destruction for containers whose runtime
 	// resource (pod) no longer exists.
-	err = r.destroyer.DestroyContainers(workerName, handles)
-	if err != nil {
-		logger.Error("failed-to-destroy-containers", err)
-		return fmt.Errorf("destroying containers: %w", err)
+	if settled {
+		err = r.destroyer.DestroyContainers(workerName, append(append([]string{}, handles...), unsettled...))
+		if err != nil {
+			logger.Error("failed-to-destroy-containers", err)
+			return fmt.Errorf("destroying containers: %w", err)
+		}
 	}
 
 	// Insert "destroying" records for pods that exist in K8s but have no
@@ -265,9 +270,14 @@ func (r *Reaper) stepJobsForbidden(logger lager.Logger, err error, jobCall bool)
 }
 
 // stepEnvSecretOrphanGrace is how long a task container must have been
-// missing from the worker before its params Secret is taken: far longer than
-// the moment between a Secret's creation and its pod's, which is the only time
-// a container that will have a pod is without one after its Secret exists.
+// missing from the worker (since missing_since, the first pass that did not
+// list its pod) before its params Secret is taken. A web clears missing_since
+// before it makes a Secret (MarkPresent), so a container that gets a Secret
+// is missing again only once a pass after that fails to list its pod, and the
+// grace is then far longer than the moment between the Secret and its pod.
+// What is left is a pass that read the departing set before MarkPresent and
+// deletes after the Secret was made: the time between that read and its
+// DELETE, normally well under a second (ADR-0013 accepts it).
 // A step Job's container may have no pod for longer (podlessStepJobGrace);
 // its Secret is the Job's, and never taken here.
 const stepEnvSecretOrphanGrace = time.Minute
@@ -294,7 +304,15 @@ func (r *Reaper) notePodsSeen(pods []corev1.Pod) {
 		if handle == "" {
 			handle = pod.Name
 		}
-		r.stepEnvSecretsSeen[handle] = seenStepPod{readsSecret: pod.Annotations[stepEnvSecretAnnotation] != "", at: now}
+		// Only a pod that carries the annotation answers: an older web's
+		// pod carries none, whatever its params, and its replacement by this
+		// web may read a Secret.
+		name, said := pod.Annotations[stepEnvSecretAnnotation]
+		if !said {
+			delete(r.stepEnvSecretsSeen, handle)
+			continue
+		}
+		r.stepEnvSecretsSeen[handle] = seenStepPod{readsSecret: name != "", at: now}
 	}
 	for handle, seen := range r.stepEnvSecretsSeen {
 		if now.Sub(seen.at) > stepPodSeenFor {
@@ -313,20 +331,25 @@ func (r *Reaper) notePodsSeen(pods []corev1.Pod) {
 // RemoveMissingContainers), so it is collected here, first.
 //
 // No list of Secrets: each handle names its Secret. Skipped without a call:
-// a handle whose pod this process saw lately without the annotation (it reads
-// no Secret), and a handle with a step Job, whose Secret the Job owns and
+// a handle whose pod this process saw lately saying it reads no Secret (the
+// annotation present and empty: a task with no params, whose replacements
+// have none either), and a handle with a step Job, whose Secret the Job owns and
 // which may be pod-less for longer than the grace while its pod waits to be
 // made. A handle is asked again on every pass while it stays departing, so a
 // Secret a web made after an earlier pass's delete, and then died, is still
-// taken. The cost is one DELETE per pass for each departing task container
-// whose pod read a Secret or was not seen lately -- after a restart, every
-// one -- for the one pass a destroying container lasts, or until the
-// collector drops a missing one (--gc-missing-grace-period).
-func (r *Reaper) collectStepEnvSecrets(ctx context.Context, logger lager.Logger, workerName string) {
+// taken. The cost of a pass with any candidate is one Jobs LIST and one
+// DELETE per candidate: each departing task container whose pod read a
+// Secret or was not seen lately (after a restart, every one), for as long as
+// it departs -- until a destroying row is dropped, or the collector drops a
+// missing one (--gc-missing-grace-period).
+//
+// It returns the destroying handles whose Secret is not settled, to be kept
+// another pass, and whether it could tell at all.
+func (r *Reaper) collectStepEnvSecrets(ctx context.Context, logger lager.Logger, workerName string) ([]string, bool) {
 	departing, err := r.containerRepository.FindDepartingContainers(workerName, db.ContainerTypeTask, stepEnvSecretOrphanGrace)
 	if err != nil {
 		logger.Error("failed-to-find-departing-task-containers", err)
-		return
+		return nil, false
 	}
 	var candidates []string
 	r.stepEnvSecretsMu.Lock()
@@ -338,20 +361,23 @@ func (r *Reaper) collectStepEnvSecrets(ctx context.Context, logger lager.Logger,
 	}
 	r.stepEnvSecretsMu.Unlock()
 	if len(candidates) == 0 {
-		return
+		return nil, true
 	}
 	withJobs, ok := r.handlesWithStepJobs(ctx, logger, workerName)
 	if !ok {
-		return
+		return nil, false
 	}
+	var unsettled []string
 	for _, handle := range candidates {
 		if withJobs[handle] {
 			continue
 		}
 		if err := deleteStepEnvSecret(ctx, r.clientset, r.cfg.Namespace, handle); err != nil && !r.stepEnvSecretsForbidden(logger, err) {
 			logger.Error("failed-to-delete-step-env-secret", err, lager.Data{"handle": handle, "secret": stepEnvSecretName(handle)})
+			unsettled = append(unsettled, handle)
 		}
 	}
+	return unsettled, true
 }
 
 // handlesWithStepJobs is the handles that have a step Job. Not ok when the

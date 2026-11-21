@@ -1075,8 +1075,14 @@ func (c *Container) buildPodAnnotations() map[string]string {
 	if reserved := captureStepDirectory(c.containerSpec); reserved != "" {
 		annotations[captureStepAnnotation] = reserved
 	}
+	// Every task pod this web makes says whether it reads a params Secret:
+	// the Secret's name, or empty for a task with no params. A task pod with
+	// no annotation at all is an older web's, which says nothing either way
+	// (the reaper reads the difference).
 	if c.hasStepEnvSecret() {
 		annotations[stepEnvSecretAnnotation] = stepEnvSecretName(c.handle)
+	} else if c.containerSpec.Type == db.ContainerTypeTask {
+		annotations[stepEnvSecretAnnotation] = ""
 	}
 
 	return annotations
