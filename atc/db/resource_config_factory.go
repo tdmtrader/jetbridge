@@ -266,11 +266,18 @@ func (f *resourceConfigFactory) CleanUnreferencedConfigs(gracePeriod, historyGra
 			usedByResourceTypesIds + " UNION " +
 			usedByDeprecatedScopesIds + ")").
 		Where(sq.Expr(fmt.Sprintf("now() - last_referenced > '%d seconds'::interval", int(gracePeriod.Seconds())))).
-		// A config whose scopes hold versions is a version history nothing
-		// uses any more. It is kept for the history grace after it was last
-		// referenced: its last check, or its last resource leaving it.
+		// A config whose live shared scope holds versions is a version
+		// history nothing uses any more. It is kept for the history grace
+		// after it was last referenced: its last check, or its last resource
+		// leaving it. Only a live shared scope counts: a deprecated scope
+		// keeps its config through the clause above, and a live
+		// unique-history scope belongs to a resource that keeps the config
+		// until it is detached (it is deprecated at that resource's next
+		// check). The predicate is the partial index
+		// resource_config_scopes_config_team_uniq's, so the lookup by config
+		// uses it.
 		Where(sq.Expr(fmt.Sprintf(
-			"(NOT EXISTS (SELECT 1 FROM resource_config_scopes s JOIN resource_config_versions v ON v.resource_config_scope_id = s.id WHERE s.resource_config_id = resource_configs.id)"+
+			"(NOT EXISTS (SELECT 1 FROM resource_config_scopes s JOIN resource_config_versions v ON v.resource_config_scope_id = s.id WHERE s.resource_config_id = resource_configs.id AND s.resource_id IS NULL AND s.deprecated_at IS NULL)"+
 				" OR now() - last_referenced > '%d seconds'::interval)",
 			int(historyGracePeriod.Seconds())))).
 		PlaceholderFormat(sq.Dollar).
