@@ -91,6 +91,17 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  # One Secret per task step, step-env-<handle>, holding the task's params:
+  # the step pod reads each param through a secretKeyRef rather than a
+  # literal value in its spec. create makes it, patch points its
+  # ownerReference at the pause pod, delete replaces a stale one and lets the
+  # reaper collect one a web left behind. Granted under both step runtimes: a
+  # Run-owned exact execution runs on exec under either. No get, list or
+  # watch: web writes these Secrets and never reads one back, and a Role that
+  # could list them could read every Secret in the step namespace.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "patch", "delete"]
   # Read-only PVC access for cache and artifact volume discovery.
   # No create/delete — PVCs are pre-provisioned by operators or hostPath-backed.
   - apiGroups: [""]
