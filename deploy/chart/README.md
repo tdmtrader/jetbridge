@@ -284,7 +284,7 @@ web:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `kubernetes.namespace` | release namespace | Namespace where step pods are created. The chart renders the artifact daemon's read-only pods Role there, so the namespace must exist at install time. |
+| `kubernetes.namespace` | release namespace | Namespace where step pods are created. The chart renders web's pod-manager Role and the artifact daemon's read-only pods Role there, so the namespace must exist at install time; what web reads in the release namespace (the daemon's EndpointSlices, and its own pod under `job`) gets a Role of its own there. |
 | `kubernetes.serviceAccount` | `""` (web SA) | ServiceAccount for task pods. |
 | `kubernetes.podStartupTimeout` | `5m` | Max time to wait for pod Running. |
 | `kubernetes.podSchedulingTimeout` | `""` (15m) | Max time a step pod may wait Pending for cluster resources. Resolve capability expiry is derived from effective scheduling + startup + 36m. |

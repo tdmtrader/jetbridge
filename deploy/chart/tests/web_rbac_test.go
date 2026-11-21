@@ -182,3 +182,114 @@ func TestWebPodManagerRoleWritesButNeverReadsSecrets(t *testing.T) {
 		})
 	}
 }
+
+// Web creates, execs into, watches and deletes step pods, step Jobs and their
+// params Secrets in the step namespace (kubernetes.namespace), so the
+// pod-manager Role and its binding are rendered there. What web still reads
+// in the release namespace, where the artifact daemon runs -- its
+// EndpointSlices, and under the job step runtime web's own pod -- is granted
+// by a Role there. With the two namespaces equal, the pod-manager Role holds
+// both and nothing else is rendered.
+func TestWebPodManagerRoleFollowsTheStepNamespace(t *testing.T) {
+	t.Run("split", func(t *testing.T) {
+		out := renderInNamespace(t, "jbns", "kubernetes.namespace=tasks", "kubernetes.stepRuntime=job")
+		roles := namespacedRoles(t, out)
+		bindings := namespacedRoleBindings(t, out)
+
+		pm, ok := roles["jb-concourse-jetbridge-pod-manager"]
+		if !ok {
+			t.Fatal("render lacks the pod-manager Role")
+		}
+		if pm.Namespace != "tasks" {
+			t.Errorf("pod-manager Role in namespace %q, want the step namespace %q", pm.Namespace, "tasks")
+		}
+		for _, want := range []struct{ resource, verb string }{{"pods", "create"}, {"pods/exec", "create"}, {"secrets", "create"}} {
+			if !rulesGrant(pm.Rules, "", want.resource, want.verb) {
+				t.Errorf("pod-manager Role lacks %s %s: %+v", want.resource, want.verb, pm.Rules)
+			}
+		}
+		if !rulesGrant(pm.Rules, "batch", "jobs", "create") {
+			t.Errorf("pod-manager Role lacks batch/jobs create under job: %+v", pm.Rules)
+		}
+		pmb, ok := bindings["jb-concourse-jetbridge-pod-manager"]
+		if !ok || pmb.Namespace != "tasks" || pmb.RoleRef.Name != pm.Name {
+			t.Errorf("pod-manager RoleBinding = %+v, want one in %q bound to the pod-manager Role", pmb, "tasks")
+		} else if len(pmb.Subjects) != 1 || pmb.Subjects[0].Namespace != "jbns" {
+			t.Errorf("pod-manager RoleBinding subjects = %+v, want the web ServiceAccount in %q", pmb.Subjects, "jbns")
+		}
+
+		rel, ok := roles["jb-concourse-jetbridge-web-release"]
+		if !ok {
+			t.Fatal("render lacks the release-namespace Role for web")
+		}
+		if rel.Namespace != "jbns" {
+			t.Errorf("release-namespace Role in %q, want %q", rel.Namespace, "jbns")
+		}
+		if !rulesGrant(rel.Rules, "discovery.k8s.io", "endpointslices", "list") {
+			t.Errorf("release-namespace Role cannot list the daemon's EndpointSlices: %+v", rel.Rules)
+		}
+		if !rulesGrant(rel.Rules, "", "pods", "get") {
+			t.Errorf("release-namespace Role cannot read web's own pod under job: %+v", rel.Rules)
+		}
+		for _, verb := range []string{"create", "delete", "list"} {
+			if rulesGrant(rel.Rules, "", "pods", verb) {
+				t.Errorf("release-namespace Role grants pods %s: %+v", verb, rel.Rules)
+			}
+		}
+		if rulesGrant(rel.Rules, "", "secrets", "create") || rulesGrant(rel.Rules, "", "secrets", "get") {
+			t.Errorf("release-namespace Role touches Secrets: %+v", rel.Rules)
+		}
+		if b, ok := bindings["jb-concourse-jetbridge-web-release"]; !ok || b.Namespace != "jbns" || b.RoleRef.Name != rel.Name {
+			t.Errorf("release-namespace RoleBinding = %+v", b)
+		}
+	})
+
+	t.Run("same namespace", func(t *testing.T) {
+		out := renderInNamespace(t, "jbns")
+		roles := namespacedRoles(t, out)
+		if _, ok := roles["jb-concourse-jetbridge-web-release"]; ok {
+			t.Error("a second web Role is rendered when the step namespace is the release namespace")
+		}
+		pm := roles["jb-concourse-jetbridge-pod-manager"]
+		if pm == nil || pm.Namespace != "jbns" {
+			t.Fatalf("pod-manager Role = %+v, want one in %q", pm, "jbns")
+		}
+		if !rulesGrant(pm.Rules, "discovery.k8s.io", "endpointslices", "list") {
+			t.Errorf("pod-manager Role cannot list the daemon's EndpointSlices: %+v", pm.Rules)
+		}
+	})
+}
+
+func namespacedRoles(t *testing.T, rendered string) map[string]*rbacv1.Role {
+	t.Helper()
+	roles := map[string]*rbacv1.Role{}
+	for _, chunk := range splitDocuments(rendered) {
+		var head renderedObject
+		if err := yaml.Unmarshal([]byte(chunk), &head); err != nil || head.Kind != "Role" {
+			continue
+		}
+		role := &rbacv1.Role{}
+		if err := yaml.UnmarshalStrict([]byte(chunk), role); err != nil {
+			t.Fatalf("Role %s does not decode: %v", head.Metadata.Name, err)
+		}
+		roles[role.Name] = role
+	}
+	return roles
+}
+
+func namespacedRoleBindings(t *testing.T, rendered string) map[string]*rbacv1.RoleBinding {
+	t.Helper()
+	bindings := map[string]*rbacv1.RoleBinding{}
+	for _, chunk := range splitDocuments(rendered) {
+		var head renderedObject
+		if err := yaml.Unmarshal([]byte(chunk), &head); err != nil || head.Kind != "RoleBinding" {
+			continue
+		}
+		binding := &rbacv1.RoleBinding{}
+		if err := yaml.UnmarshalStrict([]byte(chunk), binding); err != nil {
+			t.Fatalf("RoleBinding %s does not decode: %v", head.Metadata.Name, err)
+		}
+		bindings[binding.Name] = binding
+	}
+	return bindings
+}
