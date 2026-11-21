@@ -25,7 +25,8 @@ package jetbridge
 //	exec   Secret (no owner) -> pod -> the Secret's ownerReference patched to
 //	       the pod. A pod create that fails deletes the Secret; a web that
 //	       dies in between leaves it to the reaper, which deletes the Secret
-//	       of every handle it destroys.
+//	       of every task container leaving the database
+//	       (collectStepEnvSecrets).
 //	job    the suspended Job -> the Secret, owned by the Job at creation ->
 //	       unsuspend. A Secret that cannot be made deletes the Job, which
 //	       never ran.

@@ -13,6 +13,7 @@ type ContainerRepository interface {
 	FindOrphanedContainers() ([]CreatingContainer, []CreatedContainer, []DestroyingContainer, error)
 	DestroyFailedContainers() (int, error)
 	FindDestroyingContainers(workerName string) ([]string, error)
+	FindDepartingContainers(workerName string, containerType ContainerType, missingFor time.Duration) ([]string, error)
 	RemoveDestroyingContainers(workerName string, currentHandles []string) (int, error)
 	UpdateContainersMissingSince(workerName string, handles []string) error
 	RemoveMissingContainers(time.Duration) (int, error)
@@ -161,6 +162,41 @@ func (repository *containerRepository) FindDestroyingContainers(workerName strin
 	}
 
 	return destroyingContainers, err
+}
+
+// FindDepartingContainers returns the handles of a worker's containers of
+// containerType that are on their way out of the database: destroying, or
+// missing from the worker for longer than missingFor. Either may leave without
+// the worker seeing it again -- a destroying container with nothing on the
+// worker is removed by RemoveDestroyingContainers, a long-missing created one
+// by RemoveMissingContainers -- so this is the worker's last look at them.
+func (repository *containerRepository) FindDepartingContainers(workerName string, containerType ContainerType, missingFor time.Duration) ([]string, error) {
+	query, args, err := psql.Select("handle").From("containers").
+		Where(sq.Eq{"worker_name": workerName, "meta_type": string(containerType)}).
+		Where(sq.Or{
+			sq.Eq{"state": atc.ContainerStateDestroying},
+			sq.And{
+				sq.NotEq{"missing_since": nil},
+				sq.Expr("NOW() - missing_since > ?::interval", fmt.Sprintf("%.0f seconds", missingFor.Seconds())),
+			},
+		}).ToSql()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := repository.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer Close(rows)
+	handles := []string{}
+	for rows.Next() {
+		var handle string
+		if err := rows.Scan(&handle); err != nil {
+			return nil, err
+		}
+		handles = append(handles, handle)
+	}
+	return handles, rows.Err()
 }
 
 func (repository *containerRepository) RemoveMissingContainers(gracePeriod time.Duration) (int, error) {
