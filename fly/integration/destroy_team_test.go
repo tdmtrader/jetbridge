@@ -76,6 +76,7 @@ var _ = Describe("destroy-team", func() {
 
 				It("tells the user the team has been destroyed", func() {
 					Eventually(sess).Should(gbytes.Say("`some-team` deleted"))
+					Eventually(sess).Should(gexec.Exit(0))
 				})
 			})
 
@@ -93,6 +94,26 @@ var _ = Describe("destroy-team", func() {
 					Eventually(sess).Should(gbytes.Say("could not destroy `some-team`"))
 					Eventually(sess).Should(gbytes.Say(`either your team is not an admin or it is the last admin team`))
 				})
+			})
+		})
+
+		Context("when the team name is piped in, ending in a newline as `echo` ends it", func() {
+			JustBeforeEach(func() {
+				fmt.Fprintf(stdin, "some-team\n")
+			})
+
+			BeforeEach(func() {
+				atcServer.AppendHandlers(
+					ghttp.CombineHandlers(
+						ghttp.VerifyRequest("DELETE", "/api/v1/teams/some-team"),
+						ghttp.RespondWith(204, ""),
+					),
+				)
+			})
+
+			It("takes the newline as the end of the answer and destroys the team", func() {
+				Eventually(sess).Should(gbytes.Say("`some-team` deleted"))
+				Eventually(sess).Should(gexec.Exit(0))
 			})
 		})
 

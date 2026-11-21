@@ -55,7 +55,9 @@ func (c confirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
-		case tea.KeyEnter:
+		// A piped answer ends in a newline, which bubbletea reads as ctrl+j,
+		// not enter (a carriage return); without it the prompt never ends.
+		case tea.KeyEnter, tea.KeyCtrlJ:
 			switch strings.ToLower(c.input.Value()) {
 			case "y", "yes":
 				c.confirmation = true

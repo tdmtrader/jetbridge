@@ -58,7 +58,9 @@ func (i InputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
-		case tea.KeyEnter:
+		// A piped answer ends in a newline, which bubbletea reads as ctrl+j,
+		// not enter (a carriage return); without it the prompt never ends.
+		case tea.KeyEnter, tea.KeyCtrlJ:
 			i.output = i.input.Value()
 			return i, tea.Quit
 		case tea.KeyCtrlC, tea.KeyEsc:
