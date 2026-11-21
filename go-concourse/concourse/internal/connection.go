@@ -12,6 +12,7 @@ import (
 	"log"
 
 	"github.com/concourse/concourse/atc"
+	"github.com/google/jsonapi"
 	"github.com/tedsuo/rata"
 	"github.com/vito/go-sse/sse"
 )
@@ -155,7 +156,18 @@ func (connection *connection) populateResponse(response *http.Response, returnRe
 	if response.StatusCode == http.StatusNotFound {
 		var errors ResourceNotFoundError
 
-		json.NewDecoder(response.Body).Decode(&errors)
+		// A JSON:API errors payload, or the API's own {"error": "..."}
+		// body, which says why a request it understood found nothing.
+		body, _ := io.ReadAll(response.Body)
+		json.Unmarshal(body, &errors)
+		if len(errors.Errors) == 0 {
+			var refusal struct {
+				Error string `json:"error"`
+			}
+			if json.Unmarshal(body, &refusal) == nil && refusal.Error != "" {
+				errors.Errors = []*jsonapi.ErrorObject{{Detail: refusal.Error}}
+			}
+		}
 		return errors
 	}
 

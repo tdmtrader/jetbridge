@@ -3,6 +3,7 @@ package concourse
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -199,11 +200,32 @@ func (team *team) CopyResourceVersions(pipelineRef atc.PipelineRef, resourceName
 		Body:        bytes.NewReader(body),
 	}
 	err := team.connection.Send(request, &response)
+	if reason, refused := copyRefusal(err); refused {
+		return 0, APIRefusalError{Errors: []string{reason}}
+	}
 	if err != nil {
 		return 0, err
 	}
 
 	return copyResponse.VersionsCopied, nil
+}
+
+// copyRefusal reports the reason the copy answered with its 409, whose body is
+// {"error": "..."} rather than the atc.SaveConfigResponse envelope. A 404's
+// reason reaches the caller as the ResourceNotFoundError's text.
+func copyRefusal(err error) (string, bool) {
+	var unexpected internal.UnexpectedResponseError
+	if !errors.As(err, &unexpected) || unexpected.StatusCode != http.StatusConflict {
+		return "", false
+	}
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal([]byte(unexpected.Body), &body) != nil || body.Error == "" {
+		return "", false
+	}
+	return body.Error, true
 }
 
 func (team *team) ListDeprecatedScopes(pipelineRef atc.PipelineRef, resourceName string) ([]atc.DeprecatedScope, error) {
