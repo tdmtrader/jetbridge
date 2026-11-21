@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -195,6 +196,14 @@ type ContainerSpec struct {
 	// for running Processes. These are in addition to, but take precedence
 	// over, those defined in the container image's metdata file.
 	Env []string
+	// Params are a task's params, in name order: environment variables whose
+	// values come from the task's config, and so may hold whatever a
+	// credential manager or a var resolved. They are set after Env, so a
+	// param of the same name wins, and only a task step has any. Env holds
+	// only the values the web itself generates; a runtime that keeps the two
+	// apart can store Params where a reader of the container's spec does not
+	// see them.
+	Params []Param
 	// SecretEnv maps environment variable names to K8s Secret coordinates.
 	// When the runtime supports it, these are emitted as ValueFrom.SecretKeyRef
 	// in the pod spec instead of literal values, so the secret never appears
@@ -253,6 +262,25 @@ type ContainerSpec struct {
 
 	// Sidecars defines service containers to run alongside the main container.
 	Sidecars []atc.SidecarConfig
+}
+
+// Param is one of a task's params: the environment variable Name set to Value.
+type Param struct {
+	Name  string
+	Value string
+}
+
+// ParamsFrom is a task's params in name order.
+func ParamsFrom(env atc.TaskEnv) []Param {
+	if len(env) == 0 {
+		return nil
+	}
+	params := make([]Param, 0, len(env))
+	for name, value := range env {
+		params = append(params, Param{Name: name, Value: value})
+	}
+	sort.Slice(params, func(i, j int) bool { return params[i].Name < params[j].Name })
+	return params
 }
 
 type BuildStepDelegate interface {

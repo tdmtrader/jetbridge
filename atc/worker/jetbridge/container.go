@@ -593,6 +593,9 @@ func (c *Container) composePod(processSpec runtime.ProcessSpec, command []string
 	}
 
 	env := envVars(c.containerSpec.Env)
+	for _, param := range c.containerSpec.Params {
+		env = append(env, corev1.EnvVar{Name: param.Name, Value: param.Value})
+	}
 	env = append(env, envVars(processSpec.Env)...)
 	applySecretRefs(env, c.containerSpec.SecretEnv)
 
