@@ -435,7 +435,7 @@ web:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `rbac.create` | `true` | Create Role + RoleBinding for the web pod (pod/exec/log CRUD, and `create`, `patch`, `delete` on Secrets for each task step's params Secret, `step-env-<handle>`; never `get`, `list` or `watch`). |
+| `rbac.create` | `true` | Create Role + RoleBinding for the web pod (pod/exec/log CRUD, and `create`, `patch`, `delete` on Secrets for each task step's params Secret, `step-env-<handle>`; never `get`, `list` or `watch`, so web cannot enumerate Secrets, but the verbs are not narrowed by name: web may patch or delete any Secret in the step namespace, and a patch returns the Secret it patched. With `kubernetes.namespace` unset that is the release namespace, which holds web's own Secrets; a separate step namespace is the narrower choice). |
 | `serviceAccount.create` | `true` | Create ServiceAccount for the web pod. |
 | `serviceAccount.annotations` | `{}` | ServiceAccount annotations (e.g. GKE Workload Identity). |
 

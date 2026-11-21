@@ -100,8 +100,12 @@ rules:
   # ownerReference at the pause pod, delete replaces a stale one and lets the
   # reaper collect one a web left behind. Granted under both step runtimes: a
   # Run-owned exact execution runs on exec under either. No get, list or
-  # watch: web writes these Secrets and never reads one back, and a Role that
-  # could list them could read every Secret in the step namespace.
+  # watch, so web cannot enumerate the namespace's Secrets -- but these verbs
+  # are not narrowed by name: web may patch or delete any Secret in the step
+  # namespace, and a patch's response carries the Secret it patched, so it can
+  # read any Secret it can name. With kubernetes.namespace unset that is the
+  # release namespace, which holds web's own Secrets; a separate step
+  # namespace is the narrower choice.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "patch", "delete"]
