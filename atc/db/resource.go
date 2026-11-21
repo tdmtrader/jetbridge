@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"code.cloudfoundry.org/lager/v3"
 	sq "github.com/Masterminds/squirrel"
 
 	"github.com/concourse/concourse/atc"
@@ -349,15 +350,32 @@ type leftHistory struct {
 // list it and copy its history back (CopyVersionsFromScope), and a resource
 // of the team that returns to the config finds it as it is.
 //
-// Every row is taken FOR NO KEY UPDATE SKIP LOCKED, so this never waits. A
-// pipeline save calls it while holding its pipeline's job rows, and a mover
-// holds scopes while it schedules those jobs. A config row held by someone
-// else is held by whoever is using the config now (a check bumping its
-// clock, a put finding it). A scope row held by someone else (a move, a copy,
-// a last-check update; a version writer holds it only FOR KEY SHARE, which
-// does not conflict) is left unstamped: the history is kept but not listed
-// for this resource. A mover already holds both its scopes, so its own stamp
-// is never skipped.
+// Inside the transaction every row is taken FOR NO KEY UPDATE SKIP LOCKED, so
+// this never waits. A pipeline save calls it while holding its pipeline's job
+// rows, and a mover holds scopes while it schedules those jobs.
+//
+// A config row someone else holds is not stamped inside the transaction. Its
+// holder need not be bumping the clock: a put finding the config
+// (SaveOutput) and a get's cache lookup hold it FOR SHARE and leave
+// last_referenced as it is, which for a resource only put to, or never
+// checked, may be past the history grace. So each config skipped here is
+// stamped again once the transaction has committed, by a plain UPDATE that
+// waits for the holder with nothing of this transaction held, and whose
+// failure is logged, not returned: the leave has committed. A collector pass
+// that starts in the instant between that commit and that UPDATE, on a
+// config already past the grace, can still delete it.
+//
+// A scope row someone else holds (a move, a copy, a last-check update; a
+// version writer holds it only FOR KEY SHARE, which does not conflict) is
+// left unstamped: the history is kept but not listed for this resource. A
+// mover already holds both its scopes, so its own stamp is never skipped.
+//
+// The pointer's foreign key is ON DELETE SET NULL, and it now names live
+// shared scopes too, so deleting the resource (a pipeline or team destroy)
+// also writes those scopes. Such a delete waits for a move, a copy or a
+// last-check update holding one of them, and it can be chosen as the victim of
+// a deadlock against a mover holding the same two scopes. Postgres aborts one
+// side and nothing hangs.
 func stampLeftHistories(tx Tx, teamID int, leaves []leftHistory) error {
 	if len(leaves) == 0 {
 		return nil
@@ -379,13 +397,39 @@ func stampLeftHistories(tx Tx, teamID int, leaves []leftHistory) error {
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(`
+		rows, err := tx.Query(`
 			WITH stamped AS (`+query+`)
 			UPDATE resource_configs SET last_referenced = now()
 			FROM stamped WHERE resource_configs.id = stamped.id
+			RETURNING resource_configs.id
 		`, args...)
 		if err != nil {
 			return err
+		}
+		stamped := map[int]bool{}
+		for rows.Next() {
+			var id int
+			if err := rows.Scan(&id); err != nil {
+				Close(rows)
+				return err
+			}
+			stamped[id] = true
+		}
+		Close(rows)
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		skipped := []int{}
+		for _, id := range configIDs {
+			if !stamped[id] && !slices.Contains(skipped, id) {
+				skipped = append(skipped, id)
+			}
+		}
+		if len(skipped) > 0 {
+			tx.afterCommit(func(conn DbConn, logger lager.Logger) {
+				stampConfigsAfterCommit(conn, logger, skipped)
+			})
 		}
 	}
 
@@ -416,6 +460,20 @@ func stampLeftHistories(tx Tx, teamID int, leaves []leftHistory) error {
 	}
 
 	return nil
+}
+
+// stampConfigsAfterCommit sets the last_referenced of configs a committed
+// leave could not stamp (see stampLeftHistories). It waits for whoever holds
+// them, holding nothing itself. A config already gone is left gone.
+func stampConfigsAfterCommit(conn DbConn, logger lager.Logger, configIDs []int) {
+	_, err := psql.Update("resource_configs").
+		Set("last_referenced", sq.Expr("now()")).
+		Where(sq.Eq{"id": configIDs}).
+		RunWith(conn).
+		Exec()
+	if err != nil && logger != nil {
+		logger.Error("failed-to-stamp-left-resource-configs", err, lager.Data{"resource-config-ids": configIDs})
+	}
 }
 
 // carryVersionHistoryForward keeps a resource's version history when the image

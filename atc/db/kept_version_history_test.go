@@ -222,14 +222,62 @@ var _ = Describe("A version history its last resource left", func() {
 			Expect(from.Valid).To(BeFalse())
 		})
 
-		It("commits the save without waiting while the config is held FOR UPDATE", func() {
+		// The config row is skipped inside the leaving transaction, which then
+		// commits without waiting; its clock is stamped once that has
+		// committed, waiting for the holder with nothing held.
+		leaveCommitsThenStamps := func(leave func() error) {
+			GinkgoHelper()
+			done := make(chan error, 1)
+			go func() {
+				defer GinkgoRecover()
+				done <- leave()
+			}()
+
+			observer := openRunLifecycleConn()
+			Eventually(func() bool {
+				var scopeID sql.NullInt64
+				Expect(observer.QueryRow(`SELECT resource_config_scope_id FROM resources WHERE id = $1`, resource.ID()).Scan(&scopeID)).To(Succeed())
+				return scopeID.Valid && int(scopeID.Int64) == oldScopeID
+			}).WithTimeout(lockOrderWait).Should(BeFalse(), "the leave did not commit while the config was held")
+
+			Expect(holder.Rollback()).To(Succeed())
+			var err error
+			Eventually(done).WithTimeout(lockOrderWait).Should(Receive(&err))
+			Expect(err).ToNot(HaveOccurred())
+
+			collect()
+			Expect(configPresent(oldConfigID)).To(BeTrue(), "the config's clock was not stamped, so the history was collected")
+			Expect(versionCount(oldScopeID)).To(Equal(2))
+		}
+
+		saveDetaching := func() error {
+			_, _, err := scenario.Team.SavePipeline(atc.PipelineRef{Name: "some-pipeline"}, pipelineWith(newSource), scenario.Pipeline.ConfigVersion(), false)
+			return err
+		}
+
+		It("commits the save while the config is held FOR UPDATE, and still keeps the history", func() {
 			hold(`SELECT 1 FROM resource_configs WHERE id = $1 FOR UPDATE`, oldConfigID)
 
-			saveWithoutWaiting()
-			Expect(holder.Rollback()).To(Succeed())
+			leaveCommitsThenStamps(saveDetaching)
 
 			from, _ := leftBy(oldScopeID)
 			Expect(from.Valid).To(BeTrue(), "the scope stamp was skipped with the config stamp")
+		})
+
+		It("commits the save while a put or get holds the config FOR SHARE, and still keeps the history", func() {
+			hold(`SELECT 1 FROM resource_configs WHERE id = $1 FOR SHARE`, oldConfigID)
+
+			leaveCommitsThenStamps(saveDetaching)
+		})
+
+		It("commits a check's move while a put or get holds the config FOR SHARE, and still keeps the history", func() {
+			newConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(dbtest.BaseResourceType, newSource, nil)
+			Expect(err).ToNot(HaveOccurred())
+			newScope, err := newConfig.FindOrCreateScope(resource.TeamID(), intptr(resource.ID()))
+			Expect(err).ToNot(HaveOccurred())
+			hold(`SELECT 1 FROM resource_configs WHERE id = $1 FOR SHARE`, oldConfigID)
+
+			leaveCommitsThenStamps(func() error { return resource.SetResourceConfigScope(newScope) })
 		})
 
 		It("still stamps a scope a version writer holds FOR KEY SHARE", func() {

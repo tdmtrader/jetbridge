@@ -59,6 +59,11 @@ type Tx interface {
 	Rollback() error
 	Stmt(*sql.Stmt) *sql.Stmt
 	EncryptionStrategy() encryption.Strategy
+
+	// afterCommit runs fn once the transaction has committed, with no lock
+	// of it held, on the connection it was begun on. A wrapper that embeds
+	// a Tx keeps it. A transaction that rolls back runs nothing.
+	afterCommit(fn func(conn DbConn, logger lager.Logger))
 }
 
 func Open(logger lager.Logger, driver, dsn string, newKey, oldKey *encryption.Key, name string, lockFactory lock.LockFactory) (DbConn, error) {
@@ -74,7 +79,12 @@ func Open(logger lager.Logger, driver, dsn string, newKey, oldKey *encryption.Ke
 			return nil, err
 		}
 
-		return NewConn(name, sqlDB, dsn, oldKey, newKey)
+		conn, err := NewConn(name, sqlDB, dsn, oldKey, newKey)
+		if err != nil {
+			return nil, err
+		}
+		conn.(*db).logger = logger.Session("db")
+		return conn, nil
 	}
 }
 
@@ -113,6 +123,9 @@ type db struct {
 	bus        NotificationsBus
 	encryption encryption.Strategy
 	name       string
+	// logger is the one Open was given; nil for a conn built by NewConn
+	// alone (test fixtures), whose after-commit failures go unlogged.
+	logger lager.Logger
 }
 
 func (db *db) Name() string {
@@ -154,7 +167,7 @@ func (db *db) Begin() (Tx, error) {
 		return nil, err
 	}
 
-	return &dbTx{tx, GlobalConnectionTracker.Track(), db.EncryptionStrategy()}, nil
+	return &dbTx{Tx: tx, session: GlobalConnectionTracker.Track(), encryptionStrategy: db.EncryptionStrategy(), conn: db}, nil
 }
 
 func (db *db) Exec(query string, args ...any) (sql.Result, error) {
@@ -184,7 +197,7 @@ func (db *db) BeginTx(ctx context.Context, opts *sql.TxOptions) (Tx, error) {
 		return nil, err
 	}
 
-	return &dbTx{tx, GlobalConnectionTracker.Track(), db.EncryptionStrategy()}, nil
+	return &dbTx{Tx: tx, session: GlobalConnectionTracker.Track(), encryptionStrategy: db.EncryptionStrategy(), conn: db}, nil
 }
 
 func (db *db) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
@@ -213,6 +226,9 @@ type dbTx struct {
 
 	session            ConnectionSession
 	encryptionStrategy encryption.Strategy
+
+	conn      *db
+	committed []func(DbConn, lager.Logger)
 }
 
 // to conform to squirrel.Runner interface
@@ -225,8 +241,23 @@ func (tx *dbTx) QueryRowContext(ctx context.Context, query string, args ...any) 
 }
 
 func (tx *dbTx) Commit() error {
-	defer tx.session.Release()
-	return tx.Tx.Commit()
+	err := tx.Tx.Commit()
+	tx.session.Release()
+	if err != nil {
+		return err
+	}
+
+	hooks := tx.committed
+	tx.committed = nil
+	for _, fn := range hooks {
+		fn(tx.conn, tx.conn.logger)
+	}
+
+	return nil
+}
+
+func (tx *dbTx) afterCommit(fn func(DbConn, lager.Logger)) {
+	tx.committed = append(tx.committed, fn)
 }
 
 func (tx *dbTx) Rollback() error {
