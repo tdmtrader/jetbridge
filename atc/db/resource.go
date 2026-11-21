@@ -92,12 +92,16 @@ type Resource interface {
 	Reload() (bool, error)
 }
 
-// DeprecatedScope represents a soft-deleted resource config scope that
-// previously belonged to this resource before a config change.
+// DeprecatedScope is a version history this resource used before: a scope
+// deprecated when the resource left it (a unique history's config change, a
+// type-image carry), or a live shared scope of the resource's team that the
+// resource was the last to leave. DeprecatedAt is zero for a live one.
 type DeprecatedScope struct {
 	ID           int
 	DeprecatedAt time.Time
 	ConfigID     int
+	Versions     int
+	LastCheckEnd time.Time
 }
 
 var (
@@ -697,20 +701,36 @@ func (r *resource) BuildSummary() *atc.BuildSummary {
 	return r.buildSummary
 }
 
-// DeprecatedScopes returns all soft-deleted resource config scopes that
-// previously belonged to this resource, ordered by most recently deprecated first.
+// DeprecatedScopes returns the version histories this resource used before,
+// most recently deprecated first, then the live ones by their last check:
+// the scopes of the resource's own team that name this resource as the one
+// that left them (deprecated_from_resource_id). A deprecated scope is one the
+// resource's config change or a type-image carry retired, listed as in 0.4.6.
+// A live shared scope is one the resource left and nothing has deprecated,
+// kept for the deprecated-scope grace period after it was left
+// (CleanUnreferencedConfigs); it is listed while it holds versions and is
+// not the resource's current scope (the resource came back to it). A
+// resource that left a shared scope before another resource did is not named
+// on it: only the last to leave is.
 func (r *resource) DeprecatedScopes() ([]DeprecatedScope, error) {
-	rows, err := psql.Select("id", "deprecated_at", "resource_config_id").
-		From("resource_config_scopes").
-		Where(sq.Eq{
-			"deprecated_from_resource_id": r.id,
-		}).
-		Where(sq.NotEq{
-			"deprecated_at": nil,
-		}).
-		OrderBy("deprecated_at DESC").
-		RunWith(r.conn).
-		Query()
+	rows, err := r.conn.Query(`
+		SELECT s.id, s.deprecated_at, s.resource_config_id, s.last_check_end_time,
+			(SELECT count(*) FROM resource_config_versions v WHERE v.resource_config_scope_id = s.id)
+		FROM resource_config_scopes s
+		JOIN resources r ON r.id = s.deprecated_from_resource_id
+		JOIN pipelines p ON p.id = r.pipeline_id
+		WHERE r.id = $1
+		AND s.team_id = p.team_id
+		AND (
+			s.deprecated_at IS NOT NULL
+			OR (
+				s.resource_id IS NULL
+				AND s.id IS DISTINCT FROM r.resource_config_scope_id
+				AND EXISTS (SELECT 1 FROM resource_config_versions v WHERE v.resource_config_scope_id = s.id)
+			)
+		)
+		ORDER BY s.deprecated_at DESC NULLS LAST, s.last_check_end_time DESC, s.id DESC
+	`, r.id)
 	if err != nil {
 		return nil, err
 	}
@@ -719,38 +739,57 @@ func (r *resource) DeprecatedScopes() ([]DeprecatedScope, error) {
 	var scopes []DeprecatedScope
 	for rows.Next() {
 		var s DeprecatedScope
-		err := rows.Scan(&s.ID, &s.DeprecatedAt, &s.ConfigID)
+		var deprecatedAt sql.NullTime
+		err := rows.Scan(&s.ID, &deprecatedAt, &s.ConfigID, &s.LastCheckEnd, &s.Versions)
 		if err != nil {
 			return nil, err
+		}
+		if deprecatedAt.Valid {
+			s.DeprecatedAt = deprecatedAt.Time
 		}
 		scopes = append(scopes, s)
 	}
 
-	return scopes, nil
+	return scopes, rows.Err()
 }
 
 // ErrResourceVersionNotFound is returned for a version row id that names no
 // version of the resource's own history.
 var ErrResourceVersionNotFound = errors.New("resource version not found")
 
+// ErrVersionHistoryNotFound is returned for a source scope that is gone, or
+// that is not a history of the resource's own team.
+var ErrVersionHistoryNotFound = errors.New("source version history not found")
+
 // ErrCopyIntoSharedScope refuses a copy into a version history that other
 // resources share, from a history that is not theirs.
-var ErrCopyIntoSharedScope = errors.New("the resource's current version history is shared with other resources, and the source scope's history is not one of the same resource config or of another version of the same type image (same type source and params); copying it would write into their history")
+var ErrCopyIntoSharedScope = errors.New("the resource's current version history is shared with other resources or resource types of the team, and the source scope's history is not one of the same resource config or of another version of the same type image (same type source and params); copying it would write into their history")
 
 // CopyVersionsFromScope copies the given source scope's versions into this
 // resource's current scope, merged into its order as copyVersionsIntoScopeTx
 // describes. Returns count of versions copied.
 //
 // A current scope that belongs to this resource alone (a base type with a
-// unique version history) takes any history. A current scope other resources
-// share takes only a history of the same resource config or of another
-// version of the same type image: anything else could write versions its own
-// checks never found into their history. The current scope is the resource's
-// team's (ADR-0012), so a copy never writes into another team's history.
+// unique version history) takes any history, and so does a shared one no
+// other active resource points at and no active resource type of the team is
+// on the config of (the predicate the history carry uses): there is nobody
+// else reading it to protect. A teammate that attaches to it later reads the
+// copied versions, as it reads everything that history's checks found
+// before it arrived. A current scope other active resources or types share
+// takes only a history of the same resource config or of another version of
+// the same type image: anything else could write versions their own checks
+// never found into their history (ErrCopyIntoSharedScope).
+//
+// Both scopes are the resource's team's (ADR-0012): the current one by the
+// store's trigger, the source checked here, so a copy never reads or writes
+// another team's history. A source that is gone (collected since it was
+// listed) or of another team is ErrVersionHistoryNotFound.
 //
 // The resource row is locked first, as a move locks it, so the resource
 // cannot move off the scope mid-copy, and then both scopes, before anything
-// about the destination is read.
+// about either is read. The config collector deletes the source only through
+// its scope row, which waits for this lock, so a source read here survives
+// the copy.
 func (r *resource) CopyVersionsFromScope(fromScopeID int) (int, error) {
 	tx, err := r.conn.Begin()
 	if err != nil {
@@ -789,15 +828,21 @@ func (r *resource) CopyVersionsFromScope(fromScopeID int) (int, error) {
 		return 0, err
 	}
 
-	if !scopeResourceID.Valid || int(scopeResourceID.Int64) != r.id {
-		var fromConfigID int
-		err = tx.QueryRow(`
-			SELECT resource_config_id FROM resource_config_scopes WHERE id = $1
-		`, fromScopeID).Scan(&fromConfigID)
-		if err != nil {
-			return 0, err
+	var fromConfigID int
+	err = tx.QueryRow(`
+		SELECT s.resource_config_id FROM resource_config_scopes s
+		JOIN resources r ON r.id = $2
+		JOIN pipelines p ON p.id = r.pipeline_id
+		WHERE s.id = $1 AND s.team_id = p.team_id
+	`, fromScopeID, r.id).Scan(&fromConfigID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, ErrVersionHistoryNotFound
 		}
+		return 0, err
+	}
 
+	if !scopeResourceID.Valid || int(scopeResourceID.Int64) != r.id {
 		if fromConfigID != configID {
 			sameImage, err := onlyTypeImageVersionDiffers(tx, fromConfigID, configID)
 			if err != nil {
@@ -805,7 +850,14 @@ func (r *resource) CopyVersionsFromScope(fromScopeID int) (int, error) {
 			}
 
 			if !sameImage {
-				return 0, ErrCopyIntoSharedScope
+				soleUser, err := soleActiveUserOfScope(tx, r.id, scopeID, configID)
+				if err != nil {
+					return 0, err
+				}
+
+				if !soleUser {
+					return 0, ErrCopyIntoSharedScope
+				}
 			}
 		}
 	}
@@ -821,6 +873,29 @@ func (r *resource) CopyVersionsFromScope(fromScopeID int) (int, error) {
 	}
 
 	return copied, nil
+}
+
+// soleActiveUserOfScope says whether a resource is the only active user of a
+// shared scope: no other active resource points at it, and no active
+// resource type of the scope's team is on its config. It is the predicate the
+// history carry deprecates a scope by. The caller holds the scope FOR UPDATE,
+// so no resource can attach to it before the caller commits.
+func soleActiveUserOfScope(tx Tx, resourceID, scopeID, configID int) (bool, error) {
+	var sole bool
+	err := tx.QueryRow(`
+		SELECT NOT EXISTS (
+			SELECT 1 FROM resources r
+			WHERE r.resource_config_scope_id = $1 AND r.active AND r.id <> $2
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM resource_types rt
+			JOIN pipelines p ON p.id = rt.pipeline_id
+			JOIN resource_config_scopes s ON s.id = $1
+			WHERE rt.resource_config_id = $3 AND rt.active
+			AND p.team_id = s.team_id
+		)
+	`, scopeID, resourceID, configID).Scan(&sole)
+	return sole, err
 }
 
 func (r *resource) ClearVersions() (int64, error) {

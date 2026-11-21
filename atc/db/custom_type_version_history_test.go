@@ -811,7 +811,8 @@ var _ = Describe("A custom resource type's image changing", func() {
 			oldScopeID = scenario.Resource("some-resource").ResourceConfigScopeID()
 
 			// A resource on the base type, with the same source, would share
-			// this global scope.
+			// this global scope. The refusals attach same-resource to it: a
+			// shared scope with no other active user takes the copy.
 			var err error
 			sharedScope, err = baseConfig(dbtest.BaseResourceType, resourceSource).FindOrCreateScope(scenario.Team.ID(), nil)
 			Expect(err).ToNot(HaveOccurred())
@@ -828,6 +829,7 @@ var _ = Describe("A custom resource type's image changing", func() {
 			Expect(deprecated(oldScopeID)).To(BeTrue())
 
 			Expect(moveTo("some-resource", baseConfig(dbtest.BaseResourceType, resourceSource)).ID()).To(Equal(sharedScope.ID()))
+			Expect(moveTo("same-resource", baseConfig(dbtest.BaseResourceType, resourceSource)).ID()).To(Equal(sharedScope.ID()))
 
 			resource := scenario.Resource("some-resource")
 			listed, err := resource.DeprecatedScopes()
@@ -850,6 +852,7 @@ var _ = Describe("A custom resource type's image changing", func() {
 			Expect(deprecated(uniqueScope.ID())).To(BeTrue())
 
 			Expect(moveTo("some-resource", baseConfig(dbtest.BaseResourceType, resourceSource)).ID()).To(Equal(sharedScope.ID()))
+			Expect(moveTo("same-resource", baseConfig(dbtest.BaseResourceType, resourceSource)).ID()).To(Equal(sharedScope.ID()))
 
 			resource = scenario.Resource("some-resource")
 			_, err := resource.CopyVersionsFromScope(uniqueScope.ID())

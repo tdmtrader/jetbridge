@@ -70,6 +70,14 @@ func (s *Server) CopyResourceVersions(pipeline db.Pipeline) http.Handler {
 		}
 
 		copied, err := resource.CopyVersionsFromScope(req.FromScopeID)
+		if errors.Is(err, db.ErrVersionHistoryNotFound) {
+			// Listed above, but collected (or not the resource's team's) by
+			// the time the copy locked it.
+			logger.Info("source-scope-gone", lager.Data{"from-scope-id": req.FromScopeID})
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error":"source scope not found or does not belong to this resource"}`))
+			return
+		}
 		if errors.Is(err, db.ErrCopyIntoSharedScope) {
 			logger.Info("refused-copy-into-shared-scope", lager.Data{"from-scope-id": req.FromScopeID, "reason": err.Error()})
 			w.Header().Set("Content-Type", "application/json")

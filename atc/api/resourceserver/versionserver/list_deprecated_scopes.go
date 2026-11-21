@@ -2,6 +2,7 @@ package versionserver
 
 import (
 	"net/http"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc"
@@ -38,11 +39,22 @@ func (s *Server) ListDeprecatedScopes(pipeline db.Pipeline) http.Handler {
 		for _, scope := range deprecated {
 			response = append(response, atc.DeprecatedScope{
 				ID:           scope.ID,
-				DeprecatedAt: scope.DeprecatedAt.Format("2006-01-02T15:04:05Z"),
+				DeprecatedAt: formatScopeTime(scope.DeprecatedAt),
 				ConfigID:     scope.ConfigID,
+				Versions:     scope.Versions,
+				LastChecked:  formatScopeTime(scope.LastCheckEnd),
 			})
 		}
 
 		helpers.WriteJSONResponse(s.logger, w, response)
 	})
+}
+
+// formatScopeTime is empty for a time never set: a live history has no
+// deprecation time, and a scope never checked has the epoch as its last check.
+func formatScopeTime(t time.Time) string {
+	if t.IsZero() || t.Unix() <= 0 {
+		return ""
+	}
+	return t.UTC().Format("2006-01-02T15:04:05Z")
 }

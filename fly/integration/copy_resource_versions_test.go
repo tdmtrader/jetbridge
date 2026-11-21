@@ -37,14 +37,14 @@ var _ = Describe("copy-resource-versions", func() {
 		})
 	})
 
-	Context("when listing deprecated scopes (no --from-scope)", func() {
+	Context("when listing previous version histories (no --from-scope)", func() {
 		var expectedURL = "/api/v1/teams/main/pipelines/some-pipeline/resources/some-resource/deprecated-scopes"
 
 		BeforeEach(func() {
 			args = []string{"-r", "some-pipeline/some-resource"}
 		})
 
-		Context("when there are deprecated scopes", func() {
+		Context("when there are previous histories", func() {
 			BeforeEach(func() {
 				atcServer.AppendHandlers(
 					ghttp.CombineHandlers(
@@ -60,21 +60,28 @@ var _ = Describe("copy-resource-versions", func() {
 								DeprecatedAt: "2026-04-08T09:30:00Z",
 								ConfigID:     15,
 							},
+							{
+								ID:          51,
+								ConfigID:    19,
+								Versions:    150,
+								LastChecked: "2026-11-01T10:00:00Z",
+							},
 						}),
 					),
 				)
 			})
 
-			It("lists the available scopes", func() {
+			It("lists the available histories, deprecated and kept, with their version counts", func() {
 				Eventually(sess).Should(gexec.Exit(0))
-				Expect(sess.Out).To(gbytes.Say("deprecated scopes available"))
-				Expect(sess.Out).To(gbytes.Say("scope 42"))
+				Expect(sess.Out).To(gbytes.Say("previous version histories available to copy"))
+				Expect(sess.Out).To(gbytes.Say(`scope 42  \(deprecated at: 2026-04-10T12:00:00Z, 0 versions, config id: 17\)`))
 				Expect(sess.Out).To(gbytes.Say("scope 38"))
+				Expect(sess.Out).To(gbytes.Say(`scope 51  \(kept, 150 versions, last checked: 2026-11-01T10:00:00Z, config id: 19\)`))
 				Expect(sess.Out).To(gbytes.Say("re-run with --from-scope"))
 			})
 		})
 
-		Context("when there are no deprecated scopes", func() {
+		Context("when there are no previous histories", func() {
 			BeforeEach(func() {
 				atcServer.AppendHandlers(
 					ghttp.CombineHandlers(
@@ -84,9 +91,9 @@ var _ = Describe("copy-resource-versions", func() {
 				)
 			})
 
-			It("reports no scopes found", func() {
+			It("reports no histories found", func() {
 				Eventually(sess).Should(gexec.Exit(0))
-				Expect(sess.Out).To(gbytes.Say("no deprecated scopes found"))
+				Expect(sess.Out).To(gbytes.Say("no previous version histories found"))
 			})
 		})
 	})
