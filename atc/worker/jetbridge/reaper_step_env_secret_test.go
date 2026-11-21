@@ -19,6 +19,7 @@ import (
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -157,17 +158,56 @@ var _ = Describe("the reaper and a task step's params Secret", func() {
 		Expect(secretCalls()).To(BeEmpty())
 	})
 
-	It("asks for a departing handle's Secret once, never lists one, and reads none", func() {
-		podless := destroying(db.ContainerTypeTask)
-		// The destroying row of a podless container is dropped in the same
-		// pass; a long-missing one stays for the collector.
+	It("asks again on every pass while a handle departs, so a Secret made after an earlier delete is still taken, and never lists or reads one", func() {
 		long := container(db.ContainerTypeTask).Handle()
 		missingFor(long, 10*time.Minute)
+		secret(long)
 
 		Expect(reaper.Run(ctx)).To(Succeed())
+		Expect(secretExists(long)).To(BeFalse())
+
+		// A web makes the Secret again, and dies before the pod.
+		secret(long)
 		Expect(reaper.Run(ctx)).To(Succeed())
 
-		Expect(secretCalls()).To(Equal(map[string]int{"delete": 2}), "podless %s, long-missing %s", podless, long)
+		Expect(secretExists(long)).To(BeFalse(), "a Secret made after the first pass's delete outlived its departing container")
+		Expect(secretCalls()).To(Equal(map[string]int{"create": 2, "delete": 2, "get": 2}), "only the test's own creates and reads")
+	})
+
+	It("never takes the Secret of a handle that has a step Job, which owns it while its pod is still to be made", func() {
+		pending := container(db.ContainerTypeTask).Handle()
+		missingFor(pending, 5*time.Minute)
+		secret(pending)
+		_, err := clientset.BatchV1().Jobs(namespace).Create(ctx, &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+			Name: "job-" + pending, Namespace: namespace, CreationTimestamp: metav1.Now(),
+			Labels: map[string]string{"concourse.ci/worker": workerName, "concourse.ci/handle": pending},
+		}}, metav1.CreateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
+		Expect(reaper.Run(ctx)).To(Succeed())
+
+		Expect(secretExists(pending)).To(BeTrue(), "the Secret of a step Job whose pod is late was taken")
+	})
+
+	It("costs no call for a departing container whose pod it saw read no Secret, and asks for one it never saw", func() {
+		seen := container(db.ContainerTypeTask).Handle()
+		stepPod(seen, nil)
+		Expect(reaper.Run(ctx)).To(Succeed())
+		Expect(clientset.CoreV1().Pods(namespace).Delete(ctx, seen, metav1.DeleteOptions{})).To(Succeed())
+		missingFor(seen, 10*time.Minute)
+		unseen := container(db.ContainerTypeTask).Handle()
+		missingFor(unseen, 10*time.Minute)
+		clientset.ClearActions()
+
+		Expect(reaper.Run(ctx)).To(Succeed())
+
+		var deleted []string
+		for _, action := range clientset.Actions() {
+			if action.GetResource().Resource == "secrets" && action.GetVerb() == "delete" {
+				deleted = append(deleted, action.(k8stesting.DeleteAction).GetName())
+			}
+		}
+		Expect(deleted).To(Equal([]string{"step-env-" + unseen}))
 	})
 
 	It("says once that it may not delete them, and goes on with the pass", func() {

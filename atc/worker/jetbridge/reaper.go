@@ -14,6 +14,7 @@ import (
 	"github.com/concourse/concourse/artifactwire"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/gc"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -50,10 +51,17 @@ type Reaper struct {
 	// stepEnvSecretsForbiddenNoted is set once this process has said that its
 	// Role cannot delete step params Secrets (see stepEnvSecretsForbidden).
 	stepEnvSecretsForbiddenNoted atomic.Bool
-	// stepEnvSecretsCollected is the departing handles whose params Secret
-	// the last pass took (collectStepEnvSecrets).
-	stepEnvSecretsMu        sync.Mutex
-	stepEnvSecretsCollected map[string]bool
+	// stepEnvSecretsSeen is, for each handle whose pod this process has
+	// listed lately, whether that pod read a params Secret
+	// (collectStepEnvSecrets).
+	stepEnvSecretsMu   sync.Mutex
+	stepEnvSecretsSeen map[string]seenStepPod
+}
+
+// seenStepPod is what the reaper last saw of a handle's pod.
+type seenStepPod struct {
+	readsSecret bool
+	at          time.Time
 }
 
 // SetBuildLookup sets the source of truth for which builds are still running.
@@ -118,6 +126,8 @@ func (r *Reaper) Run(ctx context.Context) error {
 	// the next web re-attaches, and Container.Attach recovers the result from
 	// this annotation. Deleting it while the build is still in flight makes
 	// the resumed plan re-execute an already completed step.
+	r.notePodsSeen(pods.Items)
+
 	var remainingPods, completedPods []metav1.ObjectMeta
 	for _, pod := range pods.Items {
 		if _, hasExitStatus := pod.Annotations[exitStatusAnnotationKey]; hasExitStatus {
@@ -168,7 +178,7 @@ func (r *Reaper) Run(ctx context.Context) error {
 	}
 
 	// Before the database lets go of a task container, its params Secret.
-	r.collectStepEnvSecrets(ctx, logger, workerName, handleToPod)
+	r.collectStepEnvSecrets(ctx, logger, workerName)
 
 	// Trigger DB-side container destruction for containers whose runtime
 	// resource (pod) no longer exists.
@@ -258,7 +268,40 @@ func (r *Reaper) stepJobsForbidden(logger lager.Logger, err error, jobCall bool)
 // missing from the worker before its params Secret is taken: far longer than
 // the moment between a Secret's creation and its pod's, which is the only time
 // a container that will have a pod is without one after its Secret exists.
+// A step Job's container may have no pod for longer (podlessStepJobGrace);
+// its Secret is the Job's, and never taken here.
 const stepEnvSecretOrphanGrace = time.Minute
+
+// stepPodSeenFor is how long the reaper remembers whether a handle's pod read
+// a params Secret: well past the time a container takes to depart once its
+// pod is gone (stepEnvSecretOrphanGrace, or at once when destroying).
+const stepPodSeenFor = 30 * time.Minute
+
+// notePodsSeen records, for every listed step pod, whether it reads a params
+// Secret, and forgets what it saw longer ago than stepPodSeenFor. A handle's
+// pods all come from one spec, so one pod answers for its replacements; a
+// later pod that answers otherwise (an older web's, replaced by this one)
+// overwrites it.
+func (r *Reaper) notePodsSeen(pods []corev1.Pod) {
+	now := time.Now()
+	r.stepEnvSecretsMu.Lock()
+	defer r.stepEnvSecretsMu.Unlock()
+	if r.stepEnvSecretsSeen == nil {
+		r.stepEnvSecretsSeen = map[string]seenStepPod{}
+	}
+	for _, pod := range pods {
+		handle := pod.Labels[handleLabelKey]
+		if handle == "" {
+			handle = pod.Name
+		}
+		r.stepEnvSecretsSeen[handle] = seenStepPod{readsSecret: pod.Annotations[stepEnvSecretAnnotation] != "", at: now}
+	}
+	for handle, seen := range r.stepEnvSecretsSeen {
+		if now.Sub(seen.at) > stepPodSeenFor {
+			delete(r.stepEnvSecretsSeen, handle)
+		}
+	}
+}
 
 // collectStepEnvSecrets deletes, by name, the params Secret of every task
 // container that is leaving the database: destroying, or missing for longer
@@ -269,36 +312,70 @@ const stepEnvSecretOrphanGrace = time.Minute
 // it ever reaching the destroying pass below (RemoveDestroyingContainers,
 // RemoveMissingContainers), so it is collected here, first.
 //
-// No list: each handle names its Secret. A pod seen without the annotation
-// reads none and costs no call, and a handle is called on once while it stays
-// departing, not on every pass.
-func (r *Reaper) collectStepEnvSecrets(ctx context.Context, logger lager.Logger, workerName string, handleToPod map[string]metav1.ObjectMeta) {
+// No list of Secrets: each handle names its Secret. Skipped without a call:
+// a handle whose pod this process saw lately without the annotation (it reads
+// no Secret), and a handle with a step Job, whose Secret the Job owns and
+// which may be pod-less for longer than the grace while its pod waits to be
+// made. A handle is asked again on every pass while it stays departing, so a
+// Secret a web made after an earlier pass's delete, and then died, is still
+// taken. The cost is one DELETE per pass for each departing task container
+// whose pod read a Secret or was not seen lately -- after a restart, every
+// one -- for the one pass a destroying container lasts, or until the
+// collector drops a missing one (--gc-missing-grace-period).
+func (r *Reaper) collectStepEnvSecrets(ctx context.Context, logger lager.Logger, workerName string) {
 	departing, err := r.containerRepository.FindDepartingContainers(workerName, db.ContainerTypeTask, stepEnvSecretOrphanGrace)
 	if err != nil {
 		logger.Error("failed-to-find-departing-task-containers", err)
 		return
 	}
+	var candidates []string
 	r.stepEnvSecretsMu.Lock()
-	defer r.stepEnvSecretsMu.Unlock()
-	collected := make(map[string]bool, len(departing))
 	for _, handle := range departing {
-		if r.stepEnvSecretsCollected[handle] {
-			collected[handle] = true
+		if seen, ok := r.stepEnvSecretsSeen[handle]; ok && !seen.readsSecret {
 			continue
 		}
-		if meta, seen := handleToPod[handle]; seen && meta.Annotations[stepEnvSecretAnnotation] == "" {
-			collected[handle] = true
-			continue
-		}
-		if err := deleteStepEnvSecret(ctx, r.clientset, r.cfg.Namespace, handle); err != nil {
-			if !r.stepEnvSecretsForbidden(logger, err) {
-				logger.Error("failed-to-delete-step-env-secret", err, lager.Data{"handle": handle, "secret": stepEnvSecretName(handle)})
-			}
-			continue
-		}
-		collected[handle] = true
+		candidates = append(candidates, handle)
 	}
-	r.stepEnvSecretsCollected = collected
+	r.stepEnvSecretsMu.Unlock()
+	if len(candidates) == 0 {
+		return
+	}
+	withJobs, ok := r.handlesWithStepJobs(ctx, logger, workerName)
+	if !ok {
+		return
+	}
+	for _, handle := range candidates {
+		if withJobs[handle] {
+			continue
+		}
+		if err := deleteStepEnvSecret(ctx, r.clientset, r.cfg.Namespace, handle); err != nil && !r.stepEnvSecretsForbidden(logger, err) {
+			logger.Error("failed-to-delete-step-env-secret", err, lager.Data{"handle": handle, "secret": stepEnvSecretName(handle)})
+		}
+	}
+}
+
+// handlesWithStepJobs is the handles that have a step Job. Not ok when the
+// Jobs cannot be listed for a reason other than a Role without batch/jobs
+// (stepJobsForbidden: a web that may not list step Jobs made none): no
+// Secret is taken then, as any may be a Job's.
+func (r *Reaper) handlesWithStepJobs(ctx context.Context, logger lager.Logger, workerName string) (map[string]bool, bool) {
+	jobs, err := r.clientset.BatchV1().Jobs(r.cfg.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("%s=%s", workerLabelKey, workerName),
+	})
+	if err != nil {
+		if r.stepJobsForbidden(logger, err, true) {
+			return nil, true
+		}
+		logger.Error("failed-to-list-step-jobs-for-step-env-secrets", err)
+		return nil, false
+	}
+	handles := make(map[string]bool, len(jobs.Items))
+	for _, job := range jobs.Items {
+		if handle := job.Labels[handleLabelKey]; handle != "" {
+			handles[handle] = true
+		}
+	}
+	return handles, true
 }
 
 // stepEnvSecretsForbidden reports whether err is the API server refusing this
