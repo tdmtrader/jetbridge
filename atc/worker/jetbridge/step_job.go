@@ -185,10 +185,15 @@ func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*b
 	// The step's command and env now reach the kubelet in the pod spec rather
 	// than through exec, and the kubelet expands $(VAR) and collapses $$ in
 	// both. Doubling every $ makes it hand the launcher the text as written.
+	// A task's params are not escaped: they are read from the step's Secret
+	// (step_env_secret.go), and the kubelet expands nothing it reads from one.
 	for i := range main.Args {
 		main.Args[i] = escapeKubernetesExpansion(main.Args[i])
 	}
 	for i := range main.Env {
+		if main.Env[i].ValueFrom != nil {
+			continue
+		}
 		main.Env[i].Value = escapeKubernetesExpansion(main.Env[i].Value)
 	}
 	main.VolumeMounts = append(main.VolumeMounts, corev1.VolumeMount{Name: launcherVolumeName, MountPath: launcherMountPath, ReadOnly: true})
@@ -247,6 +252,9 @@ func (c *Container) buildStepJob(spec runtime.ProcessSpec, hasEnvelope bool) (*b
 	// the answer directory's host path and the privilege gate, under the
 	// allowance composePod resolved with the identity, so the build is looked
 	// up once.
+	if err := c.refuseLiteralParams(pod); err != nil {
+		return nil, allowance, err
+	}
 	if err := admitStepPod(pod, c.stepPodRoots(), allowance); err != nil {
 		return nil, allowance, err
 	}
@@ -343,6 +351,18 @@ func (c *Container) createStepJob(ctx context.Context, job *batchv1.Job, allowan
 		c.jobUID = created.UID
 		c.jobPodName = ""
 		c.mu.Unlock()
+		// The task's params Secret, owned by the Job, before the Job can have
+		// a pod that reads it. A Job whose Secret cannot be made never ran,
+		// and is deleted.
+		if err := c.ensureStepJobEnvSecret(ctx, created.Name, created.UID); err != nil {
+			if delErr := deleteStepJob(ctx, c.clientset, c.config.Namespace, created.Name, created.UID); delErr != nil {
+				logger.Error("failed-to-delete-step-job-without-its-secret", delErr)
+			}
+			c.mu.Lock()
+			c.jobUID = ""
+			c.mu.Unlock()
+			return false, err
+		}
 		if publish != nil {
 			publish()
 		}

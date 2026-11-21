@@ -101,7 +101,15 @@ func (c *Container) runExactAsJob(ctx context.Context, processID string, spec ru
 		// A web that died between creating the Job and unsuspending it left
 		// it suspended with no pod. Unsuspending is idempotent, and the gate
 		// still decides whether its pod starts anything.
+		// That web may also have died before making the Job's params Secret,
+		// which its pod cannot start without: it is made afresh, owned by the
+		// Job, before the unsuspend lets the Job have a pod.
 		if existing.Spec.Suspend != nil && *existing.Spec.Suspend {
+			if existing.Spec.Template.Annotations[stepEnvSecretAnnotation] != "" {
+				if err := c.ensureStepJobEnvSecret(ctx, existing.Name, existing.UID); err != nil {
+					return nil, wrapIfTransient(err)
+				}
+			}
 			patch := []byte(`{"spec":{"suspend":false}}`)
 			if _, err := c.clientset.BatchV1().Jobs(c.config.Namespace).Patch(ctx, c.podName, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
 				return nil, wrapIfTransient(fmt.Errorf("unsuspending the resumed step job: %w", err))
