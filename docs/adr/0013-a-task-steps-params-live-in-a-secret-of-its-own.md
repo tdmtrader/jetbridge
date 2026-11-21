@@ -40,15 +40,16 @@ main container reads every param from it.
 - **Named by the handle, immutable, replaced on every creation.** The reaper
   has only a handle for a container whose pod is gone, so it deletes by name;
   web is granted `create`, `patch` and `delete` on Secrets and never `get`,
-  `list` or `watch`.
+  `list` or `watch`, so it cannot enumerate them.
 - **Owned by what it serves.** On `exec` the Secret is made, then the pause
   pod, then the Secret's ownerReference is patched to the pod. On `job` it is
   made owned by the suspended step Job, before the unsuspend. The garbage
   collector takes it with its owner; the reaper deletes, by name, the Secret
   of every task container leaving the database, for one a web left unowned by
-  dying in between.
+  dying in between, and never one whose handle has a step Job.
 - **Never a literal.** A Secret that cannot be made fails the step, naming
-  the missing Role rule or the size over the 1 MiB a Secret holds, and both
+  the missing Role rule, or the param values' total over the 1 MiB of values
+  a Secret holds (`corev1.MaxSecretSize`; keys are not counted), and both
   runtimes refuse a pod whose main container would carry a param as a value.
   Web still starts under an old Role; only task steps with params fail.
 
@@ -68,6 +69,16 @@ that mounts one, can read every team's params; a step pod grant whose
 ServiceAccount has `get secrets` in that namespace is such an identity, and
 the trusted-reader audit already names them.
 
+The grant itself widens web. `create`, `patch` and `delete` cannot be narrowed
+by name to Secrets that do not exist yet, so web may patch or delete any Secret
+in the step namespace, and a patch's response is the Secret it patched: web
+can read any Secret there whose name it knows. It still cannot list or watch
+them. With `kubernetes.namespace` unset, the step namespace is the release
+namespace, which holds web's own Secrets (its keys, its database and
+credential-manager settings) and the chart's others. A separate
+`kubernetes.namespace` is the narrower option: it confines the grant to the
+namespace of step pods and their params Secrets.
+
 ## Limits
 
 - Under the `job` step runtime the task's `run.path` and `run.args` are
@@ -85,6 +96,9 @@ the trusted-reader audit already names them.
 - The chart's pod-manager Role grants `secrets: create, patch, delete`, in
   every permutation and with no value. It must be applied with or before an
   image that makes these Secrets.
+- For its first 30 seconds a step pod may wait on the kubelet reading its own
+  params Secret (a cache not yet synced, the node authorizer not yet relating
+  node and Secret) before `CreateContainerConfigError` fails the step.
 - A task's params are fixed when its pod starts. A web that reattaches to a
   live pod reads nothing; a replaced pod gets the values its step resolved
   again.
