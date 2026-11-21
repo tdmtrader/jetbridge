@@ -161,6 +161,31 @@ var _ = Describe("ResourceConfigFactory", func() {
 			Expect(present(versioned)).To(BeTrue())
 		})
 
+		It("keeps the short grace for a config whose only versions are in a live unique-history scope, as in 0.4.6", func() {
+			// Its resource keeps the config while attached, and its next check
+			// deprecates the scope, which then keeps the config. Only a
+			// resource detached and not checked again for the short grace
+			// loses it.
+			scenario := dbtest.Setup(
+				builder.WithPipeline(atc.Config{Resources: atc.ResourceConfigs{
+					{Name: "unique", Type: dbtest.UniqueBaseResourceType, Source: atc.Source{"history": "unique"}},
+				}}),
+				builder.WithResourceVersions("unique", atc.Version{"ref": "v1"}),
+			)
+			resource := scenario.Resource("unique")
+			configID := resource.ResourceConfigID()
+			_, err := dbConn.Exec(`UPDATE resources SET resource_config_id = NULL, resource_config_scope_id = NULL WHERE id = $1`, resource.ID())
+			Expect(err).ToNot(HaveOccurred())
+			_, err = dbConn.Exec(`UPDATE resource_configs SET last_referenced = now() - interval '2 hours' WHERE id = $1`, configID)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(resourceConfigFactory.CleanUnreferencedConfigs(shortGrace, historyGrace)).To(Succeed())
+
+			_, found, err := resourceConfigFactory.FindResourceConfigByID(configID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeFalse())
+		})
+
 		It("still keeps a config a deprecated scope references, past the history grace", func() {
 			deprecatedConfig, err := resourceConfigFactory.FindOrCreateResourceConfig(
 				"some-base-resource-type", atc.Source{"history": "deprecated"}, nil)
