@@ -3,13 +3,13 @@ package behavioral_test
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -90,34 +90,49 @@ jobs:
 		triggerJob("loadvar-job")
 
 		sess := waitForBuildAndWatch("loadvar-job")
-		if sess.ExitCode() != 0 {
-			Skip("load_var with task outputs requires volume management (may not be available in JetBridge K8s runtime)")
-		}
+		Expect(sess.ExitCode()).To(Equal(0))
 		Expect(sess.Out).To(gbytes.Say("RUNTIME_VALUE"))
 	})
 
-	It("reads secrets from K8s secrets as a credential manager", func() {
-		secretName := fmt.Sprintf("%s.use-secret.k8s-test-secret", pipelineName)
+	// Pending: the suite's helm install (helmDeployConcourse in
+	// cluster_lifecycle_test.go) does not set
+	// kubernetes.credentialManager.enabled=true, so the web has no credential
+	// manager and ((k8s-test-secret)) is an undefined var. Un-pend it when the
+	// tier's install enables the credential manager. The Secret below is
+	// named and placed where the lookup reads it:
+	// <namespacePrefix><team>/<pipeline>.<var>.
+	PIt("reads secrets from K8s secrets as a credential manager", func() {
+		teamNamespace := "concourse-main"
+		secretName := fmt.Sprintf("%s.k8s-test-secret", pipelineName)
 
-		By("creating a K8s secret for the pipeline variable")
+		By("creating the team's credential namespace and the pipeline's Secret in it")
+		_, err := kubeClient.CoreV1().Namespaces().Create(context.Background(), &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: teamNamespace},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			Expect(apierrors.IsAlreadyExists(err)).To(BeTrue(), err.Error())
+		} else {
+			defer func() {
+				_ = kubeClient.CoreV1().Namespaces().Delete(
+					context.Background(), teamNamespace, metav1.DeleteOptions{},
+				)
+			}()
+		}
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      secretName,
-				Namespace: config.Namespace,
+				Namespace: teamNamespace,
 			},
 			StringData: map[string]string{
 				"value": "K8S_SECRET_VALUE",
 			},
 		}
-		_, err := kubeClient.CoreV1().Secrets(config.Namespace).Create(
+		_, err = kubeClient.CoreV1().Secrets(teamNamespace).Create(
 			context.Background(), secret, metav1.CreateOptions{},
 		)
-		if err != nil {
-			// If credential manager is not configured, skip gracefully
-			Skip("K8s credential manager may not be enabled: " + err.Error())
-		}
+		Expect(err).ToNot(HaveOccurred())
 		defer func() {
-			_ = kubeClient.CoreV1().Secrets(config.Namespace).Delete(
+			_ = kubeClient.CoreV1().Secrets(teamNamespace).Delete(
 				context.Background(), secretName, metav1.DeleteOptions{},
 			)
 		}()
@@ -132,7 +147,7 @@ jobs:
       image_resource: {type: registry-image, source: {repository: busybox}}
       run:
         path: sh
-        args: ["-c", "echo got-secret"]
+        args: ["-c", "test \"$SECRET_VAL\" = K8S_SECRET_VALUE && echo got-secret"]
       params:
         SECRET_VAL: ((k8s-test-secret))
 `)
@@ -140,12 +155,6 @@ jobs:
 		triggerJob("secret-job")
 
 		sess := waitForBuildAndWatch("secret-job")
-		if sess.ExitCode() != 0 {
-			output := string(sess.Out.Contents()) + string(sess.Err.Contents())
-			if strings.Contains(output, "undefined vars") || strings.Contains(output, "credential manager") {
-				Skip("K8s credential manager not configured for this Concourse deployment")
-			}
-		}
 		Expect(sess.ExitCode()).To(Equal(0))
 		Expect(sess.Out).To(gbytes.Say("got-secret"))
 	})
