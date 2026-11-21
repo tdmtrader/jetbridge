@@ -55,11 +55,14 @@ roleRef:
   name: {{ include "concourse.fullname" . }}-web
   apiGroup: rbac.authorization.k8s.io
 ---
+# The step namespace (kubernetes.namespace, default the release namespace) is
+# where web creates, execs into, watches and deletes step pods, step Jobs and
+# their params Secrets, so this Role is rendered there.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "concourse.fullname" . }}-pod-manager
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "concourse.kubernetesNamespace" . }}
   labels:
     {{- include "concourse.labels" . | nindent 4 }}
 rules:
@@ -110,18 +113,15 @@ rules:
   # No apps/deployments or apps/daemonsets: web calls neither API. The
   # self-upgrade pipeline's `kubectl rollout` runs as its own step pod grant's
   # ServiceAccount, never as this one.
-  # EndpointSlice discovery for artifact daemon peer resolution.
-  # DaemonClient uses this to find daemon pod IPs for cross-node
-  # artifact streaming and resource cache probing. Read-only.
-  - apiGroups: ["discovery.k8s.io"]
-    resources: ["endpointslices"]
-    verbs: ["get", "list", "watch"]
+  {{- if eq (include "concourse.kubernetesNamespace" .) .Release.Namespace }}
+  {{- include "concourse.web.releaseNamespaceRules" . | nindent 2 }}
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "concourse.fullname" . }}-pod-manager
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "concourse.kubernetesNamespace" . }}
   labels:
     {{- include "concourse.labels" . | nindent 4 }}
 subjects:
@@ -132,4 +132,53 @@ roleRef:
   kind: Role
   name: {{ include "concourse.fullname" . }}-pod-manager
   apiGroup: rbac.authorization.k8s.io
+{{- if ne (include "concourse.kubernetesNamespace" .) .Release.Namespace }}
+---
+# With step pods in their own namespace, what web still reads in the release
+# namespace -- the artifact daemon's EndpointSlices, and under the job step
+# runtime its own pod -- is granted here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "concourse.fullname" . }}-web-release
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+rules:
+  {{- include "concourse.web.releaseNamespaceRules" . | nindent 2 }}
+  {{- if eq .Values.kubernetes.stepRuntime "job" }}
+  # The job step runtime reads this web's own pod for the image it runs.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "concourse.fullname" . }}-web-release
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "concourse.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "concourse.fullname" . }}-web-release
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}
+
+{{/*
+What web reads in the release namespace, where the artifact daemon runs.
+*/}}
+{{- define "concourse.web.releaseNamespaceRules" -}}
+# EndpointSlice discovery for artifact daemon peer resolution.
+# DaemonClient uses this to find daemon pod IPs for cross-node
+# artifact streaming and resource cache probing. Read-only.
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["get", "list", "watch"]
 {{- end }}
