@@ -51,8 +51,20 @@ that resource does not have.
   checks multiply by the number of teams sharing a config. The checking lock
   is still keyed on the config, so those checks take turns. That is an
   accepted coupling of timing only: no state crosses teams through it.
-- Versions are stored once per team. A team's scope that nothing attaches to
-  any more lives as long as its config does.
+- Versions are stored once per team. A team's scope that nothing attaches
+  to any more lives as long as its config does, and a config that holds
+  versions lives for the deprecated-scope grace period after its last check
+  or after its last resource left it (a destroyed pipeline's resources are
+  deleted, not left, so their histories count from their last check). The
+  scope stays live: a resource of the team that returns to the config finds
+  it.
+- A scope remembers the resource that last left it. That resource may copy
+  the scope's history into its current scope when no other active resource
+  uses that scope and no active resource type of the team is on its config,
+  or under the rules above. Source and destination are checked to be the
+  resource's team's inside the copy, not only when the list is built. The
+  guard for a history teammates share (`ErrCopyIntoSharedScope`) otherwise
+  stays.
 - Migration 1789793171 gives each team that used a shared scope its own copy
   of that scope's history (versions, check order and metadata). Build inputs
   and outputs, next build inputs, pins and disabled versions name a resource
