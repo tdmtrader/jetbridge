@@ -44,29 +44,7 @@ func (e *SPDYExecutor) ExecInPod(
 	tty bool,
 	attrs ExecAttrs,
 ) error {
-	spanAttrs := tracing.Attrs{
-		"namespace":      namespace,
-		"pod-name":       podName,
-		"container-name": containerName,
-		"tty":            fmt.Sprintf("%t", tty),
-	}
-	if len(command) > 0 {
-		if len(command) <= 5 {
-			spanAttrs["exec.command"] = fmt.Sprintf("%v", command)
-		} else {
-			spanAttrs["exec.command"] = command[0]
-		}
-	}
-	if attrs.Purpose != "" {
-		spanAttrs["exec.purpose"] = attrs.Purpose
-	}
-	if attrs.ArtifactKey != "" {
-		spanAttrs["artifact.key"] = attrs.ArtifactKey
-	}
-	if attrs.VolumeMountPath != "" {
-		spanAttrs["volume.mount_path"] = attrs.VolumeMountPath
-	}
-	ctx, span := tracing.StartSpan(ctx, "k8s.spdy.exec", spanAttrs)
+	ctx, span := tracing.StartSpan(ctx, "k8s.spdy.exec", execSpanAttrs(namespace, podName, containerName, command, tty, attrs))
 	var spanErr error
 	defer func() { tracing.End(span, spanErr) }()
 
@@ -132,4 +110,31 @@ func (e *SPDYExecutor) ExecInPod(
 	}
 
 	return nil
+}
+
+// execSpanAttrs are the attributes of an exec's trace span. The command is
+// recorded by its path alone: a supervised task's command is a shell script
+// that embeds the task's run.path and run.args, which a pipeline may have
+// interpolated a credential into, and a span is exported to whatever tracing
+// backend the web is pointed at.
+func execSpanAttrs(namespace, podName, containerName string, command []string, tty bool, attrs ExecAttrs) tracing.Attrs {
+	spanAttrs := tracing.Attrs{
+		"namespace":      namespace,
+		"pod-name":       podName,
+		"container-name": containerName,
+		"tty":            fmt.Sprintf("%t", tty),
+	}
+	if len(command) > 0 {
+		spanAttrs["exec.command"] = command[0]
+	}
+	if attrs.Purpose != "" {
+		spanAttrs["exec.purpose"] = attrs.Purpose
+	}
+	if attrs.ArtifactKey != "" {
+		spanAttrs["artifact.key"] = attrs.ArtifactKey
+	}
+	if attrs.VolumeMountPath != "" {
+		spanAttrs["volume.mount_path"] = attrs.VolumeMountPath
+	}
+	return spanAttrs
 }
