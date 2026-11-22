@@ -183,11 +183,7 @@ var _ = Describe("Task exec supervisor script execution", func() {
 				return err == nil
 			}, 3*time.Second, 50*time.Millisecond).Should(BeTrue())
 
-			pidBytes, err := os.ReadFile(filepath.Join(state, "pid"))
-			Expect(err).ToNot(HaveOccurred())
-			var runnerPid int
-			_, err = fmt.Sscanf(strings.TrimSpace(string(pidBytes)), "%d", &runnerPid)
-			Expect(err).ToNot(HaveOccurred())
+			runnerPid := awaitRunnerPid(state)
 
 			Expect(web1.Process.Kill()).To(Succeed())
 			_ = web1.Wait()
@@ -356,12 +352,7 @@ var _ = Describe("Task exec supervisor script execution", func() {
 		web := exec.Command(cmd[0], cmd[1], cmd[2])
 		Expect(web.Start()).To(Succeed())
 
-		time.Sleep(1 * time.Second)
-		pidBytes, err := os.ReadFile(filepath.Join(stateDirOf(cmd[2]), "pid"))
-		Expect(err).ToNot(HaveOccurred())
-		var runnerPid int
-		_, err = fmt.Sscanf(strings.TrimSpace(string(pidBytes)), "%d", &runnerPid)
-		Expect(err).ToNot(HaveOccurred())
+		runnerPid := awaitRunnerPid(stateDirOf(cmd[2]))
 		Expect(syscall.Kill(runnerPid, syscall.SIGHUP)).To(Succeed())
 
 		Expect(web.Wait()).ToNot(Succeed()) // exit 9 surfaces as ExitError
@@ -434,4 +425,22 @@ func liveInSession(sid int, comm string) []int {
 	}
 
 	return pids
+}
+
+// awaitRunnerPid waits for the supervisor's pid file to hold a runner's pid.
+// The script writes it after it forks the runner, and so after it claims the
+// exact start: a single read on seeing the start races that write, and can
+// find no file or an empty one.
+func awaitRunnerPid(state string) int {
+	GinkgoHelper()
+	var runnerPid int
+	Eventually(func() error {
+		pidBytes, err := os.ReadFile(filepath.Join(state, "pid"))
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Sscanf(strings.TrimSpace(string(pidBytes)), "%d", &runnerPid)
+		return err
+	}, 5*time.Second, 20*time.Millisecond).Should(Succeed(), "the supervisor never recorded its runner's pid")
+	return runnerPid
 }
